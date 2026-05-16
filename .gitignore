@@ -1,0 +1,13 @@
+# 忽略编译产生的文件
+build/
+*.egg-info/
+*.pyd
+*.obj
+*.o
+
+# 忽略 Python 缓存
+__pycache__/
+*.pyc
+
+# 忽略临时测试脚本 (可选，如果你不想公开测试脚本可以取消注释)
+# test_run.py
