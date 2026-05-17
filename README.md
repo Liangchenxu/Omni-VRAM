@@ -50,7 +50,7 @@ Traditional Python-based audio processing pipelines and PyTorch native operation
 
 ```bash
 # Clone the repository
-git clone [https://github.com/Liangchenxu/Omni-VRAM.git](https://github.com/Liangchenxu/Omni-VRAM.git)
+git clone https://github.com/Liangchenxu/Omni-VRAM.git
 cd Omni-VRAM
 
 # Build and install the CUDA extension
@@ -136,7 +136,7 @@ You are free to use, modify, and distribute this software in both commercial and
 
 ```bash
 # 克隆项目仓库
-git clone [https://github.com/Liangchenxu/Omni-VRAM.git](https://github.com/Liangchenxu/Omni-VRAM.git)
+git clone https://github.com/Liangchenxu/Omni-VRAM.git
 cd Omni-VRAM
 
 # 编译并安装 CUDA 扩展模块
