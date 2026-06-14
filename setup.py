@@ -32,6 +32,9 @@ setup(
         'audio': [
             'openai>=1.0.0',
         ],
+        'realtime': [
+            'pyaudio>=0.2.11',
+        ],
         'dev': [
             'pytest>=7.0.0',
         ],
