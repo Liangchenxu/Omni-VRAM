@@ -34,6 +34,9 @@ from vram_core.whisper_bridge import (
 )
 from vram_core.stream_processor import StreamProcessor, StreamConfig, StreamState
 from vram_core.streaming_asr import StreamASR, StreamASRConfig, StreamASRResult
+from vram_core.noise_reduction import NoiseReducer
+from vram_core.emotion_recognition import EmotionRecognizer
+from vram_core.speaker_diarization import SpeakerDiarizer
 from vram_core.config import config, OmniConfig, setup_logging
 
 __all__ = [
@@ -51,6 +54,10 @@ __all__ = [
     "StreamASR",
     "StreamASRConfig",
     "StreamASRResult",
+    # New Modules
+    "NoiseReducer",
+    "EmotionRecognizer",
+    "SpeakerDiarizer",
     # Configuration
     "config",
     "OmniConfig",

@@ -399,7 +399,7 @@ class WhisperBridge:
         self.openai_api_key = openai_api_key or config.openai_api_key
         self.openai_model = openai_model or config.openai_model
         self.language = language or config.language
-        self.device = device or device or config.whisper_device
+        self.device = device or config.whisper_device
         self.compute_type = compute_type or config.whisper_compute_type
 
         # Lazy-loaded faster-whisper model cache
