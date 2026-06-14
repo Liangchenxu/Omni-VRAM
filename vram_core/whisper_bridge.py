@@ -8,23 +8,34 @@ the best available backend.
 
 Architecture:
     - WhisperBackend: Enum for backend selection
+    - WhisperResult: Dataclass for transcription results with SRT export
     - WhisperBridge: Main class for transcription
+
+Audio Preprocessing:
+    Uses pydub for format conversion, supporting wav/mp3/flac/ogg/m4a.
+    Automatically converts to 16kHz mono WAV for whisper consumption.
 """
 
 import os
+import re
 import time
 import logging
 import subprocess
 import shutil
+import tempfile
 from enum import Enum
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
+from dataclasses import dataclass, field
 
 import numpy as np
 
-from vram_core.audio_utils import AudioProcessor
+from vram_core.config import config
 
 logger = logging.getLogger(__name__)
+
+# ── Supported audio formats ──────────────────────────────────────
+SUPPORTED_AUDIO_FORMATS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".wma", ".aac"}
 
 
 class WhisperBackend(Enum):
@@ -34,32 +45,36 @@ class WhisperBackend(Enum):
     AUTO = "auto"
 
 
-class TranscriptionResult:
-    """Container for transcription results."""
+@dataclass
+class WhisperResult:
+    """
+    Container for Whisper transcription results.
 
-    def __init__(
-        self,
-        text: str,
-        language: str,
-        segments: Optional[List[Dict[str, Any]]] = None,
-        backend: Optional[WhisperBackend] = None,
-        duration: float = 0.0,
-        processing_time: float = 0.0,
-    ):
-        self.text = text
-        self.language = language
-        self.segments = segments or []
-        self.backend = backend
-        self.duration = duration
-        self.processing_time = processing_time
+    Attributes:
+        text: Full transcription text.
+        language: Detected or specified language code.
+        confidence: Average confidence score (0.0-1.0, if available).
+        segments: List of segments with timestamps.
+        backend: Which backend was used.
+        audio_duration: Duration of input audio in seconds.
+        processing_time: Time taken for transcription in seconds.
+    """
+    text: str = ""
+    language: str = "unknown"
+    confidence: float = 0.0
+    segments: List[Dict[str, Any]] = field(default_factory=list)
+    backend: Optional[WhisperBackend] = None
+    audio_duration: float = 0.0
+    processing_time: float = 0.0
 
     def __repr__(self) -> str:
+        preview = self.text[:50] + "..." if len(self.text) > 50 else self.text
         return (
-            f"TranscriptionResult(text='{self.text[:50]}...', "
+            f"WhisperResult(text='{preview}', "
             f"language='{self.language}', "
-            f"backend={self.backend}, "
-            f"duration={self.duration:.2f}s, "
-            f"processing_time={self.processing_time:.2f}s)"
+            f"confidence={self.confidence:.2f}, "
+            f"segments={len(self.segments)}, "
+            f"backend={self.backend})"
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -67,11 +82,237 @@ class TranscriptionResult:
         return {
             "text": self.text,
             "language": self.language,
+            "confidence": self.confidence,
             "segments": self.segments,
             "backend": self.backend.value if self.backend else None,
-            "duration": self.duration,
+            "audio_duration": self.audio_duration,
             "processing_time": self.processing_time,
         }
+
+    def export_srt(self, output_path: Union[str, Path]) -> Path:
+        """
+        Export transcription segments as SRT subtitle file.
+
+        Args:
+            output_path: Path to write the .srt file.
+
+        Returns:
+            Path to the created file.
+
+        Raises:
+            ValueError: If no segments with timestamps are available.
+        """
+        if not self.segments:
+            raise ValueError(
+                "No segments available for SRT export. "
+                "Segments with timestamps are required."
+            )
+
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        lines = []
+        for i, seg in enumerate(self.segments, start=1):
+            start = self._format_srt_time(seg.get("start", 0.0))
+            end = self._format_srt_time(seg.get("end", 0.0))
+            text = seg.get("text", "").strip()
+            lines.append(f"{i}")
+            lines.append(f"{start} --> {end}")
+            lines.append(text)
+            lines.append("")  # blank line separator
+
+        output_path.write_text("\n".join(lines), encoding="utf-8")
+        logger.info(f"SRT exported to {output_path} ({len(self.segments)} segments)")
+        return output_path
+
+    @staticmethod
+    def _format_srt_time(seconds: float) -> str:
+        """
+        Format seconds to SRT time format: HH:MM:SS,mmm
+
+        Args:
+            seconds: Time in seconds (float).
+
+        Returns:
+            Formatted time string.
+        """
+        # Handle string input (already formatted)
+        if isinstance(seconds, str):
+            # Convert "HH:MM:SS.mmm" to "HH:MM:SS,mmm"
+            return seconds.replace(".", ",")
+
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        millis = int((seconds % 1) * 1000)
+        return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+# Backward compatibility alias
+TranscriptionResult = WhisperResult
+
+
+class AudioPreprocessor:
+    """
+    Audio preprocessing using pydub.
+
+    Converts various audio formats to 16kHz mono WAV suitable for
+    whisper consumption.
+
+    Supported formats: wav, mp3, flac, ogg, m4a, wma, aac
+    """
+
+    @staticmethod
+    def load_and_convert(
+        audio_path: Union[str, Path],
+        target_sample_rate: int = 16000,
+    ) -> tuple:
+        """
+        Load audio file and convert to 16kHz mono WAV.
+
+        Args:
+            audio_path: Path to audio file.
+            target_sample_rate: Target sample rate (default: 16000).
+
+        Returns:
+            Tuple of (audio_data as float32 numpy array, sample_rate).
+
+        Raises:
+            FileNotFoundError: If audio file doesn't exist.
+            ValueError: If format is not supported.
+        """
+        try:
+            from pydub import AudioSegment
+        except ImportError:
+            raise ImportError(
+                "pydub package required for audio preprocessing. "
+                "Install with: pip install pydub\n"
+                "Note: MP3/OGG/M4A also require ffmpeg."
+            )
+
+        audio_path = Path(audio_path)
+
+        # Validate file exists
+        if not audio_path.exists():
+            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+
+        # Validate format
+        suffix = audio_path.suffix.lower()
+        if suffix not in SUPPORTED_AUDIO_FORMATS:
+            raise ValueError(
+                f"Unsupported audio format: '{suffix}'. "
+                f"Supported: {', '.join(sorted(SUPPORTED_AUDIO_FORMATS))}"
+            )
+
+        logger.debug(f"Loading audio: {audio_path} (format: {suffix})")
+
+        # Load with pydub (handles format detection automatically)
+        if suffix == ".wav":
+            audio_segment = AudioSegment.from_wav(str(audio_path))
+        elif suffix == ".mp3":
+            audio_segment = AudioSegment.from_mp3(str(audio_path))
+        elif suffix == ".flac":
+            audio_segment = AudioSegment.from_file(str(audio_path), format="flac")
+        elif suffix == ".ogg":
+            audio_segment = AudioSegment.from_ogg(str(audio_path))
+        elif suffix == ".m4a":
+            audio_segment = AudioSegment.from_file(str(audio_path), format="m4a")
+        else:
+            # Generic fallback
+            audio_segment = AudioSegment.from_file(str(audio_path))
+
+        # Convert to mono
+        if audio_segment.channels > 1:
+            audio_segment = audio_segment.set_channels(1)
+            logger.debug("Converted stereo to mono")
+
+        # Resample to target sample rate
+        if audio_segment.frame_rate != target_sample_rate:
+            audio_segment = audio_segment.set_frame_rate(target_sample_rate)
+            logger.debug(f"Resampled to {target_sample_rate}Hz")
+
+        # Convert to 16-bit PCM
+        audio_segment = audio_segment.set_sample_width(2)  # 16-bit
+
+        # Convert to numpy float32
+        samples = np.frombuffer(audio_segment.raw_data, dtype=np.int16)
+        audio_data = samples.astype(np.float32) / 32768.0
+
+        logger.debug(
+            f"Audio loaded: {len(audio_data)} samples, "
+            f"{len(audio_data) / target_sample_rate:.2f}s, "
+            f"{target_sample_rate}Hz mono"
+        )
+
+        return audio_data, target_sample_rate
+
+    @staticmethod
+    def to_wav_bytes(
+        audio_data: np.ndarray,
+        sample_rate: int = 16000,
+    ) -> bytes:
+        """
+        Convert numpy audio array to WAV bytes.
+
+        Args:
+            audio_data: Float32 audio array.
+            sample_rate: Sample rate.
+
+        Returns:
+            WAV file bytes.
+        """
+        try:
+            from pydub import AudioSegment
+            from pydub.utils import make_chunks
+
+            # Convert float32 to int16
+            int16_data = (audio_data * 32767).clip(-32768, 32767).astype(np.int16)
+
+            # Create AudioSegment
+            segment = AudioSegment(
+                data=int16_data.tobytes(),
+                sample_width=2,
+                frame_rate=sample_rate,
+                channels=1,
+            )
+
+            # Export to bytes
+            buffer = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024)
+            segment.export(buffer, format="wav")
+            buffer.seek(0)
+            return buffer.read()
+
+        except ImportError:
+            # Fallback: manual WAV encoding
+            return AudioPreprocessor._manual_wav_bytes(audio_data, sample_rate)
+
+    @staticmethod
+    def _manual_wav_bytes(audio_data: np.ndarray, sample_rate: int) -> bytes:
+        """Manual WAV encoding fallback when pydub is not available."""
+        import struct
+
+        int16_data = (audio_data * 32767).clip(-32768, 32767).astype(np.int16)
+        data = int16_data.tobytes()
+        data_size = len(data)
+
+        header = struct.pack(
+            "<4sI4s4sIHHIIHH4sI",
+            b"RIFF",
+            36 + data_size,
+            b"WAVE",
+            b"fmt ",
+            16,
+            1,
+            1,
+            sample_rate,
+            sample_rate * 2,
+            2,
+            16,
+            b"data",
+            data_size,
+        )
+
+        return header + data
 
 
 class WhisperBridge:
@@ -86,9 +327,12 @@ class WhisperBridge:
         bridge = WhisperBridge()
         result = bridge.transcribe("audio.wav")
         print(result.text)
+
+        # Export subtitles
+        result.export_srt("output.srt")
     """
 
-    # Supported languages for auto-detection
+    # Supported languages
     SUPPORTED_LANGUAGES = {
         "zh": "Chinese",
         "en": "English",
@@ -102,15 +346,28 @@ class WhisperBridge:
         "ar": "Arabic",
     }
 
+    # Common whisper.cpp installation paths (Windows)
+    COMMON_WHISPER_PATHS = [
+        r"C:\whisper.cpp\build\bin\Release",
+        r"C:\whisper.cpp\build\bin",
+        r"C:\Program Files\whisper.cpp\bin",
+        r"C:\tools\whisper.cpp\build\bin\Release",
+        os.path.expanduser(r"~\whisper.cpp\build\bin\Release"),
+        os.path.expanduser(r"~\whisper.cpp\build\bin"),
+    ]
+
+    # Transcription timeout in seconds
+    TRANSCRIPTION_TIMEOUT = 300
+
     def __init__(
         self,
         backend: WhisperBackend = WhisperBackend.AUTO,
         whisper_cpp_path: Optional[str] = None,
         whisper_model: str = "base",
         openai_api_key: Optional[str] = None,
-        openai_model: str = "whisper-1",
+        openai_model: Optional[str] = None,
         language: Optional[str] = None,
-        device: str = "cuda",
+        device: Optional[str] = None,
     ):
         """
         Initialize WhisperBridge.
@@ -118,27 +375,35 @@ class WhisperBridge:
         Args:
             backend: Which backend to use (AUTO will select best available).
             whisper_cpp_path: Path to whisper.cpp binary directory.
-            whisper_model: Model size for whisper.cpp (tiny/base/small/medium/large).
+            whisper_model: Model size (tiny/base/small/medium/large).
             openai_api_key: OpenAI API key (or set OPENAI_API_KEY env var).
             openai_model: OpenAI Whisper model name.
             language: Force specific language (None for auto-detect).
             device: Device for whisper.cpp (cuda/cpu).
-        """
-        self.backend = backend
-        self.whisper_cpp_path = whisper_cpp_path
-        self.whisper_model = whisper_model
-        self.openai_api_key = openai_api_key or os.environ.get("OPENAI_API_KEY")
-        self.openai_model = openai_model
-        self.language = language
-        self.device = device
 
-        # Audio processor for format conversion
-        self.audio_processor = AudioProcessor(target_sample_rate=16000)
+        Configuration priority:
+            1. Constructor arguments (highest)
+            2. Environment variables / .env file (via config)
+            3. Default values (lowest)
+        """
+        # Use config as fallback for unset values
+        self.backend = backend
+        self.whisper_cpp_path = whisper_cpp_path or (
+            str(config.whisper_cpp_path) if config.whisper_cpp_path else None
+        )
+        self.whisper_model = whisper_model
+        self.openai_api_key = openai_api_key or config.openai_api_key
+        self.openai_model = openai_model or config.openai_model
+        self.language = language or config.language
+        self.device = device or config.device
+
+        # Audio preprocessor
+        self.audio_preprocessor = AudioPreprocessor()
 
         # Auto-detect backend
         if self.backend == WhisperBackend.AUTO:
             self.backend = self._auto_detect_backend()
-            logger.info("Auto-detected backend: %s", self.backend.value)
+            logger.info(f"Auto-detected backend: {self.backend.value}")
 
     def _auto_detect_backend(self) -> WhisperBackend:
         """
@@ -151,30 +416,50 @@ class WhisperBridge:
         Returns:
             Best available WhisperBackend.
         """
-        # Check for whisper.cpp
         if self._check_whisper_cpp():
             return WhisperBackend.WHISPER_CPP
 
-        # Check for OpenAI API key
         if self.openai_api_key:
             return WhisperBackend.OPENAI_API
 
-        # Default to whisper.cpp (will fail gracefully if not found)
+        # Default to whisper.cpp (will fail gracefully with helpful message)
         logger.warning(
-            "No Whisper backend found. Install whisper.cpp or set OPENAI_API_KEY."
+            "No Whisper backend found. "
+            "Install whisper.cpp or set OPENAI_API_KEY in .env"
         )
         return WhisperBackend.WHISPER_CPP
 
     def _check_whisper_cpp(self) -> bool:
-        """Check if whisper.cpp is available."""
+        """
+        Check if whisper.cpp is available.
+
+        Checks:
+            1. Explicitly configured path
+            2. Common installation paths
+            3. System PATH
+
+        Returns:
+            True if whisper.cpp binary is found.
+        """
+        # Check explicit path
         if self.whisper_cpp_path:
             main_exe = Path(self.whisper_cpp_path) / "main.exe"
             if main_exe.exists():
                 return True
+            main_exe = Path(self.whisper_cpp_path) / "main"
+            if main_exe.exists():
+                return True
 
-        # Check PATH
-        if shutil.which("whisper") or shutil.which("main"):
-            return True
+        # Check common installation paths
+        for path_str in self.COMMON_WHISPER_PATHS:
+            path = Path(path_str)
+            if (path / "main.exe").exists() or (path / "main").exists():
+                return True
+
+        # Check system PATH
+        for name in ["whisper", "main", "whisper-cli", "whisper.exe"]:
+            if shutil.which(name):
+                return True
 
         return False
 
@@ -187,32 +472,41 @@ class WhisperBridge:
         audio_input: Union[str, Path, np.ndarray],
         sample_rate: int = 16000,
         **kwargs,
-    ) -> TranscriptionResult:
+    ) -> WhisperResult:
         """
         Transcribe audio to text.
 
         Args:
-            audio_input: File path or numpy array (float32, mono, 16kHz).
+            audio_input: File path (wav/mp3/flac/ogg/m4a) or numpy array.
             sample_rate: Sample rate if audio_input is numpy array.
             **kwargs: Additional backend-specific options.
 
         Returns:
-            TranscriptionResult with text, language, segments, etc.
+            WhisperResult with text, language, confidence, segments, etc.
+
+        Raises:
+            FileNotFoundError: If whisper.cpp is not installed.
+            ValueError: If audio file doesn't exist or format unsupported.
+            subprocess.TimeoutExpired: If transcription exceeds 300s.
         """
         start_time = time.time()
 
-        # Load audio if file path
+        # Load audio
         if isinstance(audio_input, (str, Path)):
-            audio_data, sr = self.audio_processor.load(audio_input)
+            audio_path = Path(audio_input)
+            logger.info(f"Transcribing file: {audio_path}")
+            audio_data, sr = self.audio_preprocessor.load_and_convert(
+                audio_path, target_sample_rate=16000
+            )
             audio_duration = len(audio_data) / sr
         else:
             audio_data = audio_input
             sr = sample_rate
             audio_duration = len(audio_data) / sr
 
-        # Ensure float32
-        if audio_data.dtype != np.float32:
-            audio_data = audio_data.astype(np.float32)
+            # Ensure float32
+            if audio_data.dtype != np.float32:
+                audio_data = audio_data.astype(np.float32)
 
         # Route to backend
         if self.backend == WhisperBackend.WHISPER_CPP:
@@ -222,13 +516,13 @@ class WhisperBridge:
         else:
             raise ValueError(f"Unknown backend: {self.backend}")
 
-        result.duration = audio_duration
+        result.audio_duration = audio_duration
         result.processing_time = time.time() - start_time
         result.backend = self.backend
 
         logger.info(
-            "Transcribed %.2fs audio in %.2fs using %s",
-            result.duration, result.processing_time, self.backend.value,
+            f"Transcribed {result.audio_duration:.2f}s audio in "
+            f"{result.processing_time:.2f}s using {self.backend.value}"
         )
 
         return result
@@ -238,7 +532,7 @@ class WhisperBridge:
         audio_chunks: List[np.ndarray],
         sample_rate: int = 16000,
         **kwargs,
-    ) -> TranscriptionResult:
+    ) -> WhisperResult:
         """
         Transcribe from a stream of audio chunks.
 
@@ -248,14 +542,13 @@ class WhisperBridge:
             **kwargs: Additional backend-specific options.
 
         Returns:
-            TranscriptionResult with aggregated transcription.
+            WhisperResult with aggregated transcription.
         """
-        # Concatenate chunks
         full_audio = np.concatenate(audio_chunks)
         return self.transcribe(full_audio, sample_rate=sample_rate, **kwargs)
 
     # ------------------------------------------------------------------
-    # Whisper.cpp Backend
+    # Whisper.cpp Backend (Local)
     # ------------------------------------------------------------------
 
     def _transcribe_whisper_cpp(
@@ -263,9 +556,9 @@ class WhisperBridge:
         audio: np.ndarray,
         sample_rate: int,
         **kwargs,
-    ) -> TranscriptionResult:
+    ) -> WhisperResult:
         """
-        Transcribe using whisper.cpp.
+        Transcribe using local whisper.cpp.
 
         Args:
             audio: Float32 mono audio array.
@@ -273,135 +566,228 @@ class WhisperBridge:
             **kwargs: Additional whisper.cpp options.
 
         Returns:
-            TranscriptionResult.
-        """
-        import tempfile
+            WhisperResult.
 
+        Raises:
+            FileNotFoundError: If whisper.cpp binary or model not found.
+            subprocess.TimeoutExpired: If transcription exceeds timeout.
+        """
         # Find whisper.cpp binary
         main_exe = self._find_whisper_cpp_binary()
+        logger.info(f"Using whisper.cpp: {main_exe}")
+
+        # Get model path
+        model_path = self._get_model_path()
+        logger.info(f"Using model: {model_path}")
 
         # Write audio to temporary WAV file
-        wav_bytes = AudioProcessor.to_wav_bytes(audio, sample_rate)
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp.write(wav_bytes)
-            tmp_path = tmp.name
+        wav_bytes = self.audio_preprocessor.to_wav_bytes(audio, sample_rate)
+        tmp_path = None
 
         try:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                tmp.write(wav_bytes)
+                tmp_path = tmp.name
+
             # Build command
             cmd = [
                 main_exe,
-                "-m", self._get_model_path(),
+                "-m", model_path,
                 "-f", tmp_path,
                 "--output-txt",
                 "--no-prints",
             ]
 
+            # Language
             if self.language:
                 cmd.extend(["-l", self.language])
 
+            # GPU acceleration
             if self.device == "cuda":
                 cmd.extend(["--gpu-layers", "1"])
 
-            # Add extra args
+            # Extra user kwargs
             for key, value in kwargs.items():
                 cmd.extend([f"--{key}", str(value)])
 
-            logger.debug("Running: %s", " ".join(cmd))
+            logger.debug(f"Running: {' '.join(cmd)}")
 
-            # Execute
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=300,
-            )
+            # Execute with timeout
+            try:
+                proc_result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.TRANSCRIPTION_TIMEOUT,
+                )
+            except subprocess.TimeoutExpired:
+                raise subprocess.TimeoutExpired(
+                    cmd=cmd,
+                    timeout=self.TRANSCRIPTION_TIMEOUT,
+                    output=None,
+                    stderr=None,
+                )
 
-            if result.returncode != 0:
+            if proc_result.returncode != 0:
                 raise RuntimeError(
-                    f"whisper.cpp failed with code {result.returncode}: {result.stderr}"
+                    f"whisper.cpp failed (exit code {proc_result.returncode}): "
+                    f"{proc_result.stderr}"
                 )
 
             # Parse output
-            text = result.stdout.strip()
+            text = proc_result.stdout.strip()
             language = self.language or "unknown"
+            segments = self._parse_whisper_cpp_segments(proc_result.stderr)
 
-            # Try to detect language from output
+            # Try to detect language from stderr output
             for lang_code, lang_name in self.SUPPORTED_LANGUAGES.items():
-                if lang_name.lower() in result.stderr.lower():
+                if lang_name.lower() in proc_result.stderr.lower():
                     language = lang_code
                     break
 
-            return TranscriptionResult(
+            # Calculate confidence from segments if available
+            confidence = 0.0
+            if segments:
+                confidences = [
+                    s.get("confidence", 0.0) for s in segments
+                    if s.get("confidence") is not None
+                ]
+                if confidences:
+                    confidence = sum(confidences) / len(confidences)
+
+            return WhisperResult(
                 text=text,
                 language=language,
-                segments=self._parse_whisper_cpp_segments(result.stderr),
+                confidence=confidence,
+                segments=segments,
             )
 
         finally:
             # Clean up temp file
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     def _find_whisper_cpp_binary(self) -> str:
-        """Find the whisper.cpp main executable."""
+        """
+        Find the whisper.cpp main executable.
+
+        Search order:
+            1. Configured whisper_cpp_path
+            2. Common installation paths
+            3. System PATH
+
+        Returns:
+            Path to whisper.cpp executable.
+
+        Raises:
+            FileNotFoundError: If not found with helpful installation message.
+        """
+        candidates = []
+
+        # 1. Explicit path
         if self.whisper_cpp_path:
-            main_exe = Path(self.whisper_cpp_path) / "main.exe"
-            if main_exe.exists():
-                return str(main_exe)
-            # Try without .exe
-            main_exe = Path(self.whisper_cpp_path) / "main"
-            if main_exe.exists():
-                return str(main_exe)
+            base = Path(self.whisper_cpp_path)
+            candidates.extend([
+                base / "main.exe",
+                base / "Release" / "main.exe",
+                base / "main",
+            ])
 
-        # Check PATH
-        for name in ["whisper", "main", "whisper-cli"]:
-            path = shutil.which(name)
-            if path:
-                return path
+        # 2. Common paths
+        for path_str in self.COMMON_WHISPER_PATHS:
+            base = Path(path_str)
+            candidates.extend([
+                base / "main.exe",
+                base / "main",
+            ])
 
+        # Check candidates
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+
+        # 3. System PATH
+        for name in ["whisper", "main", "whisper-cli", "whisper.exe"]:
+            found = shutil.which(name)
+            if found:
+                return found
+
+        # Not found - provide helpful message
         raise FileNotFoundError(
-            "whisper.cpp binary not found. "
-            "Set whisper_cpp_path or add to PATH. "
-            "See: https://github.com/ggerganov/whisper.cpp"
+            "whisper.cpp not found! Please install whisper.cpp:\n"
+            "\n"
+            "  1. Clone:  git clone https://github.com/ggerganov/whisper.cpp.git\n"
+            "  2. Build:   cd whisper.cpp && cmake -B build && cmake --build build --config Release\n"
+            "  3. Model:   bash models/download-ggml-model.sh base\n"
+            "  4. Configure: Set WHISPER_CPP_PATH in .env file\n"
+            "\n"
+            f"Searched in:\n"
+            + "\n".join(f"  - {p}" for p in [self.whisper_cpp_path] + self.COMMON_WHISPER_PATHS)
         )
 
     def _get_model_path(self) -> str:
-        """Get path to whisper model file."""
-        # Check common model locations
+        """
+        Get path to whisper model file.
+
+        Search order:
+            1. Config (WHISPER_MODEL_PATH)
+            2. whisper_cpp_path/models/
+            3. Current directory
+
+        Returns:
+            Path to model file.
+
+        Raises:
+            FileNotFoundError: If model not found.
+        """
         model_names = [
             f"ggml-{self.whisper_model}.bin",
             f"ggml-{self.whisper_model}.en.bin",
         ]
 
-        # Check whisper_cpp_path/models/
+        # 1. Check config
+        if config.whisper_model_path and config.whisper_model_path.exists():
+            return str(config.whisper_model_path)
+
+        # 2. Check whisper_cpp_path/models/
         if self.whisper_cpp_path:
             for name in model_names:
                 model_path = Path(self.whisper_cpp_path) / "models" / name
                 if model_path.exists():
                     return str(model_path)
 
-        # Check environment variable
-        env_path = os.environ.get("WHISPER_MODEL_PATH")
-        if env_path:
-            return env_path
-
-        # Check current directory
+        # 3. Check current directory
         for name in model_names:
             if Path(name).exists():
                 return name
 
         raise FileNotFoundError(
-            f"Whisper model '{self.whisper_model}' not found. "
-            f"Expected: {model_names}"
+            f"Whisper model '{self.whisper_model}' not found.\n"
+            f"Expected one of: {model_names}\n"
+            f"\n"
+            f"Download a model:\n"
+            f"  bash models/download-ggml-model.sh {self.whisper_model}\n"
+            f"\n"
+            f"Or set WHISPER_MODEL_PATH in .env file."
         )
 
     @staticmethod
     def _parse_whisper_cpp_segments(stderr: str) -> List[Dict[str, Any]]:
-        """Parse segments from whisper.cpp stderr output."""
+        """
+        Parse segments from whisper.cpp stderr output.
+
+        Expected format: [HH:MM:SS.mmm --> HH:MM:SS.mmm] text
+
+        Args:
+            stderr: stderr output from whisper.cpp.
+
+        Returns:
+            List of segment dicts with start, end, text, confidence.
+        """
         segments = []
-        import re
 
         # Pattern: [HH:MM:SS.mmm --> HH:MM:SS.mmm] text
         pattern = r'\[(\d{2}:\d{2}:\d{2}\.\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}\.\d{3})\]\s*(.*)'
@@ -409,16 +795,25 @@ class WhisperBridge:
         for line in stderr.split('\n'):
             match = re.search(pattern, line)
             if match:
+                text = match.group(3).strip()
+                # Extract confidence if present (whisper.cpp sometimes outputs it)
+                confidence = None
+                conf_match = re.search(r'\(p\s*=\s*([\d.]+)\)', text)
+                if conf_match:
+                    confidence = float(conf_match.group(1))
+                    text = re.sub(r'\s*\(p\s*=\s*[\d.]+\)', '', text).strip()
+
                 segments.append({
                     "start": match.group(1),
                     "end": match.group(2),
-                    "text": match.group(3).strip(),
+                    "text": text,
+                    "confidence": confidence,
                 })
 
         return segments
 
     # ------------------------------------------------------------------
-    # OpenAI API Backend
+    # OpenAI API Backend (Cloud)
     # ------------------------------------------------------------------
 
     def _transcribe_openai_api(
@@ -426,7 +821,7 @@ class WhisperBridge:
         audio: np.ndarray,
         sample_rate: int,
         **kwargs,
-    ) -> TranscriptionResult:
+    ) -> WhisperResult:
         """
         Transcribe using OpenAI Whisper API.
 
@@ -436,7 +831,7 @@ class WhisperBridge:
             **kwargs: Additional API options.
 
         Returns:
-            TranscriptionResult.
+            WhisperResult.
         """
         try:
             import openai
@@ -449,13 +844,13 @@ class WhisperBridge:
         if not self.openai_api_key:
             raise ValueError(
                 "OpenAI API key not set. "
-                "Set OPENAI_API_KEY environment variable or pass openai_api_key."
+                "Set OPENAI_API_KEY in .env file or pass openai_api_key."
             )
 
         client = openai.OpenAI(api_key=self.openai_api_key)
 
         # Encode audio to WAV bytes
-        wav_bytes = AudioProcessor.to_wav_bytes(audio, sample_rate)
+        wav_bytes = self.audio_preprocessor.to_wav_bytes(audio, sample_rate)
 
         # Prepare request
         request_kwargs = {
@@ -467,14 +862,12 @@ class WhisperBridge:
         if self.language:
             request_kwargs["language"] = self.language
 
-        # Add extra kwargs
         for key, value in kwargs.items():
             if key not in request_kwargs:
                 request_kwargs[key] = value
 
         logger.debug("Calling OpenAI Whisper API...")
 
-        # Make API call
         response = client.audio.transcriptions.create(**request_kwargs)
 
         # Parse response
@@ -488,24 +881,30 @@ class WhisperBridge:
                     "start": seg["start"],
                     "end": seg["end"],
                     "text": seg["text"],
+                    "confidence": seg.get("avg_logprob", None),
                 })
 
-        return TranscriptionResult(
+        # Calculate average confidence
+        confidence = 0.0
+        if segments:
+            confs = [s["confidence"] for s in segments if s.get("confidence") is not None]
+            if confs:
+                confidence = sum(confs) / len(confs)
+
+        return WhisperResult(
             text=text,
             language=language,
+            confidence=confidence,
             segments=segments,
         )
 
     # ------------------------------------------------------------------
-    # Language Detection
+    # Utility Methods
     # ------------------------------------------------------------------
 
     def detect_language(self, audio: np.ndarray, sample_rate: int = 16000) -> str:
         """
         Detect the language of audio content.
-
-        Uses whisper.cpp's language detection or falls back to
-        OpenAI API's auto-detection.
 
         Args:
             audio: Float32 mono audio array.
@@ -514,18 +913,12 @@ class WhisperBridge:
         Returns:
             ISO 639-1 language code (e.g. 'zh', 'en', 'ja').
         """
-        # Use a short segment for detection
         max_duration = 30  # seconds
         max_samples = max_duration * sample_rate
         if len(audio) > max_samples:
             audio = audio[:max_samples]
 
-        result = self.transcribe(
-            audio,
-            sample_rate=sample_rate,
-            language=None,  # Force auto-detect
-        )
-
+        result = self.transcribe(audio, sample_rate=sample_rate, language=None)
         return result.language
 
     def get_available_backends(self) -> List[WhisperBackend]:
@@ -544,3 +937,21 @@ class WhisperBridge:
             available.append(WhisperBackend.OPENAI_API)
 
         return available
+
+    def get_status(self) -> Dict[str, Any]:
+        """
+        Get current bridge status and configuration.
+
+        Returns:
+            Dictionary with status information.
+        """
+        return {
+            "backend": self.backend.value,
+            "whisper_cpp_path": self.whisper_cpp_path,
+            "whisper_model": self.whisper_model,
+            "language": self.language,
+            "device": self.device,
+            "available_backends": [b.value for b in self.get_available_backends()],
+            "has_openai_key": bool(self.openai_api_key),
+            "config": config.to_dict(),
+        }

@@ -26,7 +26,10 @@ except (ImportError, AttributeError):
     CUDA_AVAILABLE = False
 
 from vram_core.audio_utils import AudioProcessor
-from vram_core.whisper_bridge import WhisperBridge, WhisperBackend, TranscriptionResult
+from vram_core.whisper_bridge import (
+    WhisperBridge, WhisperBackend, WhisperResult,
+    TranscriptionResult, AudioPreprocessor,
+)
 from vram_core.stream_processor import StreamProcessor, StreamConfig, StreamState
 from vram_core.config import config, OmniConfig, setup_logging
 
@@ -35,7 +38,9 @@ __all__ = [
     "AudioProcessor",
     "WhisperBridge",
     "WhisperBackend",
+    "WhisperResult",
     "TranscriptionResult",
+    "AudioPreprocessor",
     "StreamProcessor",
     "StreamConfig",
     "StreamState",

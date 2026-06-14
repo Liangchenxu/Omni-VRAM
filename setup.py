@@ -25,6 +25,8 @@ setup(
     # Dependencies
     install_requires=[
         'numpy>=1.20.0',
+        'pydub>=0.25.1',
+        'python-dotenv>=1.0.0',
     ],
     extras_require={
         'audio': [
