@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omni-vram"
-version = "0.4.0"
-description = "Real-time VRAM orchestration toolkit for voice-enabled LLM applications"
+version = "1.0.0"
+description = "Production-ready audio AI platform — ASR, TTS, Translation, Speaker Verification, Multi-GPU, VRAM Optimization"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.8"
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["cuda", "vram", "whisper", "voice", "llm", "kv-cache", "zero-copy", "real-time"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",

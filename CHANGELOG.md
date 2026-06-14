@@ -8,12 +8,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Planned
-- GPU-accelerated Whisper (faster-whisper / CTranslate2)
-- Noise suppression (RNNoise / WebRTC APM)
-- Streaming ASR (chunked decoding)
 - Docker deployment support
 - Web UI (Gradio / Streamlit)
-- Multi-GPU support
+- CUDA 12.x optimized kernels
+
+---
+
+## [1.0.0] - 2025-06-14
+
+### Added
+- **Speaker Verification** (`vram_core/speaker_verification.py`)
+  - MFCC-based voiceprint extraction and comparison
+  - 1:1 speaker verification (confirm identity)
+  - 1:N speaker identification (find best match)
+  - Voiceprint library persistence (save/load)
+  - Batch enrollment and verification
+  - Configurable similarity threshold
+- **Distributed Transcriber** (`vram_core/distributed_transcriber.py`)
+  - Multi-GPU parallel batch transcription
+  - Multi-machine worker pool support
+  - Automatic workload balancing by GPU capability
+  - Task failure retry and fault tolerance
+  - Configurable concurrency per GPU
+- **Production Monitoring** (`vram_core/monitoring.py`)
+  - Prometheus text format metrics export
+  - Grafana dashboard JSON generation
+  - Health check endpoint (healthy/degraded/unhealthy)
+  - p50/p95/p99 latency percentiles
+  - GPU memory and utilization tracking
+  - Requests per second throughput
+  - Error distribution by type and backend
+- **Wake Word Detection** (`vram_core/wake_word.py`)
+  - Energy-based detection (clap, snap, loud sounds)
+  - Whisper ASR-based keyword detection
+  - Custom keyword vocabulary support
+  - Callback-driven architecture
+  - Configurable cooldown and sensitivity
+- `distil-large-v3.5` Distil-Whisper model support in WhisperBridge
+- 4-bit NF4/FP4 quantization in VRAMOptimizer
+- Aggressive dynamic optimization strategy in VRAMOptimizer
+- Device failure auto-removal and heartbeat monitoring in MultiGPUManager
+- Updated `vram_core/__init__.py` with all new module exports
+
+### Changed
+- Version bumped from 0.4.0 to 1.0.0
+- Project status upgraded from Beta to Production/Stable
+- Updated description to reflect full platform capabilities
 
 ---
 
