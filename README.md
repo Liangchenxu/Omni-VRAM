@@ -6,7 +6,8 @@
 ![Platform: Windows/Linux](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg)
 ![Python: 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue.svg)
 [![Tests](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml/badge.svg)](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml)
-[![Version](https://img.shields.io/badge/Version-0.6.0-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
+[![PyPI](https://img.shields.io/pypi/v/omni-vram.svg)](https://pypi.org/project/omni-vram/)
+[![Version](https://img.shields.io/badge/Version-1.0.0-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
 
 [**English**](#english-documentation) | [**中文文档**](#chinese-documentation) | [**Docs**](docs/)
 
@@ -15,30 +16,32 @@
 <a id="english-documentation"></a>
 ## 📖 Overview
 
-**Omni-VRAM** is a high-performance, lightweight CUDA extension designed to eliminate VRAM fragmentation and memory transfer bottlenecks in real-time LLM (Large Language Model) audio applications.
+**Omni-VRAM** is a production-ready, high-performance audio AI platform built on CUDA zero-copy technology. It eliminates VRAM fragmentation and memory transfer bottlenecks for real-time LLM voice applications, providing 20 core modules covering the entire audio AI pipeline — from speech recognition to synthesis, from single GPU to distributed clusters.
 
-Traditional Python-based audio processing pipelines and PyTorch native operations (such as `torch.cat` for KV-Cache updates) introduce significant overhead and non-deterministic latency. Omni-VRAM solves this by implementing **Operator Fusion** and **Zero-Copy Memory Injection** directly at the hardware level, enabling consumer-grade GPUs (e.g., RTX 30/40 series) to achieve sub-millisecond end-to-end latency for real-time voice agents.
+Traditional Python audio pipelines and PyTorch operations (e.g., `torch.cat` for KV-Cache) introduce significant overhead. Omni-VRAM implements **Operator Fusion** and **Zero-Copy Memory Injection** at the hardware level, enabling consumer-grade GPUs (RTX 30/40 series) to achieve sub-millisecond latency for real-time voice agents.
 
 ### ✨ Core Features
 
-* **Zero-Copy KV-Cache Appender:** Bypasses PyTorch's dynamic memory reallocation (`torch.cat`) by pre-allocating continuous VRAM blocks and directly injecting hardware-level token embeddings ($O(1)$ complexity).
-* **Fused Audio Frontend:** Performs Voice Activity Detection (VAD), Pre-emphasis, and Windowing (Hann) in a single CUDA kernel execution, eliminating intermediate VRAM allocations.
-* **Hardware-Aware Radar:** Dynamically scans GPU architecture (`sm_XX`) and SM counts at runtime to dispatch the most optimal computation strategy.
-* **Whisper Multi-Backend:** Supports **faster-whisper** (CTranslate2, recommended), whisper.cpp CLI, OpenAI API, and legacy Python whisper with automatic fallback chain.
-* **Real-Time Streaming ASR:** Sliding-window VAD-based speech recognition with concurrent worker threads, partial/final result callbacks, and GPU batch acceleration.
-* **Web API Server:** FastAPI-based REST + WebSocket server for transcription — file upload, base64 input, and real-time streaming endpoint.
-* **Stream Processing:** Chunk-based audio stream processor with built-in VAD, segment extraction, and callback-driven architecture.
-* **Audio Format Utilities:** Automatic format detection, sample rate conversion, stereo-to-mono, normalization, and WAV encoding.
-* **Noise Reduction:** STFT-based spectral subtraction with adaptive noise estimation — three presets (light / medium / aggressive), automatically applied in the stream processing pipeline.
-* **Emotion Recognition:** Real-time speech emotion detection (happy / sad / angry / neutral / surprised) based on acoustic features — energy, zero-crossing rate, pitch (F0), and temporal dynamics.
-* **Speaker Diarization:** MFCC-based speaker clustering with cosine similarity — identifies "who spoke when" without external speaker embedding models.
-* **Multi-GPU Support:** Pipeline, data, and tensor parallelism with round-robin load balancing, NVLink peer detection, and collective operations.
-* **VRAM Optimizer:** KV-Cache memory management with LRU eviction, auto-recovery on OOM, memory pressure monitoring, and dynamic batch sizing.
-* **TTS Engine:** Multi-backend text-to-speech synthesis — edge-tts (online, 300+ voices) and pyttsx3 (offline, cross-platform).
-* **Voice Translator:** Speech-to-speech translation pipeline — ASR → text translation (MarianMT / Google Translate) → TTS, with 50+ language pairs.
-* **Audio Event Detection:** Real-time classification of ambient sounds (speech, music, alarm, silence, noise) using YAMNet or energy-based analysis.
-* **gRPC Server:** High-performance gRPC + HTTP REST dual-protocol API server with streaming transcription support.
-* **Plugin System:** Extensible plugin architecture with discovery, loading, lifecycle management, and hook-based event system.
+| Module | Description |
+|--------|-------------|
+| **Whisper Transcription** | Multi-backend (faster-whisper / whisper.cpp / API / Distil-Whisper), tiny → large-v3.5, GPU 5× speedup |
+| **Real-Time Streaming ASR** | Sliding-window VAD, partial/final callbacks, <500ms latency |
+| **Noise Reduction** | WebRTC / RNNoise / noisereduce — three backends, auto-applied in pipeline |
+| **Emotion Recognition** | wav2vec2 model, 7 emotions (happy/sad/angry/neutral/surprised/fear/disgust) |
+| **Speaker Diarization** | pyannote-audio / resemblyzer, identifies "who spoke when" |
+| **Speaker Verification** | MFCC voiceprint, 1:1 verification & 1:N identification, voiceprint library |
+| **Wake Word Detection** | Energy-based & Whisper keyword detection, custom vocabulary |
+| **TTS Engine** | edge-tts (300+ voices) / pyttsx3 (offline) |
+| **Voice Translation** | Speech-to-speech pipeline, MarianMT + Google, 50+ language pairs |
+| **Audio Event Detection** | YAMNet / energy-based, detects speech/music/alarm/silence |
+| **Multi-GPU** | Pipeline / data / tensor parallelism, NVLink detection, fault tolerance |
+| **Distributed Transcription** | Multi-machine parallel batch processing, auto load balancing |
+| **KV-Cache VRAM Optimizer** | NF4/FP4 4-bit quantization, LRU eviction, OOM auto-recovery |
+| **Production Monitoring** | Prometheus metrics, Grafana dashboards, health checks, p95/p99 latency |
+| **REST API** | FastAPI async HTTP + WebSocket streaming |
+| **gRPC Server** | High-performance dual-protocol (gRPC + REST) server |
+| **Plugin System** | Extensible architecture with discovery, lifecycle & hook events |
+| **CUDA Kernels** | Zero-Copy KV-Cache (11× faster), Fused Audio Frontend (28× faster) |
 
 ### 📁 Project Structure
 
@@ -50,7 +53,7 @@ Omni-VRAM/
 ├── .env.example                # Configuration template
 │
 ├── vram_core/                  # Python core library
-│   ├── __init__.py             # Package exports (v0.6.0)
+│   ├── __init__.py             # Package exports (v1.0.0)
 │   ├── config.py               # Configuration management (.env loader)
 │   ├── audio_utils.py          # Audio format detection & conversion
 │   ├── whisper_bridge.py       # Whisper multi-backend integration
@@ -60,11 +63,15 @@ Omni-VRAM/
 │   ├── noise_reduction.py      # STFT spectral subtraction noise reduction
 │   ├── emotion_recognition.py  # Acoustic feature-based emotion recognition
 │   ├── speaker_diarization.py  # MFCC speaker diarization & clustering
+│   ├── speaker_verification.py # Speaker voiceprint verification (1:1 & 1:N)
+│   ├── wake_word.py            # Wake word / keyword detection
 │   ├── multi_gpu.py            # Multi-GPU management & parallelism
 │   ├── vram_optimizer.py       # KV-Cache VRAM optimization & OOM recovery
 │   ├── tts_engine.py           # Multi-backend text-to-speech (edge-tts / pyttsx3)
 │   ├── voice_translator.py     # Speech-to-speech translation pipeline
 │   ├── audio_event_detection.py # Audio event detection (YAMNet / energy-based)
+│   ├── distributed_transcriber.py # Multi-GPU/machine parallel transcription
+│   ├── monitoring.py           # Prometheus metrics & Grafana dashboards
 │   ├── grpc_server.py          # gRPC + HTTP REST dual-protocol server
 │   └── plugin_manager.py       # Plugin discovery, loading & lifecycle
 │
@@ -139,11 +146,12 @@ Omni-VRAM/
 ## 🛠️ Installation
 
 ```bash
-# Clone the repository
+# Quick install (Python package only, no CUDA kernels)
+pip install omni-vram
+
+# Full install (with CUDA kernels for 11x/28x speedup)
 git clone https://github.com/Liangchenxu/Omni-VRAM.git
 cd Omni-VRAM
-
-# Install all dependencies (core + audio + faster-whisper)
 pip install -r requirements.txt
 
 # Build and install the CUDA extension
@@ -304,30 +312,32 @@ You are free to use, modify, and distribute this software in both commercial and
 <a id="chinese-documentation"></a>
 ## 📖 简介 (Overview)
 
-**Omni-VRAM** 是一款高性能、轻量级的 CUDA 底层扩展库，专为解决大语言模型（LLM）实时语音应用中的显存碎片化与数据搬运瓶颈而设计。
+**Omni-VRAM** 是一个生产级高性能语音 AI 平台，基于 CUDA 零拷贝技术构建。它消除了实时 LLM 语音应用中的显存碎片化与数据搬运瓶颈，提供 20 个核心模块，覆盖完整的语音 AI 管线——从语音识别到语音合成，从单卡到分布式集群。
 
-传统的基于 Python 的音频处理流以及 PyTorch 原生操作（例如使用 `torch.cat` 更新 KV-Cache）会引发严重的内存重新分配开销和不可控的延迟。Omni-VRAM 通过在硬件底层实现**算子融合（Operator Fusion）**与**零拷贝内存注入（Zero-Copy Memory Injection）**，使得消费级显卡（如 RTX 30/40 系列）能够为实时语音助手提供亚毫秒级的端到端计算延迟。
+传统的 Python 音频处理流和 PyTorch 操作（如 `torch.cat` 更新 KV-Cache）会引入严重的开销。Omni-VRAM 在硬件底层实现**算子融合**与**零拷贝内存注入**，使消费级显卡（RTX 30/40 系列）能够为实时语音助手提供亚毫秒级延迟。
 
-### ✨ 核心特性
+### ✨ 核心功能
 
-* **零拷贝 KV-Cache 注入器:** 完全绕过 PyTorch 的动态内存分配（`torch.cat`），通过预分配连续的物理显存块，以硬件指针偏移的方式直接写入 Token 向量（$O(1)$ 时间复杂度）。
-* **融合音频前处理核心:** 在单一 CUDA 核函数中并行完成语音活动检测（VAD）、预加重（Pre-emphasis）与汉宁窗（Hann Window）处理，彻底消除中间显存开销。
-* **跨硬件自适应雷达:** 运行时动态扫描 GPU 架构（`sm_XX`）与流处理器簇（SM）数量，自动调度最优级别的计算策略。
-* **Whisper 语音转写集成:** 多后端支持——**faster-whisper**（CTranslate2，推荐）、whisper.cpp 命令行、OpenAI API、Python whisper 库，自动回退链。
-* **实时流式语音识别:** 基于滑动窗口 VAD 的流式 ASR，支持并发 Worker 线程、部分/最终结果回调、GPU 批处理加速。
-* **Web API 服务:** 基于 FastAPI 的 REST + WebSocket 转写服务——文件上传、Base64 输入、实时流式端点。
-* **实时流处理引擎:** 基于分块的音频流处理器，内置 VAD 检测、语音片段提取，支持回调驱动架构。
-* **音频格式工具链:** 自动格式检测、采样率转换、立体声转单声道、归一化、WAV 编码。
-* **噪声抑制:** 基于 STFT 的谱减法噪声抑制，自适应噪声估计——三档预设（轻度/中度/强力），自动集成到流处理管线中。
-* **情绪识别:** 实时语音情绪检测（开心/悲伤/愤怒/中性/惊讶），基于声学特征——能量、过零率、基频（F0）及时序动态。
-* **说话人识别:** 基于 MFCC 的说话人聚类，余弦相似度匹配——无需外部模型即可识别"谁在什么时候说话"。
-* **多 GPU 支持:** 流水线并行、数据并行、张量并行，轮询负载均衡，NVLink 对端检测，集合通信操作。
-* **显存优化器:** KV-Cache 显存管理，LRU 淘汰策略，OOM 自动恢复，显存压力监控，动态批处理大小调整。
-* **语音合成引擎:** 多后端 TTS——edge-tts（在线，300+ 语音）和 pyttsx3（离线，跨平台）。
-* **语音翻译:** 语音到语音翻译管线——ASR → 文本翻译（MarianMT / Google Translate） → TTS，支持 50+ 语言对。
-* **音频事件检测:** 环境声音实时分类（语音/音乐/警报/静音/噪声），基于 YAMNet 或能量分析。
-* **gRPC 服务:** gRPC + HTTP REST 双协议 API 服务器，支持流式转写。
-* **插件系统:** 可扩展插件架构，支持插件发现、加载、生命周期管理和钩子事件系统。
+| 模块 | 说明 |
+|------|------|
+| **Whisper 语音转写** | 多后端（faster-whisper / whisper.cpp / API / Distil-Whisper），tiny → large-v3.5，GPU 加速 5 倍 |
+| **实时流式 ASR** | 滑动窗口 VAD，部分/最终结果回调，延迟 <500ms |
+| **噪声抑制** | WebRTC / RNNoise / noisereduce 三后端，自动集成到管线 |
+| **情绪识别** | wav2vec2 模型，7 种情绪（开心/悲伤/愤怒/中性/惊讶/恐惧/厌恶） |
+| **说话人分离** | pyannote-audio / resemblyzer，自动识别"谁在什么时候说话" |
+| **声纹验证** | MFCC 声纹提取，1:1 验证 & 1:N 识别，声纹库管理 |
+| **唤醒词检测** | 能量检测 & Whisper 关键词检测，自定义词汇 |
+| **语音合成 TTS** | edge-tts（300+ 语音）/ pyttsx3（离线） |
+| **语音翻译** | 语音到语音翻译管线，MarianMT + Google，50+ 语言对 |
+| **音频事件检测** | YAMNet / 能量分析，检测语音/音乐/警报/静音 |
+| **多 GPU 支持** | 管线/数据/张量并行，NVLink 检测，故障容错 |
+| **分布式转录** | 多机多卡并行批量处理，自动负载均衡 |
+| **KV-Cache 显存优化** | NF4/FP4 4-bit 量化，LRU 淘汰，OOM 自动恢复 |
+| **生产监控** | Prometheus 指标，Grafana 仪表盘，健康检查，p95/p99 延迟 |
+| **REST API** | FastAPI 异步 HTTP + WebSocket 流式服务 |
+| **gRPC 服务** | 高性能双协议（gRPC + REST）服务器 |
+| **插件系统** | 可扩展架构，支持发现、生命周期与钩子事件 |
+| **CUDA 内核** | 零拷贝 KV-Cache（11 倍加速），融合音频前端（28 倍加速） |
 
 ### 📁 目录结构
 
@@ -339,7 +349,7 @@ Omni-VRAM/
 ├── .env.example                # 配置模板
 │
 ├── vram_core/                  # Python 核心库
-│   ├── __init__.py             # 包导出（v0.6.0）
+│   ├── __init__.py             # 包导出（v1.0.0）
 │   ├── config.py               # 配置管理（.env 加载）
 │   ├── audio_utils.py          # 音频格式检测与转换
 │   ├── whisper_bridge.py       # Whisper 多后端集成
@@ -349,11 +359,15 @@ Omni-VRAM/
 │   ├── noise_reduction.py      # STFT 谱减法噪声抑制
 │   ├── emotion_recognition.py  # 声学特征情绪识别
 │   ├── speaker_diarization.py  # MFCC 说话人识别与聚类
+│   ├── speaker_verification.py # 声纹验证（1:1 验证 & 1:N 识别）
+│   ├── wake_word.py            # 唤醒词 / 关键词检测
 │   ├── multi_gpu.py            # 多 GPU 管理与并行
 │   ├── vram_optimizer.py       # KV-Cache 显存优化与 OOM 恢复
 │   ├── tts_engine.py           # 多后端语音合成（edge-tts / pyttsx3）
 │   ├── voice_translator.py     # 语音到语音翻译管线
 │   ├── audio_event_detection.py # 音频事件检测（YAMNet / 能量分析）
+│   ├── distributed_transcriber.py # 多 GPU/多机并行转录
+│   ├── monitoring.py           # Prometheus 指标与 Grafana 仪表盘
 │   ├── grpc_server.py          # gRPC + HTTP REST 双协议服务器
 │   └── plugin_manager.py       # 插件发现、加载与生命周期管理
 │
@@ -428,11 +442,12 @@ Omni-VRAM/
 ## 🛠️ 安装 (Installation)
 
 ```bash
-# 克隆项目仓库
+# 快速安装（仅 Python 包，无 CUDA 内核）
+pip install omni-vram
+
+# 完整安装（含 CUDA 内核，获得 11 倍 / 28 倍加速）
 git clone https://github.com/Liangchenxu/Omni-VRAM.git
 cd Omni-VRAM
-
-# 安装所有依赖（核心 + 音频 + faster-whisper）
 pip install -r requirements.txt
 
 # 编译并安装 CUDA 扩展模块
