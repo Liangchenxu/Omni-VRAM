@@ -43,7 +43,37 @@ class WhisperBackend(Enum):
     FASTER_WHISPER = "faster_whisper"
     WHISPER_CPP = "whisper_cpp"
     OPENAI_API = "openai_api"
+    DISTIL_WHISPER = "distil_whisper"
     AUTO = "auto"
+
+
+# All supported Whisper model sizes with metadata
+WHISPER_MODELS = {
+    "tiny": {"params": "39M", "vram": "~1GB", "speed": "fastest", "quality": "low"},
+    "base": {"params": "74M", "vram": "~1GB", "speed": "very fast", "quality": "basic"},
+    "small": {"params": "244M", "vram": "~2GB", "speed": "fast", "quality": "good"},
+    "medium": {"params": "769M", "vram": "~5GB", "speed": "moderate", "quality": "very good"},
+    "large": {"params": "1550M", "vram": "~10GB", "speed": "slow", "quality": "excellent"},
+    "large-v2": {"params": "1550M", "vram": "~10GB", "speed": "slow", "quality": "excellent"},
+    "large-v3": {"params": "1550M", "vram": "~10GB", "speed": "slow", "quality": "best"},
+    "turbo": {"params": "809M", "vram": "~6GB", "speed": "very fast", "quality": "excellent"},
+}
+
+# Distil-Whisper models (faster, smaller, English-focused)
+DISTIL_WHISPER_MODELS = {
+    "distil-small.en": {"base": "small", "vram": "~1.5GB", "speed": "6x faster", "lang": "en"},
+    "distil-medium.en": {"base": "medium", "vram": "~3.5GB", "speed": "6x faster", "lang": "en"},
+    "distil-large-v2": {"base": "large-v2", "vram": "~6GB", "speed": "6x faster", "lang": "en"},
+    "distil-large-v3": {"base": "large-v3", "vram": "~6GB", "speed": "6x faster", "lang": "en+multi"},
+}
+
+# Compute type precision options
+COMPUTE_TYPES = {
+    "float32": {"precision": "full", "speed": "slowest", "quality": "best"},
+    "float16": {"precision": "half", "speed": "fast", "quality": "best", "gpu_only": True},
+    "int8": {"precision": "integer", "speed": "fastest", "quality": "good"},
+    "int4": {"precision": "4-bit", "speed": "ultra-fast", "quality": "acceptable", "experimental": True},
+}
 
 
 @dataclass
@@ -405,6 +435,11 @@ class WhisperBridge:
         # Lazy-loaded faster-whisper model cache
         self._fw_model = None
         self._fw_model_size = None
+        self._fw_model_compute_type = None
+
+        # Model cache directory
+        self._cache_dir = Path.home() / ".cache" / "omni-vram" / "models"
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
 
         # Audio preprocessor
         self.audio_preprocessor = AudioPreprocessor()
@@ -430,8 +465,9 @@ class WhisperBridge:
 
         Priority:
             1. faster-whisper (GPU-accelerated, CTranslate2, fastest)
-            2. whisper.cpp (local, GPU-accelerated)
-            3. OpenAI API (cloud, requires API key)
+            2. Distil-Whisper (ultra-fast distilled models)
+            3. whisper.cpp (local, GPU-accelerated)
+            4. OpenAI API (cloud, requires API key)
 
         Returns:
             Best available WhisperBackend.
@@ -440,11 +476,15 @@ class WhisperBridge:
         if self._check_faster_whisper():
             return WhisperBackend.FASTER_WHISPER
 
-        # 2. Check whisper.cpp
+        # 2. Check Distil-Whisper (uses faster-whisper under the hood)
+        if self._check_faster_whisper() and self.whisper_model.startswith("distil-"):
+            return WhisperBackend.DISTIL_WHISPER
+
+        # 3. Check whisper.cpp
         if self._check_whisper_cpp():
             return WhisperBackend.WHISPER_CPP
 
-        # 3. Check OpenAI API
+        # 4. Check OpenAI API
         if self.openai_api_key:
             return WhisperBackend.OPENAI_API
 
@@ -559,6 +599,8 @@ class WhisperBridge:
         # Route to backend
         if self.backend == WhisperBackend.FASTER_WHISPER:
             result = self._transcribe_faster_whisper(audio_data, sr, **kwargs)
+        elif self.backend == WhisperBackend.DISTIL_WHISPER:
+            result = self._transcribe_distil_whisper(audio_data, sr, **kwargs)
         elif self.backend == WhisperBackend.WHISPER_CPP:
             result = self._transcribe_whisper_cpp(audio_data, sr, **kwargs)
         elif self.backend == WhisperBackend.OPENAI_API:
@@ -1177,5 +1219,348 @@ class WhisperBridge:
             "available_backends": [b.value for b in self.get_available_backends()],
             "has_openai_key": bool(self.openai_api_key),
             "has_faster_whisper": self._check_faster_whisper(),
+            "model_cache_dir": str(self._cache_dir),
+            "cached_models": self.list_cached_models(),
             "config": config.to_dict(),
         }
+
+    # ------------------------------------------------------------------
+    # Model Cache Management & Auto-Download
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def list_available_models() -> Dict[str, Any]:
+        """
+        List all available Whisper models with metadata.
+
+        Returns:
+            Dict mapping model name to metadata (params, vram, speed, quality).
+        """
+        all_models = {}
+        all_models.update(WHISPER_MODELS)
+        all_models.update(DISTIL_WHISPER_MODELS)
+        return all_models
+
+    def list_cached_models(self) -> List[str]:
+        """
+        List models already downloaded in cache directory.
+
+        Returns:
+            List of cached model directory names.
+        """
+        cached = []
+        if self._cache_dir.exists():
+            for item in self._cache_dir.iterdir():
+                if item.is_dir():
+                    cached.append(item.name)
+        # Also check CTranslate2 cache
+        ct2_cache = Path.home() / ".cache" / "huggingface" / "hub"
+        if ct2_cache.exists():
+            for item in ct2_cache.iterdir():
+                if item.is_dir() and "whisper" in item.name.lower():
+                    cached.append(item.name)
+        return cached
+
+    def download_model(self, model_name: str, force: bool = False) -> Path:
+        """
+        Download a Whisper model to local cache.
+
+        For faster-whisper / Distil-Whisper models, triggers CTranslate2
+        auto-download by running a dummy transcription.
+        For whisper.cpp, downloads the GGML model file.
+
+        Args:
+            model_name: Model name (e.g. 'large-v3', 'distil-large-v3').
+            force: Force re-download even if cached.
+
+        Returns:
+            Path to the downloaded model or cache directory.
+        """
+        cache_path = self._cache_dir / model_name
+        if cache_path.exists() and not force:
+            logger.info(f"Model '{model_name}' already cached at {cache_path}")
+            return cache_path
+
+        logger.info(f"Downloading model: {model_name}")
+
+        if model_name in DISTIL_WHISPER_MODELS or model_name in WHISPER_MODELS:
+            # For faster-whisper models, trigger CTranslate2 auto-download
+            try:
+                from faster_whisper import WhisperModel
+                device = self.device if self.device == "cuda" else "cpu"
+                compute_type = self.compute_type
+                if device == "cpu" and compute_type == "float16":
+                    compute_type = "int8"
+
+                actual_model = model_name
+                if model_name in DISTIL_WHISPER_MODELS:
+                    actual_model = DISTIL_WHISPER_MODELS[model_name]["base"]
+                    # For distil models, use the full HuggingFace model ID
+                    if model_name == "distil-large-v3":
+                        actual_model = "Systran/fdistil-whisper-large-v3"
+                    elif model_name == "distil-large-v2":
+                        actual_model = "Systran/fdistil-whisper-large-v2"
+                    elif model_name == "distil-medium.en":
+                        actual_model = "Systran/fdistil-whisper-medium.en"
+                    elif model_name == "distil-small.en":
+                        actual_model = "Systran/fdistil-whisper-small.en"
+
+                logger.info(f"Downloading faster-whisper model: {actual_model}")
+                model = WhisperModel(actual_model, device=device, compute_type=compute_type)
+                # Clear from cache since we're just downloading
+                self._fw_model = None
+                self._fw_model_size = None
+                logger.info(f"Model '{model_name}' downloaded successfully")
+                cache_path.mkdir(parents=True, exist_ok=True)
+                return cache_path
+            except Exception as e:
+                logger.error(f"Failed to download model '{model_name}': {e}")
+                raise
+
+        elif self._check_whisper_cpp():
+            # Download GGML model for whisper.cpp
+            model_url = (
+                f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/"
+                f"ggml-{model_name}.bin"
+            )
+            cache_path.mkdir(parents=True, exist_ok=True)
+            target = cache_path / f"ggml-{model_name}.bin"
+            logger.info(f"Downloading GGML model from {model_url}")
+            try:
+                import urllib.request
+                urllib.request.urlretrieve(model_url, str(target))
+                logger.info(f"GGML model downloaded to {target}")
+                return target
+            except Exception as e:
+                logger.error(f"Failed to download GGML model: {e}")
+                raise
+        else:
+            raise RuntimeError(
+                "No backend available for model download. "
+                "Install faster-whisper or whisper.cpp."
+            )
+
+    def clear_cache(self, model_name: Optional[str] = None) -> None:
+        """
+        Clear cached models.
+
+        Args:
+            model_name: Specific model to clear. If None, clears all.
+        """
+        import shutil as _shutil
+
+        if model_name:
+            target = self._cache_dir / model_name
+            if target.exists():
+                _shutil.rmtree(target)
+                logger.info(f"Cleared cache for model: {model_name}")
+            else:
+                logger.warning(f"Model '{model_name}' not found in cache")
+        else:
+            if self._cache_dir.exists():
+                _shutil.rmtree(self._cache_dir)
+                self._cache_dir.mkdir(parents=True, exist_ok=True)
+                logger.info("Cleared all model cache")
+
+        # Reset loaded model if it was cleared
+        if model_name is None or model_name == self._fw_model_size:
+            self._fw_model = None
+            self._fw_model_size = None
+
+    def switch_model(self, new_model: str, auto_download: bool = True) -> None:
+        """
+        Switch to a different model. Clears the previous model from memory.
+
+        Args:
+            new_model: New model name (e.g. 'large-v3', 'distil-large-v3').
+            auto_download: If True, auto-download the model if not cached.
+        """
+        logger.info(f"Switching model: {self.whisper_model} -> {new_model}")
+
+        # Validate model name
+        all_models = self.list_available_models()
+        if new_model not in all_models:
+            logger.warning(
+                f"Unknown model '{new_model}'. Known models: {list(all_models.keys())}"
+            )
+
+        # Clear current model from memory
+        self._fw_model = None
+        self._fw_model_size = None
+        self._fw_model_compute_type = None
+
+        # Update model name
+        self.whisper_model = new_model
+
+        # Auto-download if requested
+        if auto_download:
+            try:
+                self.download_model(new_model)
+            except Exception as e:
+                logger.warning(f"Auto-download failed: {e}. Model will be downloaded on first use.")
+
+    def set_precision(self, compute_type: str) -> None:
+        """
+        Set the compute precision for inference.
+
+        Args:
+            compute_type: One of 'float32', 'float16', 'int8', 'int4'.
+
+        Raises:
+            ValueError: If compute_type is not supported.
+        """
+        if compute_type not in COMPUTE_TYPES:
+            raise ValueError(
+                f"Unsupported compute_type '{compute_type}'. "
+                f"Supported: {list(COMPUTE_TYPES.keys())}"
+            )
+
+        ct_info = COMPUTE_TYPES[compute_type]
+        if ct_info.get("gpu_only") and self.device == "cpu":
+            logger.warning(
+                f"compute_type '{compute_type}' is GPU-only. "
+                f"Switching to 'int8' for CPU."
+            )
+            compute_type = "int8"
+
+        if ct_info.get("experimental"):
+            logger.warning(f"compute_type '{compute_type}' is experimental")
+
+        self.compute_type = compute_type
+        # Clear cached model to force reload with new precision
+        self._fw_model = None
+        self._fw_model_size = None
+        logger.info(f"Precision set to {compute_type}")
+
+    # ------------------------------------------------------------------
+    # Distil-Whisper Backend
+    # ------------------------------------------------------------------
+
+    def _transcribe_distil_whisper(
+        self,
+        audio: np.ndarray,
+        sample_rate: int,
+        **kwargs,
+    ) -> WhisperResult:
+        """
+        Transcribe using Distil-Whisper (6x faster, English-optimized).
+
+        Distil-Whisper is a distilled version of Whisper that maintains
+        similar quality while being 6x faster.
+
+        Args:
+            audio: Float32 mono audio array.
+            sample_rate: Sample rate.
+            **kwargs: Additional options.
+
+        Returns:
+            WhisperResult.
+        """
+        import tempfile
+        import os
+
+        # Map distil model names to HuggingFace model IDs
+        distil_model_map = {
+            "distil-small.en": "Systran/fdistil-whisper-small.en",
+            "distil-medium.en": "Systran/fdistil-whisper-medium.en",
+            "distil-large-v2": "Systran/fdistil-whisper-large-v2",
+            "distil-large-v3": "Systran/fdistil-whisper-large-v3",
+        }
+
+        model_id = distil_model_map.get(
+            self.whisper_model,
+            f"Systran/fdistil-{self.whisper_model}"
+        )
+
+        logger.info(f"Loading Distil-Whisper model: {model_id}")
+
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError:
+            raise ImportError(
+                "faster-whisper required for Distil-Whisper. "
+                "Install with: pip install faster-whisper"
+            )
+
+        device = self.device if self.device == "cuda" else "cpu"
+        compute_type = self.compute_type
+        if device == "cpu" and compute_type == "float16":
+            compute_type = "int8"
+
+        model = WhisperModel(model_id, device=device, compute_type=compute_type)
+
+        wav_bytes = self.audio_preprocessor.to_wav_bytes(audio, sample_rate)
+        tmp_path = None
+
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                tmp.write(wav_bytes)
+                tmp_path = tmp.name
+
+            effective_language = kwargs.pop("language", None) or self.language
+
+            transcribe_kwargs = {
+                "beam_size": kwargs.pop("beam_size", 5),
+                "vad_filter": kwargs.pop("vad_filter", True),
+            }
+            if effective_language:
+                transcribe_kwargs["language"] = effective_language
+            transcribe_kwargs.update(kwargs)
+
+            segments_iter, info = model.transcribe(tmp_path, **transcribe_kwargs)
+
+            segments = []
+            full_text_parts = []
+            for seg in segments_iter:
+                segment_dict = {
+                    "start": round(seg.start, 3),
+                    "end": round(seg.end, 3),
+                    "text": seg.text.strip(),
+                    "confidence": round(1.0 - seg.no_speech_prob, 3)
+                    if seg.no_speech_prob is not None else None,
+                }
+                segments.append(segment_dict)
+                full_text_parts.append(seg.text.strip())
+
+            full_text = " ".join(full_text_parts)
+            detected_lang = getattr(info, "language", "en")
+
+            confidences = [s["confidence"] for s in segments if s.get("confidence") is not None]
+            confidence = sum(confidences) / len(confidences) if confidences else 0.0
+
+            return WhisperResult(
+                text=full_text,
+                language=detected_lang,
+                confidence=confidence,
+                segments=segments,
+            )
+
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+    @staticmethod
+    def get_model_info(model_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get detailed information about a model.
+
+        Args:
+            model_name: Model name.
+
+        Returns:
+            Dict with model info, or None if unknown.
+        """
+        if model_name in WHISPER_MODELS:
+            info = WHISPER_MODELS[model_name].copy()
+            info["type"] = "standard"
+            info["name"] = model_name
+            return info
+        elif model_name in DISTIL_WHISPER_MODELS:
+            info = DISTIL_WHISPER_MODELS[model_name].copy()
+            info["type"] = "distil"
+            info["name"] = model_name
+            return info
+        return None

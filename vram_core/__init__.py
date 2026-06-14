@@ -7,13 +7,14 @@ zero-copy VRAM memory injection.
 
 Modules:
     - audio_utils: Audio format detection, loading, conversion
-    - whisper_bridge: Whisper model backend integration (faster-whisper / whisper.cpp / OpenAI API)
+    - whisper_bridge: Whisper model backend integration (faster-whisper / whisper.cpp / OpenAI API / Distil-Whisper)
     - stream_processor: Real-time audio stream processing with VAD
     - streaming_asr: Real-time streaming speech recognition with sliding window
     - api_server: FastAPI-based REST + WebSocket transcription API
     - noise_reduction: WebRTC / noisereduce / RNNoise multi-backend noise suppression
     - emotion_recognition: wav2vec2 / openSMILE emotion recognition
     - speaker_diarization: pyannote-audio / resemblyzer speaker diarization
+    - speaker_verification: MFCC-based speaker identity verification (1:1 / 1:N)
     - multi_gpu: Multi-GPU support with pipeline/data/tensor parallelism
     - vram_optimizer: KV-Cache memory management and VRAM optimization
     - tts_engine: Multi-backend TTS (edge-tts / pyttsx3)
@@ -21,9 +22,12 @@ Modules:
     - audio_event_detection: Audio event detection (YAMNet / energy-based)
     - grpc_server: gRPC + HTTP REST API server
     - plugin_manager: Extensible plugin system
+    - distributed_transcriber: Multi-GPU / multi-machine parallel transcription
+    - monitoring: Production metrics, Prometheus export, Grafana dashboards
+    - wake_word: Wake word / keyword detection (energy-based / Whisper-based)
 """
 
-__version__ = "0.6.0"
+__version__ = "1.0.0"
 
 # CUDA extension (built from vram_hacker.cu)
 try:
@@ -54,6 +58,12 @@ from vram_core.voice_translator import VoiceTranslator
 from vram_core.audio_event_detection import AudioEventDetector
 from vram_core.plugin_manager import PluginManager, PluginBase, PluginInfo
 from vram_core.config import config, OmniConfig, setup_logging
+
+# New modules (v1.0.0)
+from vram_core.speaker_verification import SpeakerVerifier, Voiceprint, VerificationResult
+from vram_core.distributed_transcriber import DistributedTranscriber, DistributedResult
+from vram_core.monitoring import MetricsCollector, SystemHealth
+from vram_core.wake_word import WakeWordDetector, WakeWordEvent
 
 # gRPC server (optional, may fail if grpcio not installed)
 try:
@@ -99,6 +109,19 @@ __all__ = [
     "PluginManager",
     "PluginBase",
     "PluginInfo",
+    # Speaker Verification
+    "SpeakerVerifier",
+    "Voiceprint",
+    "VerificationResult",
+    # Distributed Transcription
+    "DistributedTranscriber",
+    "DistributedResult",
+    # Monitoring
+    "MetricsCollector",
+    "SystemHealth",
+    # Wake Word Detection
+    "WakeWordDetector",
+    "WakeWordEvent",
     # Configuration
     "config",
     "OmniConfig",
