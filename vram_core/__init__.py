@@ -11,9 +11,19 @@ Modules:
     - stream_processor: Real-time audio stream processing with VAD
     - streaming_asr: Real-time streaming speech recognition with sliding window
     - api_server: FastAPI-based REST + WebSocket transcription API
+    - noise_reduction: WebRTC / noisereduce / RNNoise multi-backend noise suppression
+    - emotion_recognition: wav2vec2 / openSMILE emotion recognition
+    - speaker_diarization: pyannote-audio / resemblyzer speaker diarization
+    - multi_gpu: Multi-GPU support with pipeline/data/tensor parallelism
+    - vram_optimizer: KV-Cache memory management and VRAM optimization
+    - tts_engine: Multi-backend TTS (edge-tts / pyttsx3)
+    - voice_translator: Speech-to-speech translation (MarianMT / Google)
+    - audio_event_detection: Audio event detection (YAMNet / energy-based)
+    - grpc_server: gRPC + HTTP REST API server
+    - plugin_manager: Extensible plugin system
 """
 
-__version__ = "1.0.0"
+__version__ = "0.6.0"
 
 # CUDA extension (built from vram_hacker.cu)
 try:
@@ -37,7 +47,19 @@ from vram_core.streaming_asr import StreamASR, StreamASRConfig, StreamASRResult
 from vram_core.noise_reduction import NoiseReducer
 from vram_core.emotion_recognition import EmotionRecognizer
 from vram_core.speaker_diarization import SpeakerDiarizer
+from vram_core.multi_gpu import MultiGPUManager, DevicePool, DeviceStatus
+from vram_core.vram_optimizer import VRAMOptimizer, MemoryPressure, VRAMStatus
+from vram_core.tts_engine import TTSEngine
+from vram_core.voice_translator import VoiceTranslator
+from vram_core.audio_event_detection import AudioEventDetector
+from vram_core.plugin_manager import PluginManager, PluginBase, PluginInfo
 from vram_core.config import config, OmniConfig, setup_logging
+
+# gRPC server (optional, may fail if grpcio not installed)
+try:
+    from vram_core.grpc_server import OmniVRAMServicer
+except ImportError:
+    OmniVRAMServicer = None
 
 __all__ = [
     # Core
@@ -54,10 +76,29 @@ __all__ = [
     "StreamASR",
     "StreamASRConfig",
     "StreamASRResult",
-    # New Modules
+    # Audio Enhancement
     "NoiseReducer",
+    # Emotion & Speaker
     "EmotionRecognizer",
     "SpeakerDiarizer",
+    # Multi-GPU
+    "MultiGPUManager",
+    "DevicePool",
+    "DeviceStatus",
+    # VRAM Optimization
+    "VRAMOptimizer",
+    "MemoryPressure",
+    "VRAMStatus",
+    # TTS
+    "TTSEngine",
+    # Translation
+    "VoiceTranslator",
+    # Audio Event Detection
+    "AudioEventDetector",
+    # Plugin System
+    "PluginManager",
+    "PluginBase",
+    "PluginInfo",
     # Configuration
     "config",
     "OmniConfig",

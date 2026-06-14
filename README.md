@@ -6,7 +6,7 @@
 ![Platform: Windows/Linux](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg)
 ![Python: 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue.svg)
 [![Tests](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml/badge.svg)](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml)
-[![Version](https://img.shields.io/badge/Version-1.0.0-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
+[![Version](https://img.shields.io/badge/Version-0.6.0-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
 
 [**English**](#english-documentation) | [**中文文档**](#chinese-documentation) | [**Docs**](docs/)
 
@@ -32,6 +32,13 @@ Traditional Python-based audio processing pipelines and PyTorch native operation
 * **Noise Reduction:** STFT-based spectral subtraction with adaptive noise estimation — three presets (light / medium / aggressive), automatically applied in the stream processing pipeline.
 * **Emotion Recognition:** Real-time speech emotion detection (happy / sad / angry / neutral / surprised) based on acoustic features — energy, zero-crossing rate, pitch (F0), and temporal dynamics.
 * **Speaker Diarization:** MFCC-based speaker clustering with cosine similarity — identifies "who spoke when" without external speaker embedding models.
+* **Multi-GPU Support:** Pipeline, data, and tensor parallelism with round-robin load balancing, NVLink peer detection, and collective operations.
+* **VRAM Optimizer:** KV-Cache memory management with LRU eviction, auto-recovery on OOM, memory pressure monitoring, and dynamic batch sizing.
+* **TTS Engine:** Multi-backend text-to-speech synthesis — edge-tts (online, 300+ voices) and pyttsx3 (offline, cross-platform).
+* **Voice Translator:** Speech-to-speech translation pipeline — ASR → text translation (MarianMT / Google Translate) → TTS, with 50+ language pairs.
+* **Audio Event Detection:** Real-time classification of ambient sounds (speech, music, alarm, silence, noise) using YAMNet or energy-based analysis.
+* **gRPC Server:** High-performance gRPC + HTTP REST dual-protocol API server with streaming transcription support.
+* **Plugin System:** Extensible plugin architecture with discovery, loading, lifecycle management, and hook-based event system.
 
 ### 📁 Project Structure
 
@@ -43,7 +50,7 @@ Omni-VRAM/
 ├── .env.example                # Configuration template
 │
 ├── vram_core/                  # Python core library
-│   ├── __init__.py             # Package exports
+│   ├── __init__.py             # Package exports (v0.6.0)
 │   ├── config.py               # Configuration management (.env loader)
 │   ├── audio_utils.py          # Audio format detection & conversion
 │   ├── whisper_bridge.py       # Whisper multi-backend integration
@@ -52,7 +59,14 @@ Omni-VRAM/
 │   ├── api_server.py           # FastAPI REST + WebSocket API
 │   ├── noise_reduction.py      # STFT spectral subtraction noise reduction
 │   ├── emotion_recognition.py  # Acoustic feature-based emotion recognition
-│   └── speaker_diarization.py  # MFCC speaker diarization & clustering
+│   ├── speaker_diarization.py  # MFCC speaker diarization & clustering
+│   ├── multi_gpu.py            # Multi-GPU management & parallelism
+│   ├── vram_optimizer.py       # KV-Cache VRAM optimization & OOM recovery
+│   ├── tts_engine.py           # Multi-backend text-to-speech (edge-tts / pyttsx3)
+│   ├── voice_translator.py     # Speech-to-speech translation pipeline
+│   ├── audio_event_detection.py # Audio event detection (YAMNet / energy-based)
+│   ├── grpc_server.py          # gRPC + HTTP REST dual-protocol server
+│   └── plugin_manager.py       # Plugin discovery, loading & lifecycle
 │
 ├── examples/                   # Example applications
 │   ├── realtime_voice_assistant.py  # Real-time voice assistant
@@ -60,7 +74,9 @@ Omni-VRAM/
 │   ├── voice_chat_bot.py            # Multi-turn voice chat bot
 │   ├── benchmark_suite.py           # Performance benchmark suite
 │   ├── api_demo.py                  # API server demo client
-│   └── test_whisper_local.py        # Whisper local test script
+│   ├── test_whisper_local.py        # Whisper local test script
+│   ├── test_emotion.py              # Emotion recognition test
+│   └── test_tts_translator.py       # TTS & translator test
 │
 ├── tests/                      # Unit tests
 │   ├── test_audio_utils.py
@@ -86,6 +102,8 @@ Omni-VRAM/
 | **Meeting Transcriber** | Long-form recording with silence auto-segmentation and export | `python examples/meeting_transcriber.py --output meeting.txt` |
 | **Voice Chat Bot** | Multi-turn dialogue with history tracking and LLM-ready architecture | `python examples/voice_chat_bot.py` |
 | **Benchmark Suite** | Performance testing for all modules with Markdown report | `python examples/benchmark_suite.py --skip-whisper` |
+| **TTS & Translation** | Text-to-speech and speech-to-speech translation test | `python examples/test_tts_translator.py` |
+| **Emotion Recognition** | Speech emotion analysis demo | `python examples/test_emotion.py` |
 
 ---
 
@@ -303,6 +321,13 @@ You are free to use, modify, and distribute this software in both commercial and
 * **噪声抑制:** 基于 STFT 的谱减法噪声抑制，自适应噪声估计——三档预设（轻度/中度/强力），自动集成到流处理管线中。
 * **情绪识别:** 实时语音情绪检测（开心/悲伤/愤怒/中性/惊讶），基于声学特征——能量、过零率、基频（F0）及时序动态。
 * **说话人识别:** 基于 MFCC 的说话人聚类，余弦相似度匹配——无需外部模型即可识别"谁在什么时候说话"。
+* **多 GPU 支持:** 流水线并行、数据并行、张量并行，轮询负载均衡，NVLink 对端检测，集合通信操作。
+* **显存优化器:** KV-Cache 显存管理，LRU 淘汰策略，OOM 自动恢复，显存压力监控，动态批处理大小调整。
+* **语音合成引擎:** 多后端 TTS——edge-tts（在线，300+ 语音）和 pyttsx3（离线，跨平台）。
+* **语音翻译:** 语音到语音翻译管线——ASR → 文本翻译（MarianMT / Google Translate） → TTS，支持 50+ 语言对。
+* **音频事件检测:** 环境声音实时分类（语音/音乐/警报/静音/噪声），基于 YAMNet 或能量分析。
+* **gRPC 服务:** gRPC + HTTP REST 双协议 API 服务器，支持流式转写。
+* **插件系统:** 可扩展插件架构，支持插件发现、加载、生命周期管理和钩子事件系统。
 
 ### 📁 目录结构
 
@@ -314,7 +339,7 @@ Omni-VRAM/
 ├── .env.example                # 配置模板
 │
 ├── vram_core/                  # Python 核心库
-│   ├── __init__.py             # 包导出
+│   ├── __init__.py             # 包导出（v0.6.0）
 │   ├── config.py               # 配置管理（.env 加载）
 │   ├── audio_utils.py          # 音频格式检测与转换
 │   ├── whisper_bridge.py       # Whisper 多后端集成
@@ -323,7 +348,14 @@ Omni-VRAM/
 │   ├── api_server.py           # FastAPI REST + WebSocket API
 │   ├── noise_reduction.py      # STFT 谱减法噪声抑制
 │   ├── emotion_recognition.py  # 声学特征情绪识别
-│   └── speaker_diarization.py  # MFCC 说话人识别与聚类
+│   ├── speaker_diarization.py  # MFCC 说话人识别与聚类
+│   ├── multi_gpu.py            # 多 GPU 管理与并行
+│   ├── vram_optimizer.py       # KV-Cache 显存优化与 OOM 恢复
+│   ├── tts_engine.py           # 多后端语音合成（edge-tts / pyttsx3）
+│   ├── voice_translator.py     # 语音到语音翻译管线
+│   ├── audio_event_detection.py # 音频事件检测（YAMNet / 能量分析）
+│   ├── grpc_server.py          # gRPC + HTTP REST 双协议服务器
+│   └── plugin_manager.py       # 插件发现、加载与生命周期管理
 │
 ├── examples/                   # 示例应用
 │   ├── realtime_voice_assistant.py  # 实时语音助手
@@ -331,7 +363,9 @@ Omni-VRAM/
 │   ├── voice_chat_bot.py            # 多轮语音对话机器人
 │   ├── benchmark_suite.py           # 性能基准测试套件
 │   ├── api_demo.py                  # API 服务演示客户端
-│   └── test_whisper_local.py        # Whisper 本地测试
+│   ├── test_whisper_local.py        # Whisper 本地测试
+│   ├── test_emotion.py              # 情绪识别测试
+│   └── test_tts_translator.py       # 语音合成与翻译测试
 │
 ├── tests/                      # 单元测试
 │   ├── test_audio_utils.py
@@ -357,6 +391,8 @@ Omni-VRAM/
 | **会议录音转写** | 长时间录音，自动静音分段，导出文字记录 | `python examples/meeting_transcriber.py --output meeting.txt` |
 | **语音对话机器人** | 多轮对话，对话历史追踪，LLM 可接入架构 | `python examples/voice_chat_bot.py` |
 | **性能基准测试** | 全模块性能测试，自动生成 Markdown 报告 | `python examples/benchmark_suite.py --skip-whisper` |
+| **语音合成与翻译** | TTS 语音合成和语音到语音翻译测试 | `python examples/test_tts_translator.py` |
+| **情绪识别** | 语音情绪分析演示 | `python examples/test_emotion.py` |
 
 ---
 

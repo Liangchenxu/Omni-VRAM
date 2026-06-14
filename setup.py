@@ -36,8 +36,8 @@ except (OSError, Exception) as e:
 # ── Package Setup ────────────────────────────────────────────────
 setup(
     name='omni-vram',
-    version='1.0.0',
-    description='Real-time VRAM orchestration toolkit for voice-enabled LLM applications',
+    version='0.6.0',
+    description='Real-time VRAM orchestration toolkit for voice-enabled LLM applications — ASR, TTS, Translation, Multi-GPU, VRAM Optimization',
     long_description=open('README.md', encoding='utf-8').read(),
     long_description_content_type='text/markdown',
     author='Liangchenxu',
@@ -61,8 +61,28 @@ setup(
         'realtime': [
             'pyaudio>=0.2.11',
         ],
+        'tts': [
+            'edge-tts>=6.1.0',
+        ],
+        'translation': [
+            'deep-translator>=1.11.0',
+        ],
+        'grpc': [
+            'grpcio>=1.50.0',
+            'grpcio-tools>=1.50.0',
+            'flask>=2.3.0',
+        ],
         'dev': [
             'pytest>=7.0.0',
+        ],
+        'full': [
+            'openai>=1.0.0',
+            'pyaudio>=0.2.11',
+            'edge-tts>=6.1.0',
+            'deep-translator>=1.11.0',
+            'grpcio>=1.50.0',
+            'grpcio-tools>=1.50.0',
+            'flask>=2.3.0',
         ],
     },
 
