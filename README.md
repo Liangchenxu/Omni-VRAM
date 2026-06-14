@@ -29,6 +29,9 @@ Traditional Python-based audio processing pipelines and PyTorch native operation
 * **Web API Server:** FastAPI-based REST + WebSocket server for transcription — file upload, base64 input, and real-time streaming endpoint.
 * **Stream Processing:** Chunk-based audio stream processor with built-in VAD, segment extraction, and callback-driven architecture.
 * **Audio Format Utilities:** Automatic format detection, sample rate conversion, stereo-to-mono, normalization, and WAV encoding.
+* **Noise Reduction:** STFT-based spectral subtraction with adaptive noise estimation — three presets (light / medium / aggressive), automatically applied in the stream processing pipeline.
+* **Emotion Recognition:** Real-time speech emotion detection (happy / sad / angry / neutral / surprised) based on acoustic features — energy, zero-crossing rate, pitch (F0), and temporal dynamics.
+* **Speaker Diarization:** MFCC-based speaker clustering with cosine similarity — identifies "who spoke when" without external speaker embedding models.
 
 ### 📁 Project Structure
 
@@ -46,7 +49,10 @@ Omni-VRAM/
 │   ├── whisper_bridge.py       # Whisper multi-backend integration
 │   ├── stream_processor.py     # Real-time stream processor + VAD
 │   ├── streaming_asr.py        # Real-time streaming ASR engine
-│   └── api_server.py           # FastAPI REST + WebSocket API
+│   ├── api_server.py           # FastAPI REST + WebSocket API
+│   ├── noise_reduction.py      # STFT spectral subtraction noise reduction
+│   ├── emotion_recognition.py  # Acoustic feature-based emotion recognition
+│   └── speaker_diarization.py  # MFCC speaker diarization & clustering
 │
 ├── examples/                   # Example applications
 │   ├── realtime_voice_assistant.py  # Real-time voice assistant
@@ -59,7 +65,10 @@ Omni-VRAM/
 ├── tests/                      # Unit tests
 │   ├── test_audio_utils.py
 │   ├── test_whisper_bridge.py
-│   └── test_stream_processor.py
+│   ├── test_stream_processor.py
+│   ├── test_noise_reduction.py
+│   ├── test_emotion_recognition.py
+│   └── test_speaker_diarization.py
 │
 └── docs/                       # Documentation
     ├── installation.md
@@ -291,6 +300,9 @@ You are free to use, modify, and distribute this software in both commercial and
 * **Web API 服务:** 基于 FastAPI 的 REST + WebSocket 转写服务——文件上传、Base64 输入、实时流式端点。
 * **实时流处理引擎:** 基于分块的音频流处理器，内置 VAD 检测、语音片段提取，支持回调驱动架构。
 * **音频格式工具链:** 自动格式检测、采样率转换、立体声转单声道、归一化、WAV 编码。
+* **噪声抑制:** 基于 STFT 的谱减法噪声抑制，自适应噪声估计——三档预设（轻度/中度/强力），自动集成到流处理管线中。
+* **情绪识别:** 实时语音情绪检测（开心/悲伤/愤怒/中性/惊讶），基于声学特征——能量、过零率、基频（F0）及时序动态。
+* **说话人识别:** 基于 MFCC 的说话人聚类，余弦相似度匹配——无需外部模型即可识别"谁在什么时候说话"。
 
 ### 📁 目录结构
 
@@ -308,7 +320,10 @@ Omni-VRAM/
 │   ├── whisper_bridge.py       # Whisper 多后端集成
 │   ├── stream_processor.py     # 实时流处理器 + VAD
 │   ├── streaming_asr.py        # 实时流式语音识别引擎
-│   └── api_server.py           # FastAPI REST + WebSocket API
+│   ├── api_server.py           # FastAPI REST + WebSocket API
+│   ├── noise_reduction.py      # STFT 谱减法噪声抑制
+│   ├── emotion_recognition.py  # 声学特征情绪识别
+│   └── speaker_diarization.py  # MFCC 说话人识别与聚类
 │
 ├── examples/                   # 示例应用
 │   ├── realtime_voice_assistant.py  # 实时语音助手
@@ -321,7 +336,10 @@ Omni-VRAM/
 ├── tests/                      # 单元测试
 │   ├── test_audio_utils.py
 │   ├── test_whisper_bridge.py
-│   └── test_stream_processor.py
+│   ├── test_stream_processor.py
+│   ├── test_noise_reduction.py
+│   ├── test_emotion_recognition.py
+│   └── test_speaker_diarization.py
 │
 └── docs/                       # 文档
     ├── installation.md

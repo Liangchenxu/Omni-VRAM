@@ -25,6 +25,7 @@ from typing import Optional, Callable, List, Tuple
 import numpy as np
 
 from vram_core.audio_utils import AudioProcessor
+from vram_core.noise_reduction import NoiseReducer
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +299,9 @@ class StreamProcessor:
             target_sample_rate=self.config.sample_rate
         )
 
+        # Noise reduction (pre-VAD preprocessing)
+        self.noise_reducer = NoiseReducer(strength="medium")
+
         # VAD processor
         self.vad = VADProcessor(
             threshold=self.config.vad_threshold,
@@ -386,6 +390,12 @@ class StreamProcessor:
             # Ensure float32
             if audio_chunk.dtype != np.float32:
                 audio_chunk = audio_chunk.astype(np.float32)
+
+            # Noise reduction (pre-VAD preprocessing)
+            if self.noise_reducer is not None:
+                audio_chunk = self.noise_reducer.process(
+                    audio_chunk, sample_rate=self.config.sample_rate
+                )
 
             # VAD analysis
             is_speech = self.vad.is_speech(audio_chunk)
