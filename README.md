@@ -47,6 +47,7 @@ Traditional Python audio pipelines and PyTorch operations (e.g., `torch.cat` for
 
 ```
 Omni-VRAM/
+├── app.py                      # Gradio Web Demo (语音转写/情绪/分离/麦克风)
 ├── vram_hacker.cu              # CUDA kernel source (KV-Cache injection)
 ├── setup.py                    # Build & install script
 ├── test_run.py                 # Quick integration test
@@ -105,12 +106,37 @@ Omni-VRAM/
 
 | Example | Description | Command |
 |---------|-------------|---------|
+| **Gradio Web Demo** | Web UI with transcription, emotion, diarization & mic recording | `python app.py` |
 | **Real-time Voice Assistant** | Microphone → VAD → Whisper → Display, with file recording | `python examples/realtime_voice_assistant.py` |
 | **Meeting Transcriber** | Long-form recording with silence auto-segmentation and export | `python examples/meeting_transcriber.py --output meeting.txt` |
 | **Voice Chat Bot** | Multi-turn dialogue with history tracking and LLM-ready architecture | `python examples/voice_chat_bot.py` |
 | **Benchmark Suite** | Performance testing for all modules with Markdown report | `python examples/benchmark_suite.py --skip-whisper` |
 | **TTS & Translation** | Text-to-speech and speech-to-speech translation test | `python examples/test_tts_translator.py` |
 | **Emotion Recognition** | Speech emotion analysis demo | `python examples/test_emotion.py` |
+
+### 🌐 Gradio Web Demo
+
+Launch the interactive web UI with one command:
+
+```bash
+# Install Gradio (if not already installed)
+pip install gradio
+
+# Start the demo (default: http://localhost:7860)
+python app.py
+
+# Options
+python app.py --port 8080        # Custom port
+python app.py --share            # Create public link
+python app.py --debug            # Debug mode
+```
+
+**Features:**
+- 📝 **Speech Transcription** — Upload audio → get text (with model/language/noise reduction options)
+- 🎭 **Emotion Recognition** — Upload audio → detect emotion (7 emotions with probability bars)
+- 👥 **Speaker Diarization** — Upload conversation → identify who spoke when
+- 🎙️ **Live Microphone** — Record voice → instant transcription
+- 📥 **Download Results** — Export as JSON / TXT / SRT subtitle files
 
 ---
 
@@ -343,6 +369,7 @@ You are free to use, modify, and distribute this software in both commercial and
 
 ```
 Omni-VRAM/
+├── app.py                      # Gradio Web Demo（语音转写/情绪/分离/麦克风）
 ├── vram_hacker.cu              # CUDA 核函数源码（KV-Cache 注入）
 ├── setup.py                    # 编译安装脚本
 ├── test_run.py                 # 快速集成测试
@@ -401,12 +428,37 @@ Omni-VRAM/
 
 | 示例 | 说明 | 运行命令 |
 |------|------|----------|
+| **Gradio Web Demo** | Web 界面：转写、情绪、分离、麦克风录音 | `python app.py` |
 | **实时语音助手** | 麦克风 → VAD → Whisper → 显示，支持文件录制 | `python examples/realtime_voice_assistant.py` |
 | **会议录音转写** | 长时间录音，自动静音分段，导出文字记录 | `python examples/meeting_transcriber.py --output meeting.txt` |
 | **语音对话机器人** | 多轮对话，对话历史追踪，LLM 可接入架构 | `python examples/voice_chat_bot.py` |
 | **性能基准测试** | 全模块性能测试，自动生成 Markdown 报告 | `python examples/benchmark_suite.py --skip-whisper` |
 | **语音合成与翻译** | TTS 语音合成和语音到语音翻译测试 | `python examples/test_tts_translator.py` |
 | **情绪识别** | 语音情绪分析演示 | `python examples/test_emotion.py` |
+
+### 🌐 Gradio Web Demo
+
+一条命令启动交互式 Web 界面：
+
+```bash
+# 安装 Gradio（如尚未安装）
+pip install gradio
+
+# 启动演示（默认: http://localhost:7860）
+python app.py
+
+# 可选参数
+python app.py --port 8080        # 自定义端口
+python app.py --share            # 创建公网链接
+python app.py --debug            # 调试模式
+```
+
+**功能：**
+- 📝 **语音转写** — 上传音频 → 转写文字（支持模型/语言/噪声抑制选项）
+- 🎭 **情绪识别** — 上传音频 → 分析情绪（7 种情绪，带概率条形图）
+- 👥 **说话人分离** — 上传对话音频 → 识别谁在什么时候说话
+- 🎙️ **实时麦克风** — 录制语音 → 即时转写
+- 📥 **下载结果** — 导出为 JSON / TXT / SRT 字幕文件
 
 ---
 
