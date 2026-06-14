@@ -11,3 +11,17 @@ __pycache__/
 
 # 忽略临时测试脚本 (可选，如果你不想公开测试脚本可以取消注释)
 # test_run.py
+
+# 敏感配置文件
+.env
+.env.local
+.env.production
+# .env.example 不忽略，作为模板提交
+
+# IDE配置
+.vscode/
+.idea/
+
+# 系统文件
+.DS_Store
+Thumbs.db
