@@ -40,6 +40,7 @@ SUPPORTED_AUDIO_FORMATS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".wma", ".aa
 
 class WhisperBackend(Enum):
     """Supported Whisper backends."""
+    FASTER_WHISPER = "faster_whisper"
     WHISPER_CPP = "whisper_cpp"
     OPENAI_API = "openai_api"
     AUTO = "auto"
@@ -368,6 +369,7 @@ class WhisperBridge:
         openai_model: Optional[str] = None,
         language: Optional[str] = None,
         device: Optional[str] = None,
+        compute_type: Optional[str] = None,
     ):
         """
         Initialize WhisperBridge.
@@ -380,6 +382,8 @@ class WhisperBridge:
             openai_model: OpenAI Whisper model name.
             language: Force specific language (None for auto-detect).
             device: Device for whisper.cpp (cuda/cpu).
+            compute_type: CTranslate2 compute type for faster-whisper
+                          (int8/float16/float32, default: float16).
 
         Configuration priority:
             1. Constructor arguments (highest)
@@ -395,10 +399,25 @@ class WhisperBridge:
         self.openai_api_key = openai_api_key or config.openai_api_key
         self.openai_model = openai_model or config.openai_model
         self.language = language or config.language
-        self.device = device or config.device
+        self.device = device or device or config.whisper_device
+        self.compute_type = compute_type or config.whisper_compute_type
+
+        # Lazy-loaded faster-whisper model cache
+        self._fw_model = None
+        self._fw_model_size = None
 
         # Audio preprocessor
         self.audio_preprocessor = AudioPreprocessor()
+
+        # Resolve backend from config if AUTO
+        if self.backend == WhisperBackend.AUTO:
+            config_backend = config.whisper_backend
+            if config_backend != "auto":
+                try:
+                    self.backend = WhisperBackend(config_backend)
+                    logger.info(f"Backend from config: {self.backend.value}")
+                except ValueError:
+                    pass
 
         # Auto-detect backend
         if self.backend == WhisperBackend.AUTO:
@@ -410,24 +429,44 @@ class WhisperBridge:
         Automatically detect the best available backend.
 
         Priority:
-            1. whisper.cpp (local, faster for GPU)
-            2. OpenAI API (cloud, requires API key)
+            1. faster-whisper (GPU-accelerated, CTranslate2, fastest)
+            2. whisper.cpp (local, GPU-accelerated)
+            3. OpenAI API (cloud, requires API key)
 
         Returns:
             Best available WhisperBackend.
         """
+        # 1. Check faster-whisper (highest priority)
+        if self._check_faster_whisper():
+            return WhisperBackend.FASTER_WHISPER
+
+        # 2. Check whisper.cpp
         if self._check_whisper_cpp():
             return WhisperBackend.WHISPER_CPP
 
+        # 3. Check OpenAI API
         if self.openai_api_key:
             return WhisperBackend.OPENAI_API
 
-        # Default to whisper.cpp (will fail gracefully with helpful message)
+        # Default to faster-whisper (will fail gracefully with helpful message)
         logger.warning(
             "No Whisper backend found. "
-            "Install whisper.cpp or set OPENAI_API_KEY in .env"
+            "Install faster-whisper, whisper.cpp, or set OPENAI_API_KEY in .env"
         )
-        return WhisperBackend.WHISPER_CPP
+        return WhisperBackend.FASTER_WHISPER
+
+    def _check_faster_whisper(self) -> bool:
+        """
+        Check if faster-whisper is available.
+
+        Returns:
+            True if faster-whisper package is installed.
+        """
+        try:
+            import faster_whisper  # noqa: F401
+            return True
+        except ImportError:
+            return False
 
     def _check_whisper_cpp(self) -> bool:
         """
@@ -471,6 +510,7 @@ class WhisperBridge:
         self,
         audio_input: Union[str, Path, np.ndarray],
         sample_rate: int = 16000,
+        language: Optional[str] = None,
         **kwargs,
     ) -> WhisperResult:
         """
@@ -479,6 +519,8 @@ class WhisperBridge:
         Args:
             audio_input: File path (wav/mp3/flac/ogg/m4a) or numpy array.
             sample_rate: Sample rate if audio_input is numpy array.
+            language: Override language for this transcription only (thread-safe).
+                      If None, uses self.language (set at init time).
             **kwargs: Additional backend-specific options.
 
         Returns:
@@ -490,6 +532,9 @@ class WhisperBridge:
             subprocess.TimeoutExpired: If transcription exceeds 300s.
         """
         start_time = time.time()
+
+        # Determine effective language for this call (thread-safe: no shared state mutation)
+        effective_language = language or self.language
 
         # Load audio
         if isinstance(audio_input, (str, Path)):
@@ -508,8 +553,13 @@ class WhisperBridge:
             if audio_data.dtype != np.float32:
                 audio_data = audio_data.astype(np.float32)
 
+        # Pass effective_language to backend methods via kwargs
+        kwargs["language"] = effective_language
+
         # Route to backend
-        if self.backend == WhisperBackend.WHISPER_CPP:
+        if self.backend == WhisperBackend.FASTER_WHISPER:
+            result = self._transcribe_faster_whisper(audio_data, sr, **kwargs)
+        elif self.backend == WhisperBackend.WHISPER_CPP:
             result = self._transcribe_whisper_cpp(audio_data, sr, **kwargs)
         elif self.backend == WhisperBackend.OPENAI_API:
             result = self._transcribe_openai_api(audio_data, sr, **kwargs)
@@ -546,6 +596,169 @@ class WhisperBridge:
         """
         full_audio = np.concatenate(audio_chunks)
         return self.transcribe(full_audio, sample_rate=sample_rate, **kwargs)
+
+    # ------------------------------------------------------------------
+    # Faster-Whisper Backend (GPU-Accelerated, CTranslate2)
+    # ------------------------------------------------------------------
+
+    def _get_faster_whisper_model(self):
+        """
+        Get or load the faster-whisper model (cached).
+
+        Returns:
+            Tuple of (model, model_info) where model is a faster-whisper
+            WhisperModel instance.
+
+        Raises:
+            ImportError: If faster-whisper is not installed.
+        """
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError:
+            raise ImportError(
+                "faster-whisper package required for GPU-accelerated transcription.\n"
+                "Install with: pip install faster-whisper\n"
+                "\n"
+                "This provides CTranslate2-based inference, ~5x faster than "
+                "native whisper."
+            )
+
+        model_size = self.whisper_model
+
+        # Return cached model if same size
+        if self._fw_model is not None and self._fw_model_size == model_size:
+            return self._fw_model
+
+        device = self.device if self.device == "cuda" else "cpu"
+        compute_type = self.compute_type
+
+        # Auto-adjust compute type for CPU
+        if device == "cpu" and compute_type == "float16":
+            compute_type = "int8"
+            logger.info("CPU mode: compute_type adjusted to int8")
+
+        logger.info(
+            f"Loading faster-whisper model: {model_size} "
+            f"(device={device}, compute_type={compute_type})"
+        )
+
+        self._fw_model = WhisperModel(
+            model_size,
+            device=device,
+            compute_type=compute_type,
+        )
+        self._fw_model_size = model_size
+
+        return self._fw_model
+
+    def _transcribe_faster_whisper(
+        self,
+        audio: np.ndarray,
+        sample_rate: int,
+        **kwargs,
+    ) -> WhisperResult:
+        """
+        Transcribe using faster-whisper (CTranslate2 GPU engine).
+
+        Performance: ~5x faster than native whisper on GPU.
+
+        Args:
+            audio: Float32 mono audio array.
+            sample_rate: Sample rate.
+            **kwargs: Additional faster-whisper options
+                      (beam_size, vad_filter, etc.).
+
+        Returns:
+            WhisperResult.
+        """
+        import tempfile
+        import os
+
+        model = self._get_faster_whisper_model()
+
+        # Write audio to temp WAV for faster-whisper file-based input
+        wav_bytes = self.audio_preprocessor.to_wav_bytes(audio, sample_rate)
+        tmp_path = None
+
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                tmp.write(wav_bytes)
+                tmp_path = tmp.name
+
+            # Use per-call language if provided (thread-safe), fallback to instance language
+            effective_language = kwargs.pop("language", None) or self.language
+
+            # Build transcription kwargs
+            transcribe_kwargs = {
+                "beam_size": kwargs.pop("beam_size", 5),
+                "vad_filter": kwargs.pop("vad_filter", True),
+                "vad_parameters": kwargs.pop("vad_parameters", {
+                    "min_silence_duration_ms": 500,
+                }),
+            }
+
+            if effective_language:
+                transcribe_kwargs["language"] = effective_language
+
+            transcribe_kwargs.update(kwargs)
+
+            logger.debug(f"Running faster-whisper with: {transcribe_kwargs}")
+
+            segments_iter, info = model.transcribe(tmp_path, **transcribe_kwargs)
+
+            # Collect segments
+            segments = []
+            full_text_parts = []
+            for seg in segments_iter:
+                segment_dict = {
+                    "start": round(seg.start, 3),
+                    "end": round(seg.end, 3),
+                    "text": seg.text.strip(),
+                    "confidence": round(
+                        1.0 - seg.no_speech_prob, 3
+                    ) if seg.no_speech_prob is not None else None,
+                    "avg_logprob": round(seg.avg_logprob, 4)
+                    if hasattr(seg, "avg_logprob") else None,
+                }
+                segments.append(segment_dict)
+                full_text_parts.append(seg.text.strip())
+
+            full_text = " ".join(full_text_parts)
+
+            # Language info from detection
+            detected_lang = getattr(info, "language", self.language or "unknown")
+            lang_prob = getattr(info, "language_probability", 0.0)
+
+            # Average confidence from segments
+            confidence = 0.0
+            confidences = [
+                s["confidence"] for s in segments
+                if s.get("confidence") is not None
+            ]
+            if confidences:
+                confidence = sum(confidences) / len(confidences)
+
+            result = WhisperResult(
+                text=full_text,
+                language=detected_lang,
+                confidence=confidence,
+                segments=segments,
+            )
+
+            logger.info(
+                f"faster-whisper: detected language={detected_lang} "
+                f"(prob={lang_prob:.2f}), "
+                f"{len(segments)} segments"
+            )
+
+            return result
+
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     # ------------------------------------------------------------------
     # Whisper.cpp Backend (Local)
@@ -589,6 +802,9 @@ class WhisperBridge:
                 tmp.write(wav_bytes)
                 tmp_path = tmp.name
 
+            # Use per-call language if provided (thread-safe), fallback to instance language
+            effective_language = kwargs.pop("language", None) or self.language
+
             # Build command
             cmd = [
                 main_exe,
@@ -599,8 +815,8 @@ class WhisperBridge:
             ]
 
             # Language
-            if self.language:
-                cmd.extend(["-l", self.language])
+            if effective_language:
+                cmd.extend(["-l", effective_language])
 
             # GPU acceleration
             if self.device == "cuda":
@@ -636,7 +852,7 @@ class WhisperBridge:
 
             # Parse output
             text = proc_result.stdout.strip()
-            language = self.language or "unknown"
+            language = effective_language or "unknown"
             segments = self._parse_whisper_cpp_segments(proc_result.stderr)
 
             # Try to detect language from stderr output
@@ -852,6 +1068,9 @@ class WhisperBridge:
         # Encode audio to WAV bytes
         wav_bytes = self.audio_preprocessor.to_wav_bytes(audio, sample_rate)
 
+        # Use per-call language if provided (thread-safe), fallback to instance language
+        effective_language = kwargs.pop("language", None) or self.language
+
         # Prepare request
         request_kwargs = {
             "model": self.openai_model,
@@ -859,8 +1078,8 @@ class WhisperBridge:
             "response_format": "verbose_json",
         }
 
-        if self.language:
-            request_kwargs["language"] = self.language
+        if effective_language:
+            request_kwargs["language"] = effective_language
 
         for key, value in kwargs.items():
             if key not in request_kwargs:
@@ -930,6 +1149,9 @@ class WhisperBridge:
         """
         available = []
 
+        if self._check_faster_whisper():
+            available.append(WhisperBackend.FASTER_WHISPER)
+
         if self._check_whisper_cpp():
             available.append(WhisperBackend.WHISPER_CPP)
 
@@ -951,7 +1173,9 @@ class WhisperBridge:
             "whisper_model": self.whisper_model,
             "language": self.language,
             "device": self.device,
+            "compute_type": self.compute_type,
             "available_backends": [b.value for b in self.get_available_backends()],
             "has_openai_key": bool(self.openai_api_key),
+            "has_faster_whisper": self._check_faster_whisper(),
             "config": config.to_dict(),
         }
