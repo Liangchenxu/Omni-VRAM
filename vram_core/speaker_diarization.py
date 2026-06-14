@@ -38,6 +38,8 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from scipy.signal import stft
 
+from vram_core.utils import ensure_float32, merge_adjacent_events
+
 logger = logging.getLogger(__name__)
 
 
@@ -189,8 +191,7 @@ class PyannoteDiarizer:
         if self._pipeline is None:
             raise RuntimeError("Pipeline not loaded")
 
-        if audio.dtype != np.float32:
-            audio = audio.astype(np.float32)
+        audio = ensure_float32(audio)
 
         try:
             import torch
@@ -263,8 +264,7 @@ class MFCCDiarizer:
         """Extract MFCC features using scipy STFT."""
         if len(audio) == 0:
             return np.zeros((self.n_mfcc, 0), dtype=np.float32)
-        if audio.dtype != np.float32:
-            audio = audio.astype(np.float32)
+        audio = ensure_float32(audio)
 
         min_len = self.frame_length * 2
         if len(audio) < min_len:
@@ -371,8 +371,7 @@ class MFCCDiarizer:
         """Perform MFCC-based speaker diarization."""
         if len(audio) == 0:
             return []
-        if audio.dtype != np.float32:
-            audio = audio.astype(np.float32)
+        audio = ensure_float32(audio)
 
         self.reset()
         segment_samples = int(sample_rate * self.segment_duration_ms / 1000)

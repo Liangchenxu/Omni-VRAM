@@ -29,6 +29,8 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
+from vram_core.utils import ensure_float32, simple_resample, merge_adjacent_events
+
 logger = logging.getLogger(__name__)
 
 
@@ -94,8 +96,7 @@ class EnergyDetector:
         if len(audio) == 0:
             return []
 
-        if audio.dtype != np.float32:
-            audio = audio.astype(np.float32)
+        audio = ensure_float32(audio)
 
         segment_samples = int(sample_rate * self.segment_ms / 1000)
         events = []
@@ -105,8 +106,8 @@ class EnergyDetector:
             if len(seg) < segment_samples // 2:
                 continue
 
-            rms = np.sqrt(np.mean(seg ** 2))
-            zcr = np.mean(np.abs(np.diff(np.sign(seg)))) / 2 if len(seg) > 1 else 0
+            rms = float(np.sqrt(np.mean(seg ** 2)))
+            zcr = float(np.mean(np.abs(np.diff(np.sign(seg))))) / 2 if len(seg) > 1 else 0
 
             start_time = i / sample_rate
             end_time = min((i + segment_samples) / sample_rate, len(audio) / sample_rate)
@@ -138,21 +139,7 @@ class EnergyDetector:
 
     def _merge_events(self, events: List[AudioEvent]) -> List[AudioEvent]:
         """Merge consecutive events of the same type."""
-        if not events:
-            return []
-        merged = [events[0]]
-        for evt in events[1:]:
-            if evt.label == merged[-1].label:
-                merged[-1] = AudioEvent(
-                    label=evt.label,
-                    start_time=merged[-1].start_time,
-                    end_time=evt.end_time,
-                    confidence=max(merged[-1].confidence, evt.confidence),
-                    category=evt.category,
-                )
-            else:
-                merged.append(evt)
-        return merged
+        return merge_adjacent_events(events)
 
 
 # ── Main Detector ────────────────────────────────────────────────
@@ -246,14 +233,9 @@ class AudioEventDetector:
 
             # YAMNet expects 16kHz mono float32
             if sample_rate != 16000:
-                # Simple resampling
-                ratio = 16000 / sample_rate
-                new_len = int(len(audio) * ratio)
-                indices = np.linspace(0, len(audio) - 1, new_len)
-                audio = np.interp(indices, np.arange(len(audio)), audio)
+                audio = simple_resample(audio, sample_rate, 16000)
 
-            if audio.dtype != np.float32:
-                audio = audio.astype(np.float32)
+            audio = ensure_float32(audio)
 
             # Run inference
             waveform = tf.constant(audio, dtype=tf.float32)

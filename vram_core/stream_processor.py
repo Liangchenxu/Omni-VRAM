@@ -360,7 +360,7 @@ class StreamProcessor:
                 try:
                     self.on_state_change(new_state)
                 except Exception as e:
-                    logger.error("State change callback error: %s", e)
+                    logger.warning("State change callback error: %s", e)
 
     def _emit_event(self, event: StreamEvent) -> None:
         """Emit event to callback."""
@@ -368,7 +368,7 @@ class StreamProcessor:
             try:
                 self.on_event(event)
             except Exception as e:
-                logger.error("Event callback error: %s", e)
+                logger.warning("Event callback error: %s", e)
 
     # ------------------------------------------------------------------
     # Audio Input
@@ -443,7 +443,7 @@ class StreamProcessor:
                 try:
                     self.on_speech_start()
                 except Exception as e:
-                    logger.error("Speech start callback error: %s", e)
+                    logger.warning("Speech start callback error: %s", e)
 
             self._emit_event(StreamEvent(event_type="speech_start"))
 
@@ -502,7 +502,7 @@ class StreamProcessor:
             try:
                 self.on_speech_end(full_speech)
             except Exception as e:
-                logger.error("Speech end callback error: %s", e)
+                logger.warning("Speech end callback error: %s", e)
 
         self._emit_event(
             StreamEvent(event_type="speech_end", audio=full_speech)
@@ -552,7 +552,7 @@ class StreamProcessor:
                 try:
                     self.on_transcription(result)
                 except Exception as e:
-                    logger.error("Transcription callback error: %s", e)
+                    logger.warning("Transcription callback error: %s", e)
 
             self._emit_event(
                 StreamEvent(event_type="transcription", data=result)

@@ -541,3 +541,29 @@ class AudioProcessor:
             data_size,
         )
         return header + int16_audio.tobytes()
+
+    # ------------------------------------------------------------------
+    # Save from Bytes
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def save_bytes(path: Union[str, Path], audio_bytes: bytes, format: str = "wav") -> None:
+        """
+        Save raw audio bytes to a file by decoding and re-encoding.
+
+        Args:
+            path: Output file path.
+            audio_bytes: Raw audio bytes.
+            format: Output format (default: WAV).
+        """
+        try:
+            import soundfile as sf
+            import io as _io
+
+            buf = _io.BytesIO(audio_bytes)
+            with sf.SoundFile(buf) as f:
+                data = f.read(dtype="float32")
+                sr = f.samplerate
+            sf.write(str(path), data, sr, format=format.upper())
+        except ImportError:
+            raise ImportError("soundfile is required to save from bytes.")

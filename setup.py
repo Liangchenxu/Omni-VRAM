@@ -36,7 +36,7 @@ except (OSError, Exception) as e:
 # ── Package Setup ────────────────────────────────────────────────
 setup(
     name='omni-vram',
-    version='1.0.0',
+    version='1.1.0',
     description='Production-ready audio AI platform — ASR, TTS, Translation, Speaker Verification, Multi-GPU, VRAM Optimization',
     long_description=open('README.md', encoding='utf-8').read(),
     long_description_content_type='text/markdown',

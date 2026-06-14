@@ -33,6 +33,12 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
+from vram_core.utils import (
+    ensure_float32,
+    compute_rms_energy_per_frame,
+    compute_zcr_per_frame,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -190,8 +196,7 @@ class Wav2Vec2EmotionEngine:
         if self._classifier is None:
             raise RuntimeError("Model not loaded")
 
-        if audio.dtype != np.float32:
-            audio = audio.astype(np.float32)
+        audio = ensure_float32(audio)
 
         try:
             # Run inference
@@ -339,37 +344,19 @@ class EmotionRecognizer:
         if len(audio) == 0:
             return AudioFeatures()
 
-        if audio.dtype != np.float32:
-            audio = audio.astype(np.float32)
+        audio = ensure_float32(audio)
 
         frame_size = int(sample_rate * self.frame_size_ms / 1000)
-        n_frames = max(1, len(audio) // frame_size)
 
         # RMS Energy per frame
-        energies = []
-        for i in range(n_frames):
-            start = i * frame_size
-            end = min(start + frame_size, len(audio))
-            frame = audio[start:end]
-            if len(frame) > 0:
-                energies.append(float(np.sqrt(np.mean(frame ** 2))))
-
-        energies = np.array(energies) if energies else np.array([0.0])
+        energies = compute_rms_energy_per_frame(audio, frame_size)
         rms_energy = float(np.mean(energies))
         energy_variance = float(np.var(energies))
         energy_range = float(np.max(energies) - np.min(energies)) if len(energies) > 1 else 0.0
 
         # Zero-Crossing Rate
-        zcr_values = []
-        for i in range(n_frames):
-            start = i * frame_size
-            end = min(start + frame_size, len(audio))
-            frame = audio[start:end]
-            if len(frame) >= 2:
-                crossings = np.sum(np.abs(np.diff(np.sign(frame)))) / 2
-                zcr_values.append(crossings / (len(frame) - 1))
-
-        zcr = float(np.mean(zcr_values)) if zcr_values else 0.0
+        zcr_arr = compute_zcr_per_frame(audio, frame_size)
+        zcr = float(np.mean(zcr_arr)) if len(zcr_arr) > 0 else 0.0
 
         # F0 estimation
         f0_values = self._estimate_f0_series(audio, sample_rate, frame_size)

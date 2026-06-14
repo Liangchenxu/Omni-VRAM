@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from vram_core.utils import ensure_float32, compute_zero_crossing_rate
+
 logger = logging.getLogger(__name__)
 
 
@@ -176,9 +178,7 @@ class SpeakerVerifier:
         Returns:
             MFCC feature matrix (n_frames, n_mfcc).
         """
-        # Ensure float32
-        if audio.dtype != np.float32:
-            audio = audio.astype(np.float32)
+        audio = ensure_float32(audio)
 
         # Try librosa first
         try:
