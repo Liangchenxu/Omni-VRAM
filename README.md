@@ -420,3 +420,38 @@ processor.feed(audio_chunk)
 ## 📜 协议 (License)
 本项目基于 [**MIT License**](https://opensource.org/licenses/MIT) 开源。
 您可以自由地在商业或非商业项目中使用、修改和分发本软件，但前提是必须保留原始版权声明及本许可声明。
+
+---
+
+## 🤝 贡献指南 (Contributing)
+
+我们欢迎任何形式的贡献！
+
+1. **Fork** 本仓库
+2. 创建你的特性分支：`git checkout -b feature/amazing-feature`
+3. 提交你的修改：`git commit -m 'feat: add amazing feature'`
+4. 推送到分支：`git push origin feature/amazing-feature`
+5. 提交 **Pull Request**
+
+请确保：
+- 所有单元测试通过：`pytest tests/ -v`
+- 新功能附带相应的测试用例
+- 遵循项目代码风格
+
+> 详细信息请参阅 [CHANGELOG.md](CHANGELOG.md) 了解版本历史，[docs/faq.md](docs/faq.md) 了解常见问题。
+
+---
+
+## ⭐ Star 历史
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Liangchenxu/Omni-VRAM&type=Date)](https://star-history.com/#Liangchenxu/Omni-VRAM&Date)
+
+---
+
+<div align="center">
+
+**[⬆ 回到顶部](#omni-vram-zero-copy-cuda-audio-to-llm-bridge)**
+
+Made with ❤️ by [Liangchenxu](https://github.com/Liangchenxu)
+
+</div>
