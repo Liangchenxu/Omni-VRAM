@@ -7,11 +7,13 @@ zero-copy VRAM memory injection.
 
 Modules:
     - audio_utils: Audio format detection, loading, conversion
-    - whisper_bridge: Whisper model backend integration
+    - whisper_bridge: Whisper model backend integration (faster-whisper / whisper.cpp / OpenAI API)
     - stream_processor: Real-time audio stream processing with VAD
+    - streaming_asr: Real-time streaming speech recognition with sliding window
+    - api_server: FastAPI-based REST + WebSocket transcription API
 """
 
-__version__ = "0.2.0"
+__version__ = "1.0.0"
 
 # CUDA extension (built from vram_hacker.cu)
 try:
@@ -31,6 +33,7 @@ from vram_core.whisper_bridge import (
     TranscriptionResult, AudioPreprocessor,
 )
 from vram_core.stream_processor import StreamProcessor, StreamConfig, StreamState
+from vram_core.streaming_asr import StreamASR, StreamASRConfig, StreamASRResult
 from vram_core.config import config, OmniConfig, setup_logging
 
 __all__ = [
@@ -44,6 +47,10 @@ __all__ = [
     "StreamProcessor",
     "StreamConfig",
     "StreamState",
+    # Streaming ASR
+    "StreamASR",
+    "StreamASRConfig",
+    "StreamASRResult",
     # Configuration
     "config",
     "OmniConfig",

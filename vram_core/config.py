@@ -22,6 +22,9 @@ Environment Variables:
     WHISPER_CPP_PATH        - Path to whisper.cpp executable directory
     WHISPER_MODEL_PATH      - Path to GGML model file (e.g., models/ggml-base.bin)
     WHISPER_LANGUAGE        - Default language code (zh, en, ja, etc.)
+    WHISPER_BACKEND         - Preferred backend: auto/faster_whisper/whisper_cpp/openai_api
+    WHISPER_DEVICE          - Whisper device: cuda/cpu (default: cuda)
+    WHISPER_COMPUTE_TYPE    - CTranslate2 compute type: int8/float16/float32
     VRAM_DEVICE             - Compute device: cuda or cpu (default: cuda)
     VRAM_LOG_LEVEL          - Logging level (default: INFO)
     VRAM_SAMPLE_RATE        - Target audio sample rate (default: 16000)
@@ -110,6 +113,11 @@ class OmniConfig:
     whisper_cpp_path: Optional[Path]
     whisper_model_path: Optional[Path]
 
+    # ── Faster-Whisper Configuration ──────────────────────────────
+    whisper_backend: str
+    whisper_device: str
+    whisper_compute_type: str
+
     # ── General Settings ──────────────────────────────────────────
     language: Optional[str]
     device: str
@@ -130,6 +138,17 @@ class OmniConfig:
         )
         self.whisper_model_path = _get_env(
             "WHISPER_MODEL_PATH", default=None, cast_type=Path
+        )
+
+        # Faster-Whisper
+        self.whisper_backend = _get_env(
+            "WHISPER_BACKEND", default="auto", cast_type=str
+        )
+        self.whisper_device = _get_env(
+            "WHISPER_DEVICE", default="cuda", cast_type=str
+        )
+        self.whisper_compute_type = _get_env(
+            "WHISPER_COMPUTE_TYPE", default="float16", cast_type=str
         )
 
         # General
@@ -156,6 +175,29 @@ class OmniConfig:
                 f"Invalid sample_rate {self.sample_rate}, falling back to 16000"
             )
             self.sample_rate = 16000
+
+        # Whisper backend validation
+        valid_backends = ("auto", "faster_whisper", "whisper_cpp", "openai_api")
+        if self.whisper_backend not in valid_backends:
+            logger.warning(
+                f"Invalid whisper_backend '{self.whisper_backend}', falling back to 'auto'"
+            )
+            self.whisper_backend = "auto"
+
+        # Whisper device validation
+        if self.whisper_device not in ("cuda", "cpu"):
+            logger.warning(
+                f"Invalid whisper_device '{self.whisper_device}', falling back to 'cuda'"
+            )
+            self.whisper_device = "cuda"
+
+        # Whisper compute type validation
+        valid_compute = ("int8", "float16", "float32")
+        if self.whisper_compute_type not in valid_compute:
+            logger.warning(
+                f"Invalid whisper_compute_type '{self.whisper_compute_type}', falling back to 'float16'"
+            )
+            self.whisper_compute_type = "float16"
 
         # Log level validation
         valid_levels = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
@@ -203,6 +245,15 @@ class OmniConfig:
         """Check if CUDA device is requested and potentially available."""
         return self.device == "cuda"
 
+    @property
+    def has_faster_whisper(self) -> bool:
+        """Check if faster-whisper package is installed."""
+        try:
+            import faster_whisper  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
     def to_dict(self) -> Dict[str, Any]:
         """Export configuration as dictionary (masks sensitive values)."""
         return {
@@ -210,6 +261,10 @@ class OmniConfig:
             "openai_model": self.openai_model,
             "whisper_cpp_path": str(self.whisper_cpp_path) if self.whisper_cpp_path else None,
             "whisper_model_path": str(self.whisper_model_path) if self.whisper_model_path else None,
+            "whisper_backend": self.whisper_backend,
+            "whisper_device": self.whisper_device,
+            "whisper_compute_type": self.whisper_compute_type,
+            "has_faster_whisper": self.has_faster_whisper,
             "language": self.language,
             "device": self.device,
             "sample_rate": self.sample_rate,

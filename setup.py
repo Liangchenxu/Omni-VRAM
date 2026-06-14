@@ -10,8 +10,8 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 setup(
     name='omni-vram',
-    version='0.2.0',
-    description='GPU-optimized VRAM testing and audio processing toolkit',
+    version='1.0.0',
+    description='Real-time VRAM orchestration toolkit for voice-enabled LLM applications',
     long_description=open('README.md', encoding='utf-8').read(),
     long_description_content_type='text/markdown',
     author='Liangchenxu',
