@@ -102,7 +102,7 @@ else:
 # Package Setup
 setup(
     name='vram_core',
-    version='2.0.0',
+    version='2.1.0',
     description='vram_core - LLM Voice Interaction Framework',
     long_description=open('README.MD', encoding='utf-8').read(),
     long_description_content_type='text/markdown',
@@ -111,7 +111,7 @@ setup(
     license='MIT',
 
     # Python packages
-    packages=['vram_core', 'vram_core.whisper'],
+    packages=['vram_core', 'vram_core.whisper', 'vram_core.chinese'],
     python_requires='>=3.8',
 
     # Dependencies

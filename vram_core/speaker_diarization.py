@@ -389,9 +389,16 @@ class MFCCDiarizer:
             embedding = self.compute_embedding(mfcc)
             speaker_id, confidence = self._assign_speaker(embedding)
 
+            seg_start = start / sample_rate
+            seg_end = end / sample_rate
+
+            # Update speaker profile total_duration
+            if speaker_id in self._speakers:
+                self._speakers[speaker_id].total_duration += (seg_end - seg_start)
+
             segments.append(SpeakerSegment(
-                start_time=start / sample_rate,
-                end_time=end / sample_rate,
+                start_time=seg_start,
+                end_time=seg_end,
                 speaker_id=speaker_id,
                 audio=seg_audio,
                 confidence=confidence,

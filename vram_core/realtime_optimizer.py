@@ -93,6 +93,12 @@ class SileroVAD:
         # Internal state for Silero model
         self._model_state = None
 
+        # Buffering for small chunks (< 512 samples)
+        self._MIN_SILERO_SAMPLES = 512
+        self._silero_buffer = np.array([], dtype=np.float32)
+        self._last_silero_result = False
+        self._silero_fail_count = 0
+
     def _load_model(self):
         """Lazily load the Silero VAD model."""
         if self._model is not None:
@@ -125,6 +131,9 @@ class SileroVAD:
         self._is_speech_active = False
         self._speech_start_time = None
         self._last_speech_time = None
+        self._silero_buffer = np.array([], dtype=np.float32)
+        self._last_silero_result = False
+        self._silero_fail_count = 0
         if self._model is not None:
             try:
                 self._model.reset_states()
@@ -134,6 +143,10 @@ class SileroVAD:
     def is_speech(self, audio_chunk: np.ndarray) -> bool:
         """
         Detect whether the given audio chunk contains speech.
+
+        Buffers small chunks (e.g. 480 samples / 30ms) until the minimum
+        Silero VAD window size (512 samples / 32ms) is reached, avoiding
+        the "Input audio chunk is too short" fallback.
 
         Args:
             audio_chunk: Float32 audio samples at the configured sample rate.
@@ -146,40 +159,45 @@ class SileroVAD:
         if len(audio_chunk) == 0:
             return False
 
-        # Silero VAD expects torch tensor
-        try:
-            import torch
+        if audio_chunk.dtype != np.float32:
+            audio_chunk = audio_chunk.astype(np.float32)
 
-            # Ensure correct shape and type
-            if audio_chunk.dtype != np.float32:
-                audio_chunk = audio_chunk.astype(np.float32)
+        # Append to internal buffer
+        self._silero_buffer = np.concatenate([self._silero_buffer, audio_chunk])
 
-            tensor = torch.from_numpy(audio_chunk)
+        # Process all complete windows from the buffer
+        while len(self._silero_buffer) >= self._MIN_SILERO_SAMPLES:
+            window = self._silero_buffer[:self._MIN_SILERO_SAMPLES]
+            self._silero_buffer = self._silero_buffer[self._MIN_SILERO_SAMPLES:]
+            try:
+                import torch
+                tensor = torch.from_numpy(window)
+                prob = self._model(tensor, self.sample_rate).item()
+                self._last_silero_result = prob >= self.threshold
+                self._silero_fail_count = 0
+            except Exception as e:
+                if self._silero_fail_count == 0:
+                    logger.warning("Silero VAD inference failed: %s, falling back", e)
+                self._silero_fail_count += 1
+                self._last_silero_result = self._fallback_energy_vad(window)
 
-            # Run inference
-            prob = self._model(tensor, self.sample_rate).item()
+        # Update speech state
+        now = time.time()
+        is_speech = self._last_silero_result
 
-            is_speech = prob >= self.threshold
-            now = time.time()
+        if is_speech:
+            if not self._is_speech_active:
+                self._is_speech_active = True
+                self._speech_start_time = now
+            self._last_speech_time = now
+        else:
+            if self._is_speech_active:
+                if self._last_speech_time is not None:
+                    silence_ms = (now - self._last_speech_time) * 1000
+                    if silence_ms >= self.silence_duration_ms:
+                        self._is_speech_active = False
 
-            if is_speech:
-                if not self._is_speech_active:
-                    self._is_speech_active = True
-                    self._speech_start_time = now
-                self._last_speech_time = now
-            else:
-                if self._is_speech_active:
-                    # Check silence duration
-                    if self._last_speech_time is not None:
-                        silence_ms = (now - self._last_speech_time) * 1000
-                        if silence_ms >= self.silence_duration_ms:
-                            self._is_speech_active = False
-
-            return is_speech
-
-        except Exception as e:
-            logger.warning("Silero VAD inference failed: %s, falling back", e)
-            return self._fallback_energy_vad(audio_chunk)
+        return is_speech
 
     def _fallback_energy_vad(self, audio_chunk: np.ndarray) -> bool:
         """Fallback energy-based VAD if Silero fails."""

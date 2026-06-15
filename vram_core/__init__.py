@@ -27,7 +27,7 @@ Modules:
     - wake_word: Wake word / keyword detection (energy-based / Whisper-based)
 """
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 # CUDA extension (built from vram_hacker.cu)
 try:

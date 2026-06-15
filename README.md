@@ -7,7 +7,7 @@
 ![Python: 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue.svg)
 [![Tests](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml/badge.svg)](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml)
 [![PyPI](https://img.shields.io/pypi/v/omni-vram.svg)](https://pypi.org/project/omni-vram/)
-[![Version](https://img.shields.io/badge/Version-2.0.0-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
+[![Version](https://img.shields.io/badge/Version-2.1.0-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
 
 [**English**](#english-documentation) | [**中文文档**](#chinese-documentation) | [**Docs**](docs/)
 
@@ -18,7 +18,7 @@
 
 **Omni-VRAM** is a production-ready **LLM voice interaction framework** that lets large language models hear and speak. Built on CUDA zero-copy technology, it provides **22 core modules** covering the entire audio AI pipeline — from speech recognition to synthesis, from single GPU to distributed clusters.
 
-> **v2.0.0**: Major release with 22 modules including speaker diarization, speaker verification, emotion recognition, noise reduction, TTS, voice translation, multi-GPU support, distributed transcription, plugin system, monitoring, and gRPC service.
+> **v2.1.0**: Major release with 22 modules, Chinese NLP pipeline (normalizer/tokenizer/punctuation/dialect/domain dict), Whisper optimization (CUDA graph, INT8/FP16 quantization), real-time optimizer, and comprehensive integration tests.
 
 Traditional Python audio pipelines and PyTorch operations (e.g., `torch.cat` for KV-Cache) introduce significant overhead. Omni-VRAM implements **Operator Fusion** and **Zero-Copy Memory Injection** at the hardware level, enabling consumer-grade GPUs (RTX 30/40 series) to achieve sub-millisecond latency for real-time voice agents.
 
@@ -451,6 +451,116 @@ pm.register_hook("on_transcription", my_callback)
 
 ---
 
+## 🔧 Troubleshooting (故障排除)
+
+### Common Issues
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| `ImportError: No module named 'vram_core._vram_hacker'` | CUDA extension not built | Run `python setup.py install` or use CPU-only mode (the library works without CUDA) |
+| `CUDA_HOME not found` | NVCC not in PATH | Set `CUDA_HOME` env variable or install CUDA Toolkit |
+| `No module named 'faster_whisper'` | Optional dependency missing | `pip install faster-whisper` |
+| `torch.cuda.is_available() returns False` | PyTorch CPU-only installed | Install CUDA-enabled PyTorch: `pip install torch --index-url https://download.pytorch.org/whl/cu121` |
+| `Port already in use` when starting API server | Port 8000 is occupied | Use `--port 8080` or kill the existing process |
+| `ModuleNotFoundError: No module named 'gradio'` | Gradio not installed | `pip install gradio` |
+| `RuntimeError: CUDA out of memory` | GPU VRAM exhausted | Use `VRAMOptimizer.auto_optimize()` or switch to smaller Whisper model |
+| `PermissionError` on Windows when building CUDA | Missing admin/elevated permissions | Run terminal as Administrator |
+| `resemblyzer not found` for speaker diarization | Optional speaker dependency | `pip install resemblyzer` |
+| Tests fail with `pytest` | Missing test dependencies | `pip install pytest numpy` then `pytest tests/ -v` |
+
+### Diagnostic Commands
+
+```bash
+# Check Python environment
+python -c "import vram_core; print(vram_core.__version__, vram_core.CUDA_AVAILABLE)"
+
+# Check CUDA availability
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'N/A')"
+
+# Run quick integration test
+python test_run.py
+
+# Run full test suite
+pytest tests/ -v --tb=short
+
+# Run only integration tests
+pytest tests/test_integration.py -v
+
+# Check VRAM status
+python -c "from vram_core.vram_optimizer import VRAMOptimizer; o = VRAMOptimizer(); print(o.get_status())"
+```
+
+### Getting Help
+
+- 📖 Check the [FAQ](docs/faq.md) for frequently asked questions
+- 🐛 Report bugs via [GitHub Issues](https://github.com/Liangchenxu/Omni-VRAM/issues)
+- 💬 Join discussions in [GitHub Discussions](https://github.com/Liangchenxu/Omni-VRAM/discussions)
+- 📧 Contact: [Liangchenxu](https://github.com/Liangchenxu)
+
+---
+
+## 🤝 Contributing (English)
+
+We welcome contributions of all kinds!
+
+### Development Setup
+
+```bash
+# Clone the repository
+git clone https://github.com/Liangchenxu/Omni-VRAM.git
+cd Omni-VRAM
+
+# Install in development mode
+pip install -e ".[dev]"
+
+# Install test dependencies
+pip install pytest pytest-cov numpy
+```
+
+### Contribution Workflow
+
+1. **Fork** the repository
+2. Create a feature branch: `git checkout -b feature/amazing-feature`
+3. Make your changes with tests
+4. Run the test suite: `pytest tests/ -v`
+5. Commit: `git commit -m 'feat: add amazing feature'`
+6. Push: `git push origin feature/amazing-feature`
+7. Open a **Pull Request**
+
+### Code Standards
+
+- All new modules must have corresponding unit tests in `tests/`
+- Integration tests go in `tests/test_integration.py`
+- Follow PEP 8 style guidelines
+- Add docstrings for all public classes and methods
+- Use type hints for function signatures
+- Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/):
+  - `feat:` for new features
+  - `fix:` for bug fixes
+  - `docs:` for documentation
+  - `test:` for tests
+  - `refactor:` for refactoring
+
+### Project Architecture
+
+```
+vram_core/
+├── __init__.py          # Public API exports + version
+├── config.py            # Singleton config (YAML/env/hot-reload)
+├── audio_utils.py       # Audio format detection & conversion
+├── noise_reduction.py   # Spectral subtraction noise reduction
+├── emotion_recognition.py # MFCC/energy emotion recognition
+├── speaker_*.py         # Speaker diarization & verification
+├── wake_word.py         # Wake word detection
+├── streaming_asr.py     # Real-time ASR engine
+├── whisper/             # Whisper integration subpackage
+├── chinese/             # Chinese NLP pipeline subpackage
+├── plugin_manager.py    # Plugin system with hooks
+└── monitoring.py        # GPU monitoring & metrics
+```
+
+---
+
 ## ⚠️ Disclaimer & Liability Waiver
 **Hardware Interaction Warning:** Omni-VRAM interfaces directly with physical GPU hardware at the CUDA C++ level, employing aggressive zero-copy pointer manipulation to maximize throughput. 
 While extensively tested, this software is provided **"as is"**, without warranty of any kind. The authors shall NOT be held liable for any kernel panics, system freezes, data loss, or hardware instability resulting from the use of this engine. **Use in production environments at your own risk.**
@@ -467,7 +577,7 @@ You are free to use, modify, and distribute this software in both commercial and
 
 **Omni-VRAM** 是一个生产级的 **LLM 语音交互框架**，让大模型长出耳朵和嘴巴。基于 CUDA 零拷贝技术构建，提供 **22 个核心模块**，覆盖完整的语音 AI 管线——从语音识别到语音合成，从单 GPU 到分布式集群。
 
-> **v2.0.0**：重大版本更新，新增说话人分离、声纹验证、情绪识别、噪声消除、TTS 语音合成、语音翻译、多 GPU 支持、分布式转录、插件系统、监控系统、gRPC 服务等 22 个模块。
+> **v2.1.0**：重大版本更新，新增中文 NLP 管线（分词/标点/方言/领域词典）、Whisper 优化（CUDA Graph、INT8/FP16 量化）、实时优化器、完整集成测试等。
 
 传统的 Python 音频处理管线和 PyTorch 操作（如 `torch.cat` 更新 KV-Cache）会引入严重的性能开销。Omni-VRAM 在硬件层面实现**算子融合**和**零拷贝内存注入**，使消费级显卡（RTX 30/40 系列）能够为实时语音助手提供亚毫秒级延迟。
 
@@ -512,7 +622,7 @@ Omni-VRAM/
 ├── .env.example                # 配置模板
 │
 ├── vram_core/                  # Python 核心库（22 个模块）
-│   ├── __init__.py             # 包导出（v2.0.0）
+│   ├── __init__.py             # 包导出（v2.1.0）
 │   ├── config.py               # 配置管理
 │   ├── utils.py                # 通用工具函数
 │   ├── audio_utils.py          # 音频格式检测与转换

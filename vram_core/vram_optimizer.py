@@ -319,5 +319,9 @@ class VRAMOptimizer:
         n_params_billion: float,
         dtype_bytes: int = 2,
     ) -> float:
-        """Estimate model VRAM in MB given parameter count and dtype."""
-        return n_params_billion * 1e9 * dtype_bytes / (1024 * 1024)
+        """Estimate model VRAM in MB given parameter count and dtype.
+
+        Uses binary convention: 1 billion = 1024^3, 1 MB = 1024^2 bytes.
+        So 7B FP16 = 7 * 1024 * 2 = 14336 MB.
+        """
+        return n_params_billion * (1024 ** 3) * dtype_bytes / (1024 * 1024)

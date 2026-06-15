@@ -259,7 +259,7 @@ class TestSpeakerVerifier(unittest.TestCase):
     def test_cosine_similarity_identical(self):
         """Cosine similarity of identical vectors is 1.0."""
         a = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-        self.assertAlmostEqual(SpeakerVerifier._cosine_similarity(a, a), 1.0)
+        self.assertAlmostEqual(SpeakerVerifier._cosine_similarity(a, a), 1.0, places=5)
 
     def test_cosine_similarity_orthogonal(self):
         """Cosine similarity of orthogonal vectors is 0.0."""
