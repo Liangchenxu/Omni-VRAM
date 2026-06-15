@@ -29,7 +29,7 @@ from vram_core.whisper.models import (
     WhisperBackend,
 )
 from vram_core.whisper.preprocessor import AudioPreprocessor
-from vram_core.whisper.result import WhisperResult
+from vram_core.whisper.result import WhisperResult, TranscriptionResult
 
 logger = logging.getLogger("omni-vram.whisper.bridge")
 
@@ -62,6 +62,22 @@ class WhisperBridge:
     Thread-safe for concurrent transcription requests.
     """
 
+    SUPPORTED_LANGUAGES: Dict[str, str] = {
+        "zh": "Chinese", "en": "English", "ja": "Japanese", "ko": "Korean",
+        "fr": "French", "de": "German", "es": "Spanish", "ru": "Russian",
+        "it": "Italian", "pt": "Portuguese", "nl": "Dutch", "pl": "Polish",
+        "sv": "Swedish", "da": "Danish", "fi": "Finnish", "no": "Norwegian",
+        "hu": "Hungarian", "cs": "Czech", "ro": "Romanian", "bg": "Bulgarian",
+        "hr": "Croatian", "sk": "Slovak", "sl": "Slovenian", "et": "Estonian",
+        "lv": "Latvian", "lt": "Lithuanian", "mt": "Maltese", "ga": "Irish",
+        "cy": "Welsh", "is": "Icelandic", "ms": "Malay", "id": "Indonesian",
+        "tl": "Filipino", "vi": "Vietnamese", "th": "Thai", "hi": "Hindi",
+        "bn": "Bengali", "ta": "Tamil", "te": "Telugu", "ur": "Urdu",
+        "ar": "Arabic", "he": "Hebrew", "tr": "Turkish", "el": "Greek",
+        "uk": "Ukrainian", "mk": "Macedonian", "sq": "Albanian", "bs": "Bosnian",
+        "sr": "Serbian", "sw": "Swahili",
+    }
+
     def __init__(
         self,
         whisper_cpp_path: Optional[str] = None,
@@ -88,17 +104,20 @@ class WhisperBridge:
             openai_model:     OpenAI model name (default: 'whisper-1').
             proxy:            HTTP proxy URL.
         """
-        self.whisper_cpp_path = whisper_cpp_path or config.whisper_cpp_path
-        self.whisper_model = whisper_model or config.whisper_model
+        self.whisper_cpp_path = whisper_cpp_path or (str(config.whisper_cpp_path) if config.whisper_cpp_path else None)
+        self.whisper_model = whisper_model or (str(config.whisper_model_path).split("/")[-1].replace("ggml-","").replace(".bin","") if config.whisper_model_path else "base")
         self.language = language or config.language
-        self.openai_api_key = openai_api_key or config.openai_api_key
+        self.openai_api_key = openai_api_key or config.openai_api_key or os.environ.get("OPENAI_API_KEY")
         self.openai_model = openai_model or config.openai_model
-        self.proxy = proxy or config.proxy
-        self.device = device or ("cuda" if config.use_gpu else "cpu")
-        self.compute_type = compute_type or config.compute_type
+        self.proxy = proxy or None
+        self.device = device or config.device
+        self.compute_type = compute_type or config.whisper_compute_type
 
         self.audio_preprocessor = AudioPreprocessor()
-        self._backend = self._resolve_backend(backend)
+        if backend == WhisperBackend.AUTO or (isinstance(backend, str) and backend == "auto"):
+            self._backend = self._auto_detect_backend()
+        else:
+            self._backend = self._resolve_backend(backend)
         self._fw_model: Optional[Any] = None
         self._fw_model_size: Optional[str] = None
         self._fw_model_compute_type: Optional[str] = None
@@ -135,9 +154,20 @@ class WhisperBridge:
     # Backend Resolution
     # ------------------------------------------------------------------
 
+    def _auto_detect_backend(self) -> WhisperBackend:
+        """Auto-detect the best available backend."""
+        if self._check_faster_whisper():
+            return WhisperBackend.FASTER_WHISPER
+        if self._check_whisper_cpp():
+            return WhisperBackend.WHISPER_CPP
+        if self.openai_api_key:
+            return WhisperBackend.OPENAI_API
+        # Default to whisper.cpp even if not installed
+        return WhisperBackend.WHISPER_CPP
+
     def _resolve_backend(self, backend: Optional[str] = None) -> WhisperBackend:
         """Resolve which backend to use."""
-        if backend:
+        if backend and backend != "auto":
             try:
                 return WhisperBackend(backend)
             except ValueError:
@@ -321,6 +351,34 @@ class WhisperBridge:
             output_format=output_format, **kwargs,
         )
 
+    def transcribe_stream(
+        self,
+        chunks: List[np.ndarray],
+        sample_rate: int = 16000,
+        **kwargs,
+    ) -> TranscriptionResult:
+        """
+        Transcribe multiple audio chunks as a single stream.
+
+        Concatenates all chunks and transcribes the combined audio.
+
+        Args:
+            chunks:       List of numpy audio arrays.
+            sample_rate:  Sample rate for all chunks.
+            **kwargs:     Additional options passed to transcribe().
+
+        Returns:
+            TranscriptionResult with combined transcription.
+        """
+        combined = np.concatenate(chunks)
+        result = self.transcribe(combined, sample_rate=sample_rate, **kwargs)
+        return TranscriptionResult(
+            text=result.text,
+            language=result.language,
+            segments=result.segments,
+            backend=result.backend,
+        )
+
     def _prepare_audio(
         self,
         audio: Union[str, Path, np.ndarray, bytes],
@@ -489,8 +547,10 @@ class WhisperBridge:
             "compute_type": compute_type,
         }
 
-        if config.cpu_threads > 0:
-            model_kwargs["cpu_threads"] = config.cpu_threads
+        # cpu_threads not in config, use reasonable default
+        cpu_threads = 4
+        if cpu_threads > 0:
+            model_kwargs["cpu_threads"] = cpu_threads
 
         try:
             model = WhisperModel(actual_model, **model_kwargs)
@@ -542,7 +602,7 @@ class WhisperBridge:
                 str(binary),
                 "-m", str(model_path),
                 "-f", tmp_path,
-                "-t", str(config.cpu_threads or 4),
+                "-t", str(4),
                 "--no-gpu",
                 "-l", kwargs.get("language", self.language or "auto"),
             ]

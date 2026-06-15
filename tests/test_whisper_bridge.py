@@ -137,15 +137,17 @@ class TestWhisperBridgeInit(unittest.TestCase):
 class TestWhisperBridgeAutoDetect(unittest.TestCase):
     """Test backend auto-detection logic."""
 
-    def test_auto_detect_prefers_whisper_cpp(self):
-        """Test that auto-detect prefers whisper.cpp when available."""
-        with patch.object(WhisperBridge, '_check_whisper_cpp', return_value=True):
+    def test_auto_detect_prefers_faster_whisper(self):
+        """Test that auto-detect prefers faster-whisper when available."""
+        with patch.object(WhisperBridge, '_check_faster_whisper', return_value=True), \
+             patch.object(WhisperBridge, '_check_whisper_cpp', return_value=False):
             bridge = WhisperBridge(backend=WhisperBackend.AUTO)
-            self.assertEqual(bridge.backend, WhisperBackend.WHISPER_CPP)
+            self.assertEqual(bridge.backend, WhisperBackend.FASTER_WHISPER)
 
     def test_auto_detect_falls_back_to_openai(self):
         """Test that auto-detect falls back to OpenAI API."""
-        with patch.object(WhisperBridge, '_check_whisper_cpp', return_value=False):
+        with patch.object(WhisperBridge, '_check_faster_whisper', return_value=False), \
+             patch.object(WhisperBridge, '_check_whisper_cpp', return_value=False):
             bridge = WhisperBridge(
                 backend=WhisperBackend.AUTO,
                 openai_api_key="test-key",
@@ -154,7 +156,8 @@ class TestWhisperBridgeAutoDetect(unittest.TestCase):
 
     def test_auto_detect_defaults_to_whisper_cpp(self):
         """Test that auto-detect defaults to whisper.cpp when nothing available."""
-        with patch.object(WhisperBridge, '_check_whisper_cpp', return_value=False):
+        with patch.object(WhisperBridge, '_check_faster_whisper', return_value=False), \
+             patch.object(WhisperBridge, '_check_whisper_cpp', return_value=False):
             bridge = WhisperBridge(backend=WhisperBackend.AUTO)
             self.assertEqual(bridge.backend, WhisperBackend.WHISPER_CPP)
 
@@ -186,7 +189,8 @@ class TestWhisperBridgeGetAvailableBackends(unittest.TestCase):
 
     def test_no_backends_available(self):
         """Test when no backends are available."""
-        with patch.object(WhisperBridge, '_check_whisper_cpp', return_value=False):
+        with patch.object(WhisperBridge, '_check_faster_whisper', return_value=False), \
+             patch.object(WhisperBridge, '_check_whisper_cpp', return_value=False):
             bridge = WhisperBridge(
                 backend=WhisperBackend.WHISPER_CPP,
                 openai_api_key=None,
@@ -196,7 +200,8 @@ class TestWhisperBridgeGetAvailableBackends(unittest.TestCase):
 
     def test_only_openai_available(self):
         """Test when only OpenAI API is available."""
-        with patch.object(WhisperBridge, '_check_whisper_cpp', return_value=False):
+        with patch.object(WhisperBridge, '_check_faster_whisper', return_value=False), \
+             patch.object(WhisperBridge, '_check_whisper_cpp', return_value=False):
             bridge = WhisperBridge(
                 backend=WhisperBackend.OPENAI_API,
                 openai_api_key="test-key",
@@ -205,15 +210,17 @@ class TestWhisperBridgeGetAvailableBackends(unittest.TestCase):
             self.assertEqual(len(available), 1)
             self.assertIn(WhisperBackend.OPENAI_API, available)
 
-    def test_both_available(self):
-        """Test when both backends are available."""
-        with patch.object(WhisperBridge, '_check_whisper_cpp', return_value=True):
+    def test_all_backends_available(self):
+        """Test when all backends are available."""
+        with patch.object(WhisperBridge, '_check_faster_whisper', return_value=True), \
+             patch.object(WhisperBridge, '_check_whisper_cpp', return_value=True):
             bridge = WhisperBridge(
                 backend=WhisperBackend.WHISPER_CPP,
                 openai_api_key="test-key",
             )
             available = bridge.get_available_backends()
-            self.assertEqual(len(available), 2)
+            self.assertEqual(len(available), 3)
+            self.assertIn(WhisperBackend.FASTER_WHISPER, available)
             self.assertIn(WhisperBackend.WHISPER_CPP, available)
             self.assertIn(WhisperBackend.OPENAI_API, available)
 
