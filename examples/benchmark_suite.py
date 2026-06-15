@@ -1,17 +1,17 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-Omni-VRAM: Benchmark Suite
+vram_core: Benchmark Suite
 ============================
 
-Comprehensive performance testing for all Omni-VRAM modules.
+Comprehensive performance testing for all vram_core modules.
 Generates a Markdown report with environment info, latency metrics,
 throughput numbers, and optimization recommendations.
 
 Tests:
-    1. KV-Cache Injection — append_to_kv_cache latency and throughput
-    2. Audio Processing — AudioProcessor conversion speed, StreamProcessor VAD speed
-    3. Whisper Transcription — model size comparison, audio duration scaling
-    4. Hardware Info — GPU, CUDA, system information
+    1. KV-Cache Injection 锟?append_to_kv_cache latency and throughput
+    2. Audio Processing 锟?AudioProcessor conversion speed, StreamProcessor VAD speed
+    3. Whisper Transcription 锟?model size comparison, audio duration scaling
+    4. Hardware Info 锟?GPU, CUDA, system information
 
 Usage:
     # Full benchmark (including whisper)
@@ -27,7 +27,7 @@ Usage:
     python examples/benchmark_suite.py --verbose
 
 Output:
-    benchmark_report.md — Markdown performance report
+    benchmark_report.md 锟?Markdown performance report
 
 Requirements:
     pip install numpy torch
@@ -55,7 +55,7 @@ import numpy as np
 from vram_core.config import setup_logging
 
 
-# ── Hardware Info ─────────────────────────────────────────────────
+# 鈹€鈹€ Hardware Info 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def gather_hardware_info() -> Dict[str, Any]:
     """Gather system and GPU hardware information."""
@@ -135,7 +135,7 @@ def gather_hardware_info() -> Dict[str, Any]:
     return info
 
 
-# ── Benchmark: KV-Cache ──────────────────────────────────────────
+# 鈹€鈹€ Benchmark: KV-Cache 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def benchmark_kv_cache(iterations: int, verbose: bool = False) -> Dict[str, Any]:
     """
@@ -178,7 +178,7 @@ def benchmark_kv_cache(iterations: int, verbose: bool = False) -> Dict[str, Any]
     for max_seq, hidden_dim, new_tokens in configs:
         logger.info(f"Testing KV-Cache: seq={max_seq}, dim={hidden_dim}, new={new_tokens}")
 
-        # ── Method 1: torch.cat baseline ──
+        # 鈹€鈹€ Method 1: torch.cat baseline 鈹€鈹€
         cat_latencies = []
         for _ in range(iterations):
             kv_cache = torch.randn(max_seq, hidden_dim, device=device, dtype=torch.float32)
@@ -198,7 +198,7 @@ def benchmark_kv_cache(iterations: int, verbose: bool = False) -> Dict[str, Any]
             t1 = time.perf_counter()
             cat_latencies.append((t1 - t0) * 1000)  # ms
 
-        # ── Method 2: Direct injection (simulated) ──
+        # 鈹€鈹€ Method 2: Direct injection (simulated) 鈹€鈹€
         inject_latencies = []
         for _ in range(iterations):
             kv_cache = torch.zeros(max_seq, hidden_dim, device=device, dtype=torch.float32)
@@ -239,14 +239,14 @@ def benchmark_kv_cache(iterations: int, verbose: bool = False) -> Dict[str, Any]
         results["configurations"].append(config_result)
 
         if verbose:
-            logger.info(f"  torch.cat: {cat_avg:.4f}ms ± {cat_std:.4f}ms")
-            logger.info(f"  inject:    {inject_avg:.4f}ms ± {inject_std:.4f}ms")
+            logger.info(f"  torch.cat: {cat_avg:.4f}ms 卤 {cat_std:.4f}ms")
+            logger.info(f"  inject:    {inject_avg:.4f}ms 卤 {inject_std:.4f}ms")
             logger.info(f"  speedup:   {speedup:.2f}x")
 
     return results
 
 
-# ── Benchmark: Audio Processing ──────────────────────────────────
+# 鈹€鈹€ Benchmark: Audio Processing 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def benchmark_audio_processing(iterations: int, verbose: bool = False) -> Dict[str, Any]:
     """
@@ -263,7 +263,7 @@ def benchmark_audio_processing(iterations: int, verbose: bool = False) -> Dict[s
         "stream_processor": {},
     }
 
-    # ── AudioProcessor Benchmarks ─────────────────────────────────
+    # 鈹€鈹€ AudioProcessor Benchmarks 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     try:
         from vram_core.audio_utils import AudioProcessor
 
@@ -332,13 +332,13 @@ def benchmark_audio_processing(iterations: int, verbose: bool = False) -> Dict[s
                 if not k.endswith("_std"):
                     std_key = k + "_std_ms"
                     std_val = results["audio_processor"].get(std_key, results["audio_processor"].get(k + "_std", 0))
-                    logger.info(f"  {k}: {v}ms ± {std_val}ms")
+                    logger.info(f"  {k}: {v}ms 卤 {std_val}ms")
 
     except ImportError as e:
         logger.warning(f"Cannot import AudioProcessor: {e}")
         results["audio_processor"]["error"] = str(e)
 
-    # ── StreamProcessor VAD Benchmarks ────────────────────────────
+    # 鈹€鈹€ StreamProcessor VAD Benchmarks 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     try:
         from vram_core.stream_processor import StreamProcessor, StreamConfig
 
@@ -406,7 +406,7 @@ def benchmark_audio_processing(iterations: int, verbose: bool = False) -> Dict[s
     return results
 
 
-# ── Benchmark: Whisper ───────────────────────────────────────────
+# 鈹€鈹€ Benchmark: Whisper 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def benchmark_whisper(iterations: int, verbose: bool = False) -> Dict[str, Any]:
     """
@@ -477,7 +477,7 @@ def benchmark_whisper(iterations: int, verbose: bool = False) -> Dict[str, Any]:
                 }
 
                 if verbose:
-                    logger.info(f"  {model_size} / {dur}s: {avg_ms:.2f}ms ± {std_ms:.2f}ms ({realtime_factor:.1f}x realtime)")
+                    logger.info(f"  {model_size} / {dur}s: {avg_ms:.2f}ms 卤 {std_ms:.2f}ms ({realtime_factor:.1f}x realtime)")
 
         except Exception as e:
             logger.warning(f"Whisper {model_size} failed: {e}")
@@ -488,7 +488,7 @@ def benchmark_whisper(iterations: int, verbose: bool = False) -> Dict[str, Any]:
     return results
 
 
-# ── Report Generation ────────────────────────────────────────────
+# 鈹€鈹€ Report Generation 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def generate_report(
     hardware: Dict[str, Any],
@@ -501,7 +501,7 @@ def generate_report(
     lines = []
 
     # Header
-    lines.append("# Omni-VRAM Benchmark Report")
+    lines.append("# vram_core Benchmark Report")
     lines.append("")
     lines.append(f"> Generated: {hardware.get('timestamp', 'N/A')}")
     lines.append("")
@@ -531,7 +531,7 @@ def generate_report(
     lines.append("## KV-Cache Performance")
     lines.append("")
     if "error" in kv_cache:
-        lines.append(f"> ⚠️ {kv_cache['error']}")
+        lines.append(f"> 鈿狅笍 {kv_cache['error']}")
         lines.append("")
     else:
         lines.append("### torch.cat vs Direct VRAM Injection")
@@ -543,8 +543,8 @@ def generate_report(
                 f"| {cfg['max_seq_len']:,} "
                 f"| {cfg['hidden_dim']:,} "
                 f"| {cfg['new_tokens']} "
-                f"| {cfg['torch_cat_avg_ms']:.4f} ± {cfg['torch_cat_std_ms']:.4f} "
-                f"| {cfg['direct_inject_avg_ms']:.4f} ± {cfg['direct_inject_std_ms']:.4f} "
+                f"| {cfg['torch_cat_avg_ms']:.4f} 卤 {cfg['torch_cat_std_ms']:.4f} "
+                f"| {cfg['direct_inject_avg_ms']:.4f} 卤 {cfg['direct_inject_std_ms']:.4f} "
                 f"| **{cfg['speedup']:.2f}x** |"
             )
         lines.append("")
@@ -557,7 +557,7 @@ def generate_report(
 
     ap = audio.get("audio_processor", {})
     if "error" in ap:
-        lines.append(f"> ⚠️ AudioProcessor: {ap['error']}")
+        lines.append(f"> 鈿狅笍 AudioProcessor: {ap['error']}")
         lines.append("")
     else:
         lines.append("### AudioProcessor")
@@ -566,10 +566,10 @@ def generate_report(
         lines.append("|---|---:|---:|")
 
         op_labels = {
-            "to_float32_5s_ms": "int16 → float32 (5s audio)",
-            "stereo_to_mono_5s_ms": "Stereo → Mono (5s audio)",
-            "resample_44100_to_16000_5s_ms": "Resample 44.1kHz→16kHz (5s)",
-            "resample_48000_to_16000_5s_ms": "Resample 48kHz→16kHz (5s)",
+            "to_float32_5s_ms": "int16 锟?float32 (5s audio)",
+            "stereo_to_mono_5s_ms": "Stereo 锟?Mono (5s audio)",
+            "resample_44100_to_16000_5s_ms": "Resample 44.1kHz锟?6kHz (5s)",
+            "resample_48000_to_16000_5s_ms": "Resample 48kHz锟?6kHz (5s)",
             "normalize_10s_ms": "Normalization (10s audio)",
             "to_wav_bytes_10s_ms": "WAV encoding (10s audio)",
         }
@@ -582,7 +582,7 @@ def generate_report(
 
     sp = audio.get("stream_processor", {})
     if "error" in sp:
-        lines.append(f"> ⚠️ StreamProcessor: {sp['error']}")
+        lines.append(f"> 鈿狅笍 StreamProcessor: {sp['error']}")
         lines.append("")
     else:
         lines.append("### StreamProcessor (VAD)")
@@ -590,9 +590,9 @@ def generate_report(
         lines.append("| Operation | Time (ms) | Std (ms) |")
         lines.append("|---|---:|---:|")
         if "vad_silence_ms" in sp:
-            lines.append(f"| VAD — silence chunk | {sp['vad_silence_ms']:.4f} | {sp['vad_silence_std_ms']:.4f} |")
+            lines.append(f"| VAD 锟?silence chunk | {sp['vad_silence_ms']:.4f} | {sp['vad_silence_std_ms']:.4f} |")
         if "vad_speech_ms" in sp:
-            lines.append(f"| VAD — speech chunk | {sp['vad_speech_ms']:.4f} | {sp['vad_speech_std_ms']:.4f} |")
+            lines.append(f"| VAD 锟?speech chunk | {sp['vad_speech_ms']:.4f} | {sp['vad_speech_std_ms']:.4f} |")
         lines.append("")
         lines.append("| Metric | Value |")
         lines.append("|---|---:|")
@@ -606,17 +606,17 @@ def generate_report(
     lines.append("## Whisper Performance")
     lines.append("")
     if whisper is None:
-        lines.append("> ⏭️ Skipped (--skip-whisper)")
+        lines.append("> 鈴笍 Skipped (--skip-whisper)")
         lines.append("")
     elif "error" in whisper:
-        lines.append(f"> ⚠️ {whisper['error']}")
+        lines.append(f"> 鈿狅笍 {whisper['error']}")
         lines.append("")
     else:
         for model_name, model_data in whisper.get("models", {}).items():
             lines.append(f"### Model: `{model_name}`")
             lines.append("")
             if model_data.get("error"):
-                lines.append(f"> ⚠️ Error: {model_data['error']}")
+                lines.append(f"> 鈿狅笍 Error: {model_data['error']}")
                 lines.append("")
                 continue
             lines.append(f"- Backend: `{model_data.get('backend', 'N/A')}`")
@@ -674,7 +674,7 @@ def generate_report(
             f"({hardware.get('gpu_memory_mb', 0)} MB VRAM)"
         )
     else:
-        summary_points.append("- CUDA not available — all tests ran on CPU")
+        summary_points.append("- CUDA not available 锟?all tests ran on CPU")
 
     if not summary_points:
         summary_points.append("- No benchmark data collected")
@@ -682,7 +682,7 @@ def generate_report(
     lines.extend(summary_points)
     lines.append("")
     lines.append("---")
-    lines.append(f"*Report generated by Omni-VRAM Benchmark Suite*")
+    lines.append(f"*Report generated by vram_core Benchmark Suite*")
     lines.append("")
 
     report = "\n".join(lines)
@@ -694,12 +694,12 @@ def generate_report(
     return report
 
 
-# ── Command Line Arguments ───────────────────────────────────────
+# 鈹€鈹€ Command Line Arguments 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Omni-VRAM: Benchmark Suite",
+        description="vram_core: Benchmark Suite",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -750,7 +750,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-# ── Main ─────────────────────────────────────────────────────────
+# 鈹€鈹€ Main 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def main():
     """Main entry point for benchmark suite."""
@@ -761,9 +761,9 @@ def main():
     logger = logging.getLogger("benchmark_suite")
 
     print()
-    print("╔" + "═" * 58 + "╗")
-    print("║" + "  Omni-VRAM: Benchmark Suite".center(58) + "║")
-    print("╚" + "═" * 58 + "╝")
+    print("锟? + "锟? * 58 + "锟?)
+    print("锟? + "  vram_core: Benchmark Suite".center(58) + "锟?)
+    print("锟? + "锟? * 58 + "锟?)
     print()
     print(f"  Iterations:     {args.iterations}")
     print(f"  Output:         {args.output}")
@@ -772,17 +772,17 @@ def main():
     print(f"  Skip Whisper:   {args.skip_whisper}")
     print()
 
-    # ── Step 1: Hardware Info ─────────────────────────────────────
+    # 鈹€鈹€ Step 1: Hardware Info 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     print("  [1/4] Gathering hardware info...")
     hardware = gather_hardware_info()
     gpu_display = hardware.get("gpu_name", "N/A")
     if gpu_display == "N/A":
         gpu_display = "No GPU detected"
-    print(f"  ✅ {gpu_display}")
+    print(f"  锟?{gpu_display}")
     print(f"     CUDA: {'Yes' if hardware.get('cuda_available') else 'No'}, "
           f"PyTorch: {hardware.get('torch_version', 'N/A')}")
 
-    # ── Step 2: KV-Cache Benchmark ───────────────────────────────
+    # 鈹€鈹€ Step 2: KV-Cache Benchmark 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     if not args.skip_kvcache:
         print()
         print("  [2/4] Benchmarking KV-Cache injection...")
@@ -790,50 +790,50 @@ def main():
         configs = kv_cache_results.get("configurations", [])
         if configs:
             max_speedup = max(c["speedup"] for c in configs)
-            print(f"  ✅ Max speedup: {max_speedup:.1f}x (direct inject vs torch.cat)")
+            print(f"  锟?Max speedup: {max_speedup:.1f}x (direct inject vs torch.cat)")
         elif "error" in kv_cache_results:
-            print(f"  ⚠️  {kv_cache_results['error']}")
+            print(f"  鈿狅笍  {kv_cache_results['error']}")
         else:
-            print(f"  ✅ Completed")
+            print(f"  锟?Completed")
     else:
         print()
         print("  [2/4] Skipping KV-Cache benchmark")
         kv_cache_results = {"test_name": "KV-Cache Injection", "skipped": True}
 
-    # ── Step 3: Audio Benchmark ──────────────────────────────────
+    # 鈹€鈹€ Step 3: Audio Benchmark 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     if not args.skip_audio:
         print()
         print("  [3/4] Benchmarking audio processing...")
         audio_results = benchmark_audio_processing(args.iterations, args.verbose)
         rtf = audio_results.get("stream_processor", {}).get("realtime_factor")
         if rtf:
-            print(f"  ✅ StreamProcessor: {rtf:.0f}x realtime")
+            print(f"  锟?StreamProcessor: {rtf:.0f}x realtime")
         else:
-            print(f"  ✅ Completed")
+            print(f"  锟?Completed")
     else:
         print()
         print("  [3/4] Skipping audio benchmark")
         audio_results = {"test_name": "Audio Processing", "skipped": True}
 
-    # ── Step 4: Whisper Benchmark ────────────────────────────────
+    # 鈹€鈹€ Step 4: Whisper Benchmark 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     if not args.skip_whisper:
         print()
         print("  [4/4] Benchmarking Whisper transcription...")
         whisper_results = benchmark_whisper(min(args.iterations, 3), args.verbose)
         if "error" in whisper_results:
-            print(f"  ⚠️  {whisper_results['error']}")
+            print(f"  鈿狅笍  {whisper_results['error']}")
         else:
             models = whisper_results.get("models", {})
             for name, data in models.items():
                 if data.get("durations") and "10s" in data["durations"]:
                     rtf = data["durations"]["10s"]["realtime_factor"]
-                    print(f"  ✅ {name}: {rtf:.1f}x realtime (10s audio)")
+                    print(f"  锟?{name}: {rtf:.1f}x realtime (10s audio)")
     else:
         print()
         print("  [4/4] Skipping Whisper benchmark")
         whisper_results = None
 
-    # ── Generate Report ──────────────────────────────────────────
+    # 鈹€鈹€ Generate Report 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     print()
     print("  Generating report...")
 
@@ -845,22 +845,22 @@ def main():
         output_path=args.output,
     )
 
-    print(f"  ✅ Report saved: {args.output}")
+    print(f"  锟?Report saved: {args.output}")
 
-    # ── Summary ──────────────────────────────────────────────────
+    # 鈹€鈹€ Summary 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     print()
-    print("╔" + "═" * 58 + "╗")
-    print("║" + "  Benchmark Complete".center(58) + "║")
-    print("╠" + "═" * 58 + "╣")
+    print("锟? + "锟? * 58 + "锟?)
+    print("锟? + "  Benchmark Complete".center(58) + "锟?)
+    print("锟? + "锟? * 58 + "锟?)
 
     line_count = len(report.split("\n"))
     table_count = report.count("|---")
     section_count = report.count("## ")
-    print(f"║  Report:   {args.output:<46}║")
-    print(f"║  Sections: {section_count:<46}║")
-    print(f"║  Tables:   {table_count:<46}║")
-    print(f"║  Lines:    {line_count:<46}║")
-    print("╚" + "═" * 58 + "╝")
+    print(f"锟? Report:   {args.output:<46}锟?)
+    print(f"锟? Sections: {section_count:<46}锟?)
+    print(f"锟? Tables:   {table_count:<46}锟?)
+    print(f"锟? Lines:    {line_count:<46}锟?)
+    print("锟? + "锟? * 58 + "锟?)
     print()
 
 

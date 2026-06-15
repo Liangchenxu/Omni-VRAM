@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to Omni-VRAM will be documented in this file.
+All notable changes to **Omni-VRAM** will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -9,8 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Planned
 - Docker deployment support
-- Web UI (Gradio / Streamlit)
 - CUDA 12.x optimized kernels
+- LLM function-calling integration (OpenAI / local models)
+- Real-time voice conversation with LLM (full duplex)
+- Streaming TTS with chunked output
+
+---
+
+## [2.0.0] - 2025-06-15
+
+### 🎉 Project Rebrand
+- **New positioning: LLM Voice Interaction Framework** — 让大模型长出耳朵和嘴巴
+- Package name: `vram_core` (PyPI: `omni-vram`)
+
+### Added
+- **Voice Chat Bot** (`examples/voice_chat_bot.py`) — Multi-turn dialogue with history tracking, LLM-ready architecture
+- **Gradio Web Demo** (`app.py`) — Interactive web UI with:
+  - Speech transcription (upload audio → text)
+  - Emotion recognition (7 emotions with probability bars)
+  - Speaker diarization (who spoke when)
+  - Live microphone recording and transcription
+  - Result download (JSON / TXT / SRT subtitle formats)
+- **Voice Translation** (`vram_core/voice_translator.py`) — Speech-to-speech translation pipeline, MarianMT + Google, 50+ language pairs
+- **TTS Engine** (`vram_core/tts_engine.py`) — Multi-backend text-to-speech (edge-tts 300+ voices / pyttsx3 offline)
+- **Audio Event Detection** (`vram_core/audio_event_detection.py`) — YAMNet / energy-based, detects speech/music/alarm/silence
+- **Noise Reduction** (`vram_core/noise_reduction.py`) — WebRTC / RNNoise / noisereduce three backends, auto-applied in pipeline
+- **Emotion Recognition** (`vram_core/emotion_recognition.py`) — wav2vec2 model, 7 emotions (happy/sad/angry/neutral/surprised/fear/disgust)
+- **Speaker Diarization** (`vram_core/speaker_diarization.py`) — pyannote-audio / resemblyzer, identifies "who spoke when"
+- **Wake Word Detection** (`vram_core/wake_word.py`) — Energy-based & Whisper keyword detection, custom vocabulary
+- **gRPC Server** (`vram_core/grpc_server.py`) — High-performance dual-protocol (gRPC + REST) server
+- **Plugin System** (`vram_core/plugin_manager.py`) — Extensible architecture with discovery, lifecycle & hook events
+- **Streaming ASR Engine** (`vram_core/streaming_asr.py`) — Real-time sliding-window VAD, partial/final callbacks, <500ms latency
+- **REST API Server** (`vram_core/api_server.py`) — FastAPI async HTTP + WebSocket streaming
+- **Production Monitoring** (`vram_core/monitoring.py`) — Prometheus metrics, Grafana dashboards, health checks, p95/p99 latency
+- **Distributed Transcriber** (`vram_core/distributed_transcriber.py`) — Multi-machine parallel batch processing, auto load balancing
+- Comprehensive test suite: 16 test files covering all new modules
+- Bilingual documentation (English + Chinese) in README.md
+- `docs/installation.md`, `docs/quickstart.md`, `docs/api_reference.md`, `docs/examples.md`, `docs/faq.md`
+
+### Changed
+- All imports use `vram_core` package name
+- Version bumped from 1.0.0 to 2.0.0
+- `setup.py` and `pyproject.toml` updated with new package name and version
+- README.md fully rewritten with bilingual content and new branding
 
 ---
 
@@ -61,11 +102,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Complete documentation suite:
-  - `docs/installation.md` — Full installation guide (Windows/Linux/macOS)
-  - `docs/quickstart.md` — Quick start tutorial with step-by-step examples
-  - `docs/api_reference.md` — Comprehensive API reference for all modules
-  - `docs/examples.md` — Detailed guide for all example applications
-  - `docs/faq.md` — Frequently asked questions and troubleshooting
+  - `docs/installation.md` â€?Full installation guide (Windows/Linux/macOS)
+  - `docs/quickstart.md` â€?Quick start tutorial with step-by-step examples
+  - `docs/api_reference.md` â€?Comprehensive API reference for all modules
+  - `docs/examples.md` â€?Detailed guide for all example applications
+  - `docs/faq.md` â€?Frequently asked questions and troubleshooting
 - Technical blog post (`docs/blog_omni_vram.md`)
 - Updated README.md with badges, quick start, and contribution links
 
@@ -110,7 +151,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Whisper bridge module (`vram_core/whisper_bridge.py`)
   - Multi-backend support: OpenAI API, whisper.cpp CLI, Python whisper
-  - Automatic backend detection and fallback (API → CLI → Python → None)
+  - Automatic backend detection and fallback (API â†?CLI â†?Python â†?None)
   - Audio preprocessing pipeline for Whisper compatibility
   - Segment-level timestamps and confidence scores
   - `WhisperBackend` enum for backend selection
@@ -135,7 +176,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Auto-segmentation on silence (configurable threshold)
   - Force segmentation on max duration
   - Callback-driven architecture (`on_transcription`, `on_state_change`)
-  - State machine: IDLE → SPEAKING → PROCESSING
+  - State machine: IDLE â†?SPEAKING â†?PROCESSING
 - Package-level exports in `vram_core/__init__.py`
   - Unified API: `from vram_core import AudioProcessor, WhisperBridge, ...`
   - CUDA availability detection with graceful fallback
@@ -154,7 +195,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial release of Omni-VRAM
 - CUDA kernel: Zero-copy KV-Cache injection (`vram_hacker.cu`)
-  - `append_kv_kernel` — O(1) atomic append with pointer offset
+  - `append_kv_kernel` â€?O(1) atomic append with pointer offset
   - Pre-allocated contiguous VRAM, no `torch.cat` overhead
   - Up to 11x faster than `torch.cat` on repeated updates
 - CUDA kernel: Fused audio front-end (`vram_hacker.cu`)

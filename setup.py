@@ -1,51 +1,117 @@
-"""
-Omni-VRAM Setup Configuration
+﻿"""
+vram_core Setup Configuration
 ==============================
 
 Builds the CUDA extension module and installs the vram_core Python package.
-If CUDA is not available, builds a pure Python package (no GPU extension).
+If CUDA is not available or version mismatch, builds a pure Python package (no GPU extension).
 """
 
+import os
+import sys
 from setuptools import setup, find_packages
 
-# ── CUDA Extension (optional) ────────────────────────────────────
+# CUDA Extension (optional) 鈥?skip if CUDA unavailable or version mismatch
 ext_modules = []
 cmdclass = {}
 
-try:
-    from torch.utils.cpp_extension import BuildExtension, CUDAExtension
-    ext_modules = [
-        CUDAExtension(
-            name='vram_core._vram_hacker',
-            sources=['vram_hacker.cu'],
-            extra_compile_args={
-                'nvcc': [
-                    '-O3',
-                    '-allow-unsupported-compiler',
-                    '-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH',
-                ],
-            },
-        ),
-    ]
-    cmdclass = {'build_ext': BuildExtension.with_options(use_ninja=False)}
-except (OSError, Exception) as e:
-    print(f"Warning: CUDA not available, building without CUDA extension: {e}")
+def _check_cuda_available():
+    """Check if CUDA toolkit is available and version matches PyTorch."""
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return False, "CUDA is not available in PyTorch"
+
+        torch_cuda = torch.version.cuda
+        if torch_cuda is None:
+            return False, "PyTorch was not built with CUDA"
+
+        # Check nvcc availability
+        nvcc_path = None
+        for path_dir in os.environ.get("PATH", "").split(os.pathsep):
+            candidate = os.path.join(path_dir, "nvcc")
+            candidate_exe = os.path.join(path_dir, "nvcc.exe")
+            if os.path.isfile(candidate):
+                nvcc_path = candidate
+                break
+            if os.path.isfile(candidate_exe):
+                nvcc_path = candidate_exe
+                break
+
+        if nvcc_path is None:
+            # Try CUDA_HOME
+            cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
+            if cuda_home:
+                nvcc_path = os.path.join(cuda_home, "bin", "nvcc.exe" if sys.platform == "win32" else "nvcc")
+                if not os.path.isfile(nvcc_path):
+                    return False, f"nvcc not found in CUDA_HOME={cuda_home}"
+
+        if nvcc_path is None:
+            return False, "nvcc not found in PATH or CUDA_HOME"
+
+        # Check CUDA toolkit version matches PyTorch CUDA version
+        try:
+            import subprocess
+            nvcc_output = subprocess.check_output([nvcc_path, "--version"], stderr=subprocess.STDOUT, text=True)
+            # Extract version like "release 12.1"
+            for line in nvcc_output.split("\n"):
+                if "release" in line.lower():
+                    # e.g. "Cuda compilation tools, release 12.1, V12.1.105"
+                    parts = line.split("release")
+                    if len(parts) >= 2:
+                        nvcc_version = parts[1].strip().split(",")[0].strip().split(" ")[0]
+                        torch_major_minor = ".".join(torch_cuda.split(".")[:2])
+                        nvcc_major_minor = ".".join(nvcc_version.split(".")[:2])
+                        if torch_major_minor != nvcc_major_minor:
+                            return False, (
+                                f"CUDA version mismatch: system nvcc={nvcc_version}, "
+                                f"PyTorch CUDA={torch_cuda}. They must match."
+                            )
+        except Exception as e:
+            return False, f"Failed to check nvcc version: {e}"
+
+        return True, f"CUDA {torch_cuda} ready"
+
+    except ImportError:
+        return False, "PyTorch is not installed"
+    except Exception as e:
+        return False, f"CUDA check failed: {e}"
+
+
+cuda_ok, cuda_msg = _check_cuda_available()
+if cuda_ok:
+    try:
+        from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+        ext_modules = [
+            CUDAExtension(
+                name='vram_core._vram_hacker',
+                sources=['vram_hacker.cu'],
+                extra_compile_args={'nvcc': ['-O3']},
+            ),
+        ]
+        cmdclass = {'build_ext': BuildExtension}
+        print(f"[setup] Building with CUDA extension: {cuda_msg}")
+    except Exception as e:
+        print(f"[setup] Warning: Skipping CUDA extension: {e}")
+        ext_modules = []
+        cmdclass = {}
+else:
+    print(f"[setup] Warning: Skipping CUDA extension: {cuda_msg}")
     ext_modules = []
     cmdclass = {}
 
-# ── Package Setup ────────────────────────────────────────────────
+# Package Setup
 setup(
-    name='omni-vram',
-    version='1.1.0',
-    description='Production-ready audio AI platform — ASR, TTS, Translation, Speaker Verification, Multi-GPU, VRAM Optimization',
-    long_description=open('README.md', encoding='utf-8').read(),
+    name='vram_core',
+    version='2.0.0',
+    description='vram_core - LLM Voice Interaction Framework',
+    long_description=open('README.MD', encoding='utf-8').read(),
     long_description_content_type='text/markdown',
     author='Liangchenxu',
-    url='https://github.com/Liangchenxu/Omni-VRAM',
+    url='https://github.com/Liangchenxu/vram_core',
     license='MIT',
 
     # Python packages
-    packages=find_packages(exclude=['tests', 'tests.*']),
+    packages=['vram_core', 'vram_core.whisper'],
     python_requires='>=3.8',
 
     # Dependencies

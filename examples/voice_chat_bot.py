@@ -1,6 +1,6 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-Omni-VRAM: Voice Chat Bot
+vram_core: Voice Chat Bot
 ===========================
 
 A conversational voice bot that listens to microphone input, transcribes
@@ -8,7 +8,7 @@ speech with Whisper, manages multi-turn dialogue history, and optionally
 connects to an LLM for AI responses.
 
 Pipeline:
-    Microphone → VAD → Whisper Transcription → Display → [LLM Response] → Loop
+    Microphone 锟?VAD 锟?Whisper Transcription 锟?Display 锟?[LLM Response] 锟?Loop
 
 Features:
     - Multi-turn voice conversation
@@ -31,9 +31,9 @@ Usage:
     python examples/voice_chat_bot.py --verbose
 
 Output format (dialogue log):
-    [00:01] User: 你好，今天天气怎么样
-    [00:03] [AI: 抱歉，AI回复功能尚未接入]
-    [00:08] User: 谢谢
+    [00:01] User: 浣犲ソ锛屼粖澶╁ぉ姘旀€庝箞锟?
+    [00:03] [AI: 鎶辨瓑锛孉I鍥炲鍔熻兘灏氭湭鎺ュ叆]
+    [00:08] User: 璋㈣阿
 
 Requirements:
     pip install pyaudio numpy pydub python-dotenv
@@ -72,7 +72,7 @@ from vram_core.stream_processor import StreamProcessor, StreamConfig, StreamStat
 from vram_core.config import setup_logging
 
 
-# ── Data Structures ──────────────────────────────────────────────
+# 鈹€鈹€ Data Structures 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 @dataclass
 class DialogueTurn:
@@ -161,7 +161,7 @@ class ConversationLog:
             f.write("End of conversation\n")
 
 
-# ── AI Response Handler ──────────────────────────────────────────
+# 鈹€鈹€ AI Response Handler 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 class AIResponder:
     """
@@ -194,15 +194,15 @@ class AIResponder:
             AI response text.
         """
         if not self.enabled:
-            return "[AI回复待接入]"
+            return "[AI鍥炲寰呮帴鍏"
 
-        # ── LLM Integration Point ────────────────────────────────
+        # 鈹€鈹€ LLM Integration Point 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         # Replace the section below with your LLM API call.
         # Example with OpenAI:
         #
         #     import openai
         #     messages = [
-        #         {"role": "system", "content": "你是一个友好的AI助手。"},
+        #         {"role": "system", "content": "浣犳槸涓€涓弸濂界殑AI鍔╂墜锟?},
         #     ]
         #     for turn in history.turns:
         #         role = "user" if turn.role == "user" else "assistant"
@@ -214,17 +214,17 @@ class AIResponder:
         #     )
         #     return response.choices[0].message.content
         #
-        # ──────────────────────────────────────────────────────────
+        # 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
-        return "[AI回复待接入]"
+        return "[AI鍥炲寰呮帴鍏"
 
 
-# ── Command Line Arguments ───────────────────────────────────────
+# 鈹€鈹€ Command Line Arguments 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Omni-VRAM: Voice Chat Bot",
+        description="vram_core: Voice Chat Bot",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -306,7 +306,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-# ── Audio Device Helpers ─────────────────────────────────────────
+# 鈹€鈹€ Audio Device Helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def list_audio_devices():
     """List all available audio input devices."""
@@ -334,7 +334,7 @@ def list_audio_devices():
     pa.terminate()
 
 
-# ── Main ─────────────────────────────────────────────────────────
+# 鈹€鈹€ Main 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def main():
     """Main entry point for voice chat bot."""
@@ -370,9 +370,9 @@ def main():
 
     # Print header
     print()
-    print("╔" + "═" * 58 + "╗")
-    print("║" + "  Omni-VRAM: Voice Chat Bot".center(58) + "║")
-    print("╚" + "═" * 58 + "╝")
+    print("锟? + "锟? * 58 + "锟?)
+    print("锟? + "  vram_core: Voice Chat Bot".center(58) + "锟?)
+    print("锟? + "锟? * 58 + "锟?)
     print()
     print(f"  Duration:       {args.duration}s")
     print(f"  Language:       {args.language}")
@@ -384,7 +384,7 @@ def main():
     print(f"  AI Response:    {'Enabled' if args.enable_ai else 'Disabled (placeholder)'}")
     print()
 
-    # ── Step 1: Initialize Whisper ────────────────────────────────
+    # 鈹€鈹€ Step 1: Initialize Whisper 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     print("  [1/4] Initializing Whisper...")
     try:
         whisper = WhisperBridge(
@@ -394,13 +394,13 @@ def main():
             device="cpu" if args.device_cpu else "cuda",
         )
         status = whisper.get_status()
-        print(f"  ✅ Whisper ready (backend: {status['backend']})")
+        print(f"  锟?Whisper ready (backend: {status['backend']})")
     except Exception as e:
-        print(f"  ❌ Failed to initialize Whisper: {e}")
+        print(f"  锟?Failed to initialize Whisper: {e}")
         print("  See README.md for whisper.cpp setup instructions.")
         sys.exit(1)
 
-    # ── Step 2: Initialize Stream Processor ───────────────────────
+    # 鈹€鈹€ Step 2: Initialize Stream Processor 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     print("  [2/4] Initializing stream processor...")
     stream_config = StreamConfig(
         sample_rate=16000,
@@ -411,15 +411,15 @@ def main():
         config=stream_config,
         whisper_bridge=whisper,
     )
-    print(f"  ✅ Stream processor ready")
+    print(f"  锟?Stream processor ready")
 
-    # ── Step 3: Initialize AI Responder ───────────────────────────
+    # 鈹€鈹€ Step 3: Initialize AI Responder 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     print("  [3/4] Initializing AI responder...")
     ai_responder = AIResponder(enabled=args.enable_ai)
     conversation = ConversationLog(language=args.language)
-    print(f"  ✅ AI responder ready")
+    print(f"  锟?AI responder ready")
 
-    # ── Step 4: Initialize Microphone ────────────────────────────
+    # 鈹€鈹€ Step 4: Initialize Microphone 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     print("  [4/4] Initializing microphone...")
     pa = pyaudio.PyAudio()
 
@@ -435,18 +435,18 @@ def main():
         device_name = "default"
         if args.device is not None:
             device_name = pa.get_device_info_by_index(args.device)["name"]
-        print(f"  ✅ Microphone ready ({device_name})")
+        print(f"  锟?Microphone ready ({device_name})")
     except Exception as e:
-        print(f"  ❌ Failed to open microphone: {e}")
+        print(f"  锟?Failed to open microphone: {e}")
         pa.terminate()
         sys.exit(1)
 
-    # ── State ─────────────────────────────────────────────────────
+    # 鈹€鈹€ State 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     chat_start = time.time()
     last_speech_time = chat_start
     speech_detected_in_session = False
 
-    # ── Callbacks ─────────────────────────────────────────────────
+    # 鈹€鈹€ Callbacks 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     def on_speech_start():
         """Called when VAD detects speech start."""
@@ -456,7 +456,7 @@ def main():
         elapsed = time.time() - chat_start
         minutes = int(elapsed // 60)
         seconds = int(elapsed % 60)
-        print(f"\r  🎤 [{minutes:02d}:{seconds:02d}] Listening...", end="", flush=True)
+        print(f"\r  馃帳 [{minutes:02d}:{seconds:02d}] Listening...", end="", flush=True)
 
     def on_transcription(result: WhisperResult):
         """Called when transcription completes."""
@@ -479,9 +479,9 @@ def main():
         minutes = int(elapsed // 60)
         seconds = int(elapsed % 60)
         print()
-        print(f"  ┌─ You [{minutes:02d}:{seconds:02d}] ──────────────────────")
-        print(f"  │ {user_text}")
-        print(f"  └─ confidence: {result.confidence:.2f} ──")
+        print(f"  鈹屸攢 You [{minutes:02d}:{seconds:02d}] 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€")
+        print(f"  锟?{user_text}")
+        print(f"  鈹斺攢 confidence: {result.confidence:.2f} 鈹€鈹€")
 
         # Generate AI response
         ai_elapsed = time.time() - chat_start
@@ -491,30 +491,30 @@ def main():
         # Display AI response
         ai_minutes = int(ai_elapsed // 60)
         ai_seconds = int(ai_elapsed % 60)
-        print(f"  ┌─ AI [{ai_minutes:02d}:{ai_seconds:02d}] ───────────────────────")
-        print(f"  │ {ai_response}")
-        print(f"  └──────────────────────────────")
+        print(f"  鈹屸攢 AI [{ai_minutes:02d}:{ai_seconds:02d}] 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€")
+        print(f"  锟?{ai_response}")
+        print(f"  鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€")
         print()
-        print(f"  💬 Turns: {conversation.total_turns} | "
+        print(f"  馃挰 Turns: {conversation.total_turns} | "
               f"Listening... (Ctrl+C to end)")
 
     def on_event(event):
         """Handle stream events."""
         if event.event_type == "error":
-            print(f"\n  ❌ Error: {event.data}")
+            print(f"\n  锟?Error: {event.data}")
 
     # Wire up callbacks
     processor.on_speech_start = on_speech_start
     processor.on_transcription = on_transcription
     processor.on_event = on_event
 
-    # ── Main Loop ─────────────────────────────────────────────────
+    # 鈹€鈹€ Main Loop 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     print()
-    print("  ╔═══════════════════════════════════════════════════════╗")
-    print("  ║  💬 Voice chat started. Speak to begin.               ║")
-    print(f"  ║  Auto-exit after {args.silence_exit}s of silence.           ║")
-    print("  ║  Press Ctrl+C to end.                                 ║")
-    print("  ╚═══════════════════════════════════════════════════════╝")
+    print("  鈺斺晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲锟?)
+    print("  锟? 馃挰 Voice chat started. Speak to begin.               锟?)
+    print(f"  锟? Auto-exit after {args.silence_exit}s of silence.           锟?)
+    print("  锟? Press Ctrl+C to end.                                 锟?)
+    print("  鈺氣晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲锟?)
     print()
 
     running = True
@@ -523,7 +523,7 @@ def main():
     def signal_handler(sig, frame):
         nonlocal running
         running = False
-        print("\n\n  ⚠️  Ending conversation...")
+        print("\n\n  鈿狅笍  Ending conversation...")
 
     signal.signal(signal.SIGINT, signal_handler)
 
@@ -533,14 +533,14 @@ def main():
 
             # Check max duration
             if elapsed >= args.duration:
-                print(f"\n  ⏱️  Duration limit reached ({args.duration}s)")
+                print(f"\n  鈴憋笍  Duration limit reached ({args.duration}s)")
                 break
 
             # Check silence exit
             if speech_detected_in_session:
                 silence_time = time.time() - last_speech_time
                 if silence_time >= args.silence_exit:
-                    print(f"\n  🔇 Silent for {args.silence_exit}s, ending conversation...")
+                    print(f"\n  馃攪 Silent for {args.silence_exit}s, ending conversation...")
                     silent_exit = True
                     break
 
@@ -561,57 +561,57 @@ def main():
             time.sleep(0.001)
 
     except Exception as e:
-        print(f"\n  ❌ Unexpected error: {e}")
+        print(f"\n  锟?Unexpected error: {e}")
         logger.exception("Unexpected error in main loop")
 
     finally:
-        # ── Cleanup ───────────────────────────────────────────────
+        # 鈹€鈹€ Cleanup 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         mic_stream.stop_stream()
         mic_stream.close()
         pa.terminate()
 
-    # ── Export Conversation ───────────────────────────────────────
+    # 鈹€鈹€ Export Conversation 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     print()
     print("  Exporting conversation...")
 
     if not conversation.turns:
-        print("  ⚠️  No conversation recorded.")
+        print("  鈿狅笍  No conversation recorded.")
         print("  Try lowering --vad-threshold or speaking closer to the microphone.")
     else:
         try:
             conversation.export_txt(args.output)
-            print(f"  ✅ Conversation saved: {args.output}")
+            print(f"  锟?Conversation saved: {args.output}")
         except Exception as e:
-            print(f"  ❌ Export failed: {e}")
+            print(f"  锟?Export failed: {e}")
             logger.exception("Export error")
 
-    # ── Summary ───────────────────────────────────────────────────
+    # 鈹€鈹€ Summary 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     stats = processor.stats
     total_time = time.time() - chat_start
     total_minutes = int(total_time // 60)
     total_seconds = int(total_time % 60)
 
     print()
-    print("╔" + "═" * 58 + "╗")
-    print("║" + "  Chat Summary".center(58) + "║")
-    print("╠" + "═" * 58 + "╣")
+    print("锟? + "锟? * 58 + "锟?)
+    print("锟? + "  Chat Summary".center(58) + "锟?)
+    print("锟? + "锟? * 58 + "锟?)
     dur_str = f"{total_minutes}m {total_seconds}s"
     user_count = len(conversation.user_turns)
     ai_count = len(conversation.ai_turns)
     speech_str = f"{stats['total_speech_duration_s']:.1f}s"
-    print(f"║  Duration:       {dur_str}{' ' * (38 - len(dur_str))}║")
-    print(f"║  User turns:     {user_count}{' ' * (38 - len(str(user_count)))}║")
-    print(f"║  AI turns:       {ai_count}{' ' * (38 - len(str(ai_count)))}║")
-    print(f"║  Speech time:    {speech_str}{' ' * (38 - len(speech_str))}║")
+    print(f"锟? Duration:       {dur_str}{' ' * (38 - len(dur_str))}锟?)
+    print(f"锟? User turns:     {user_count}{' ' * (38 - len(str(user_count)))}锟?)
+    print(f"锟? AI turns:       {ai_count}{' ' * (38 - len(str(ai_count)))}锟?)
+    print(f"锟? Speech time:    {speech_str}{' ' * (38 - len(speech_str))}锟?)
     if silent_exit:
-        print(f"║  Exit reason:    Silent timeout"
-              f"{' ' * 25}║")
+        print(f"锟? Exit reason:    Silent timeout"
+              f"{' ' * 25}锟?)
     else:
-        print(f"║  Exit reason:    User interrupted"
-              f"{' ' * 23}║")
-    print("╠" + "═" * 58 + "╣")
-    print(f"║  Log: {args.output:<51}║")
-    print("╚" + "═" * 58 + "╝")
+        print(f"锟? Exit reason:    User interrupted"
+              f"{' ' * 23}锟?)
+    print("锟? + "锟? * 58 + "锟?)
+    print(f"锟? Log: {args.output:<51}锟?)
+    print("锟? + "锟? * 58 + "锟?)
     print()
 
 

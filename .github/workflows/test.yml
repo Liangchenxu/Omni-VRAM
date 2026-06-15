@@ -56,10 +56,10 @@ jobs:
 
     - name: Check formatting with black
       run: |
-        black --check --diff vram_core/ tests/ examples/
+        black --check --diff Omni-VRAM/ tests/ examples/
       continue-on-error: true
 
     - name: Check import ordering with isort
       run: |
-        isort --check --diff vram_core/ tests/ examples/
+        isort --check --diff Omni-VRAM/ tests/ examples/
       continue-on-error: true

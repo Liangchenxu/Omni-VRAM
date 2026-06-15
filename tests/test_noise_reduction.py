@@ -1,4 +1,4 @@
-"""
+﻿"""
 Tests for Noise Reduction Module
 =================================
 """
@@ -126,7 +126,7 @@ class TestProcess:
         # Clean should be closer to original signal than noisy was
         error_noisy = np.mean((noisy - signal) ** 2)
         error_clean = np.mean((clean - signal) ** 2)
-        # Allow some tolerance — spectral subtraction isn't perfect
+        # Allow some tolerance 锟?spectral subtraction isn't perfect
         assert error_clean < error_noisy * 1.5  # At least not worse
 
     def test_process_int16_input(self):

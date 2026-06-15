@@ -1,4 +1,4 @@
-"""
+﻿"""
 Tests for vram_core.multi_gpu module.
 
 Covers:

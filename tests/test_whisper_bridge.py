@@ -1,5 +1,5 @@
-"""
-Unit Tests for Omni-VRAM Whisper Bridge
+﻿"""
+Unit Tests for vram_core Whisper Bridge
 ========================================
 
 Tests Whisper backend integration, transcription, language detection,
@@ -399,7 +399,7 @@ class TestWhisperBridgeLanguageDetection(unittest.TestCase):
     def test_detect_language(self, mock_transcribe):
         """Test language detection from audio."""
         mock_transcribe.return_value = TranscriptionResult(
-            text="你好世界",
+            text="浣犲ソ涓栫晫",
             language="zh",
         )
 

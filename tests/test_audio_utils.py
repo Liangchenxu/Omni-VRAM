@@ -1,5 +1,5 @@
-"""
-Unit Tests for Omni-VRAM Audio Utilities
+﻿"""
+Unit Tests for vram_core Audio Utilities
 =========================================
 
 Tests audio format detection, conversion, resampling, and

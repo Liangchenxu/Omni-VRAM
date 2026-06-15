@@ -1,4 +1,4 @@
-"""
+﻿"""
 Tests for vram_core.plugin_manager module.
 
 Covers:
@@ -23,7 +23,7 @@ from vram_core.plugin_manager import (
 )
 
 
-# ── Test Plugin Implementations ─────────────────────────────────
+# 鈹€鈹€ Test Plugin Implementations 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 class SimplePlugin(PluginBase):
     """A minimal test plugin."""

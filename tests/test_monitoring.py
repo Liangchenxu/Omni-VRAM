@@ -1,4 +1,4 @@
-"""
+﻿"""
 Tests for vram_core.monitoring module.
 
 Covers:
@@ -207,7 +207,7 @@ class TestMetricsCollector(unittest.TestCase):
         collector = MetricsCollector()
         dashboard = collector.export_grafana_dashboard()
         self.assertIn("dashboard", dashboard)
-        self.assertEqual(dashboard["dashboard"]["title"], "Omni-VRAM Production Dashboard")
+        self.assertEqual(dashboard["dashboard"]["title"], "vram_core Production Dashboard")
         panels = dashboard["dashboard"]["panels"]
         self.assertGreater(len(panels), 0)
 

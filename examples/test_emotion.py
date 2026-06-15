@@ -1,4 +1,4 @@
-"""
+﻿"""
 Test Emotion Recognition Module
 ================================
 
@@ -50,7 +50,7 @@ def test_basic():
           f"F0={result.features.mean_f0:.1f}Hz")
     print(f"  All scores: {result.all_scores}")
     assert result.emotion in ["happy", "sad", "angry", "neutral", "surprised"]
-    print("  ✓ Valid emotion label")
+    print("  锟?Valid emotion label")
 
     # Test 2: Energetic / Angry (high amplitude, fast modulation)
     print("\n--- Test 2: High-energy audio (angry-like) ---")
@@ -62,7 +62,7 @@ def test_basic():
     print(f"  Features: energy={result.features.rms_energy:.4f}, "
           f"F0_std={result.features.std_f0:.1f}")
     print(f"  All scores: {result.all_scores}")
-    print("  ✓ Completed without error")
+    print("  锟?Completed without error")
 
     # Test 3: Sad (low amplitude, slow)
     print("\n--- Test 3: Low-energy audio (sad-like) ---")
@@ -72,7 +72,7 @@ def test_basic():
     print(f"  Features: energy={result.features.rms_energy:.4f}, "
           f"F0={result.features.mean_f0:.1f}Hz")
     print(f"  All scores: {result.all_scores}")
-    print("  ✓ Completed without error")
+    print("  锟?Completed without error")
 
     # Test 4: Happy (medium-high energy, higher pitch)
     print("\n--- Test 4: Medium-high energy audio (happy-like) ---")
@@ -84,23 +84,23 @@ def test_basic():
     result = recognizer.analyze(audio)
     print(f"  Detected: {result.emotion} (confidence: {result.confidence:.3f})")
     print(f"  All scores: {result.all_scores}")
-    print("  ✓ Completed without error")
+    print("  锟?Completed without error")
 
     # Test 5: Empty audio
     print("\n--- Test 5: Empty audio ---")
     result = recognizer.analyze(np.array([], dtype=np.float32))
     print(f"  Detected: {result.emotion} (confidence: {result.confidence:.3f})")
-    print("  ✓ Handled empty audio gracefully")
+    print("  锟?Handled empty audio gracefully")
 
     # Test 6: Very short audio
     print("\n--- Test 6: Very short audio (100 samples) ---")
     audio = np.random.randn(100).astype(np.float32) * 0.1
     result = recognizer.analyze(audio)
     print(f"  Detected: {result.emotion} (confidence: {result.confidence:.3f})")
-    print("  ✓ Handled short audio gracefully")
+    print("  锟?Handled short audio gracefully")
 
     print("\n" + "=" * 60)
-    print("All tests passed! ✓")
+    print("All tests passed! 锟?)
     print("=" * 60)
 
 
@@ -119,7 +119,7 @@ def test_feature_extraction():
     print(f"  Energy Variance:   {features.energy_variance:.8f}")
     print(f"  Energy Range:      {features.energy_range:.6f}")
     print(f"  Speech Rate Proxy: {features.speech_rate_proxy:.4f}")
-    print("  ✓ Feature extraction complete")
+    print("  锟?Feature extraction complete")
 
 
 if __name__ == "__main__":

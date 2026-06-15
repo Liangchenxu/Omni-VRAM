@@ -1,4 +1,4 @@
-"""
+﻿"""
 Tests for vram_core.wake_word module.
 
 Covers:

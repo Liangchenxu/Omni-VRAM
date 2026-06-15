@@ -1,4 +1,4 @@
-"""
+﻿"""
 Tests for vram_core.vram_optimizer module.
 
 Covers:
@@ -338,7 +338,7 @@ class TestGetModelSizeEstimate(unittest.TestCase):
     """Test get_model_size_estimate."""
 
     def test_7b_model_fp16(self):
-        # 7B params * 2 bytes = 14GB ≈ 14336 MB
+        # 7B params * 2 bytes = 14GB 锟?14336 MB
         size_mb = VRAMOptimizer.get_model_size_estimate(7.0, dtype_bytes=2)
         self.assertAlmostEqual(size_mb, 14336.0, delta=1.0)
 

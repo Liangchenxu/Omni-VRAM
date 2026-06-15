@@ -1,5 +1,5 @@
-"""
-Unit Tests for Omni-VRAM Stream Processor
+﻿"""
+Unit Tests for vram_core Stream Processor
 ==========================================
 
 Tests real-time audio streaming, VAD, circular buffer,

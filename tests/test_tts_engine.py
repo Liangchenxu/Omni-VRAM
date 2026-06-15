@@ -1,4 +1,4 @@
-"""
+﻿"""
 Tests for vram_core.tts_engine module.
 
 Covers:

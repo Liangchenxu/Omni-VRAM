@@ -1,6 +1,6 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-Omni-VRAM: Local Whisper Transcription Test
+vram_core: Local Whisper Transcription Test
 =============================================
 
 Test script for local whisper.cpp transcription.
@@ -48,7 +48,7 @@ from vram_core.config import setup_logging
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Omni-VRAM: Local Whisper Transcription Test",
+        description="vram_core: Local Whisper Transcription Test",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -147,7 +147,7 @@ def main():
 
     # Initialize WhisperBridge
     print("=" * 60)
-    print("  Omni-VRAM: Local Whisper Transcription")
+    print("  vram_core: Local Whisper Transcription")
     print("=" * 60)
     print(f"  Audio:    {audio_path}")
     print(f"  Model:    {args.model}")

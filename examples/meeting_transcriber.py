@@ -1,13 +1,13 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-Omni-VRAM: Meeting Transcriber
+vram_core: Meeting Transcriber
 ================================
 
 Real-time meeting transcription with automatic speaker segmentation,
 live display, and export to SRT + plain text transcript.
 
 Pipeline:
-    Microphone → VAD → Whisper Transcription → Speaker Segmentation → Export
+    Microphone 锟?VAD 锟?Whisper Transcription 锟?Speaker Segmentation 锟?Export
 
 Features:
     - Real-time transcription with live display
@@ -30,8 +30,8 @@ Usage:
     python examples/meeting_transcriber.py --verbose
 
 Output files:
-    {prefix}.srt  — SRT subtitle file with speaker labels and timestamps
-    {prefix}.txt  — Plain text transcript with timestamps and speaker labels
+    {prefix}.srt  锟?SRT subtitle file with speaker labels and timestamps
+    {prefix}.txt  锟?Plain text transcript with timestamps and speaker labels
 
 Requirements:
     pip install pyaudio numpy pydub python-dotenv
@@ -70,7 +70,7 @@ from vram_core.stream_processor import StreamProcessor, StreamConfig, StreamStat
 from vram_core.config import setup_logging
 
 
-# ── Data Structures ──────────────────────────────────────────────
+# 鈹€鈹€ Data Structures 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 @dataclass
 class Utterance:
@@ -169,7 +169,7 @@ class MeetingRecord:
         return f"{secs}s"
 
 
-# ── Speaker Diarization ──────────────────────────────────────────
+# 鈹€鈹€ Speaker Diarization 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 class SimpleSpeakerDiarizer:
     """
@@ -235,12 +235,12 @@ class SimpleSpeakerDiarizer:
         return self._speaker_map[idx]
 
 
-# ── Command Line Arguments ───────────────────────────────────────
+# 鈹€鈹€ Command Line Arguments 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Omni-VRAM: Meeting Transcriber",
+        description="vram_core: Meeting Transcriber",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -316,7 +316,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-# ── Audio Device Helpers ─────────────────────────────────────────
+# 鈹€鈹€ Audio Device Helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def list_audio_devices():
     """List all available audio input devices."""
@@ -344,7 +344,7 @@ def list_audio_devices():
     pa.terminate()
 
 
-# ── Main ─────────────────────────────────────────────────────────
+# 鈹€鈹€ Main 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def main():
     """Main entry point for meeting transcriber."""
@@ -384,9 +384,9 @@ def main():
 
     # Print header
     print()
-    print("╔" + "═" * 58 + "╗")
-    print("║" + "  Omni-VRAM: Meeting Transcriber".center(58) + "║")
-    print("╚" + "═" * 58 + "╝")
+    print("锟? + "锟? * 58 + "锟?)
+    print("锟? + "  vram_core: Meeting Transcriber".center(58) + "锟?)
+    print("锟? + "锟? * 58 + "锟?)
     print()
     print(f"  Duration:          {args.duration}s")
     print(f"  Language:          {args.language}")
@@ -398,7 +398,7 @@ def main():
     print(f"  Output TXT:        {txt_path}")
     print()
 
-    # ── Step 1: Initialize Whisper ────────────────────────────────
+    # 鈹€鈹€ Step 1: Initialize Whisper 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     print("  [1/4] Initializing Whisper...")
     try:
         whisper = WhisperBridge(
@@ -408,13 +408,13 @@ def main():
             device="cpu" if args.device_cpu else "cuda",
         )
         status = whisper.get_status()
-        print(f"  ✅ Whisper ready (backend: {status['backend']})")
+        print(f"  锟?Whisper ready (backend: {status['backend']})")
     except Exception as e:
-        print(f"  ❌ Failed to initialize Whisper: {e}")
+        print(f"  锟?Failed to initialize Whisper: {e}")
         print("  See README.md for whisper.cpp setup instructions.")
         sys.exit(1)
 
-    # ── Step 2: Initialize Stream Processor ───────────────────────
+    # 鈹€鈹€ Step 2: Initialize Stream Processor 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     print("  [2/4] Initializing stream processor...")
     stream_config = StreamConfig(
         sample_rate=16000,
@@ -425,9 +425,9 @@ def main():
         config=stream_config,
         whisper_bridge=whisper,
     )
-    print(f"  ✅ Stream processor ready")
+    print(f"  锟?Stream processor ready")
 
-    # ── Step 3: Initialize Speaker Diarizer ───────────────────────
+    # 鈹€鈹€ Step 3: Initialize Speaker Diarizer 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     print("  [3/4] Initializing speaker diarizer...")
     diarizer = SimpleSpeakerDiarizer(
         silence_threshold_s=args.silence_threshold,
@@ -435,9 +435,9 @@ def main():
         speaker_prefix="Speaker",
     )
     meeting = MeetingRecord(language=args.language)
-    print(f"  ✅ Speaker diarizer ready (silence gap: {args.silence_threshold}s)")
+    print(f"  锟?Speaker diarizer ready (silence gap: {args.silence_threshold}s)")
 
-    # ── Step 4: Initialize Microphone ────────────────────────────
+    # 鈹€鈹€ Step 4: Initialize Microphone 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     print("  [4/4] Initializing microphone...")
     pa = pyaudio.PyAudio()
 
@@ -453,25 +453,25 @@ def main():
         device_name = "default"
         if args.device is not None:
             device_name = pa.get_device_info_by_index(args.device)["name"]
-        print(f"  ✅ Microphone ready ({device_name})")
+        print(f"  锟?Microphone ready ({device_name})")
     except Exception as e:
-        print(f"  ❌ Failed to open microphone: {e}")
+        print(f"  锟?Failed to open microphone: {e}")
         pa.terminate()
         sys.exit(1)
 
-    # ── Meeting Start Time ────────────────────────────────────────
+    # 鈹€鈹€ Meeting Start Time 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     meeting_start = time.time()
     meeting.start_time = meeting_start
     utterance_count = 0
 
-    # ── Callbacks ─────────────────────────────────────────────────
+    # 鈹€鈹€ Callbacks 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     def on_speech_start():
         """Called when VAD detects speech start."""
         elapsed = time.time() - meeting_start
         minutes = int(elapsed // 60)
         seconds = int(elapsed % 60)
-        print(f"\r  🎤 [{minutes:02d}:{seconds:02d}] Speech detected...", end="", flush=True)
+        print(f"\r  馃帳 [{minutes:02d}:{seconds:02d}] Speech detected...", end="", flush=True)
 
     def on_transcription(result: WhisperResult):
         """Called when transcription completes for a speech segment."""
@@ -505,26 +505,26 @@ def main():
         timestamp = f"{minutes:02d}:{seconds:02d}"
 
         print()
-        print(f"  ┌─ {speaker} [{timestamp}] ─────────────────────────")
-        print(f"  │ {result.text.strip()}")
-        print(f"  └─ confidence: {result.confidence:.2f} ──")
+        print(f"  鈹屸攢 {speaker} [{timestamp}] 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€")
+        print(f"  锟?{result.text.strip()}")
+        print(f"  鈹斺攢 confidence: {result.confidence:.2f} 鈹€鈹€")
 
     def on_event(event):
         """Handle stream events."""
         if event.event_type == "error":
-            print(f"\n  ❌ Error: {event.data}")
+            print(f"\n  锟?Error: {event.data}")
 
     # Wire up callbacks
     processor.on_speech_start = on_speech_start
     processor.on_transcription = on_transcription
     processor.on_event = on_event
 
-    # ── Main Recording Loop ───────────────────────────────────────
+    # 鈹€鈹€ Main Recording Loop 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     print()
-    print("  ╔═══════════════════════════════════════════════════════╗")
-    print("  ║  🎙️  Meeting in progress... Speak normally.           ║")
-    print("  ║  Press Ctrl+C to end the meeting.                     ║")
-    print("  ╚═══════════════════════════════════════════════════════╝")
+    print("  鈺斺晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲锟?)
+    print("  锟? 馃帣锟? Meeting in progress... Speak normally.           锟?)
+    print("  锟? Press Ctrl+C to end the meeting.                     锟?)
+    print("  鈺氣晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲锟?)
     print()
 
     running = True
@@ -532,7 +532,7 @@ def main():
     def signal_handler(sig, frame):
         nonlocal running
         running = False
-        print("\n\n  ⚠️  Ending meeting...")
+        print("\n\n  鈿狅笍  Ending meeting...")
 
     signal.signal(signal.SIGINT, signal_handler)
 
@@ -540,7 +540,7 @@ def main():
         while running:
             elapsed = time.time() - meeting_start
             if elapsed >= args.duration:
-                print(f"\n  ⏱️  Duration limit reached ({args.duration}s)")
+                print(f"\n  鈴憋笍  Duration limit reached ({args.duration}s)")
                 break
 
             try:
@@ -559,60 +559,60 @@ def main():
             time.sleep(0.001)
 
     except Exception as e:
-        print(f"\n  ❌ Unexpected error: {e}")
+        print(f"\n  锟?Unexpected error: {e}")
         logger.exception("Unexpected error in main loop")
 
     finally:
-        # ── Cleanup ───────────────────────────────────────────────
+        # 鈹€鈹€ Cleanup 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         mic_stream.stop_stream()
         mic_stream.close()
         pa.terminate()
 
         meeting.end_time = time.time() - meeting_start
 
-    # ── Export Results ────────────────────────────────────────────
+    # 鈹€鈹€ Export Results 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     print()
     print("  Exporting results...")
 
     if not meeting.utterances:
-        print("  ⚠️  No speech detected during the meeting.")
+        print("  鈿狅笍  No speech detected during the meeting.")
         print("  Try lowering --vad-threshold or speaking closer to the microphone.")
     else:
         # Export SRT
         try:
             meeting.export_srt(srt_path)
-            print(f"  ✅ SRT exported: {srt_path}")
+            print(f"  锟?SRT exported: {srt_path}")
         except Exception as e:
-            print(f"  ❌ SRT export failed: {e}")
+            print(f"  锟?SRT export failed: {e}")
             logger.exception("SRT export error")
 
         # Export TXT
         try:
             meeting.export_txt(txt_path)
-            print(f"  ✅ TXT exported: {txt_path}")
+            print(f"  锟?TXT exported: {txt_path}")
         except Exception as e:
-            print(f"  ❌ TXT export failed: {e}")
+            print(f"  锟?TXT export failed: {e}")
             logger.exception("TXT export error")
 
-    # ── Meeting Summary ───────────────────────────────────────────
+    # 鈹€鈹€ Meeting Summary 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     stats = processor.stats
     total_time = time.time() - meeting_start
 
     print()
-    print("╔" + "═" * 58 + "╗")
-    print("║" + "  Meeting Summary".center(58) + "║")
-    print("╠" + "═" * 58 + "╣")
-    print(f"║  Duration:           {MeetingRecord._format_duration(total_time):<36}║")
-    print(f"║  Utterances:         {utterance_count:<36}║")
-    print(f"║  Speakers detected:  {meeting.speaker_count:<36}║")
-    print(f"║  Speech time:        {MeetingRecord._format_duration(stats['total_speech_duration_s']):<36}║")
-    print(f"║  Chunks processed:   {stats['chunks_processed']:<36}║")
+    print("锟? + "锟? * 58 + "锟?)
+    print("锟? + "  Meeting Summary".center(58) + "锟?)
+    print("锟? + "锟? * 58 + "锟?)
+    print(f"锟? Duration:           {MeetingRecord._format_duration(total_time):<36}锟?)
+    print(f"锟? Utterances:         {utterance_count:<36}锟?)
+    print(f"锟? Speakers detected:  {meeting.speaker_count:<36}锟?)
+    print(f"锟? Speech time:        {MeetingRecord._format_duration(stats['total_speech_duration_s']):<36}锟?)
+    print(f"锟? Chunks processed:   {stats['chunks_processed']:<36}锟?)
     if stats['speech_segments'] > 0:
-        print(f"║  Avg latency:        {stats['avg_latency_ms']:.0f}ms{' ' * 31}║")
-    print("╠" + "═" * 58 + "╣")
-    print(f"║  SRT: {srt_path:<51}║")
-    print(f"║  TXT: {txt_path:<51}║")
-    print("╚" + "═" * 58 + "╝")
+        print(f"锟? Avg latency:        {stats['avg_latency_ms']:.0f}ms{' ' * 31}锟?)
+    print("锟? + "锟? * 58 + "锟?)
+    print(f"锟? SRT: {srt_path:<51}锟?)
+    print(f"锟? TXT: {txt_path:<51}锟?)
+    print("锟? + "锟? * 58 + "锟?)
     print()
 
 

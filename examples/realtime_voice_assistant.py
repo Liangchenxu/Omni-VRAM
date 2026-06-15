@@ -1,6 +1,6 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-Omni-VRAM: Real-Time Voice Assistant
+vram_core: Real-Time Voice Assistant
 ======================================
 
 A real-time voice assistant that captures microphone audio, detects speech
@@ -8,7 +8,7 @@ using Voice Activity Detection (VAD), transcribes with Whisper, and
 optionally sends text to an LLM for responses.
 
 Pipeline:
-    Microphone → VAD → Whisper Transcription → [LLM Response] → Display
+    Microphone 锟?VAD 锟?Whisper Transcription 锟?[LLM Response] 锟?Display
 
 Usage:
     # Basic usage (record for 60 seconds, auto-detect device)
@@ -59,7 +59,7 @@ from vram_core.config import setup_logging
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Omni-VRAM: Real-Time Voice Assistant",
+        description="vram_core: Real-Time Voice Assistant",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -209,39 +209,39 @@ def create_mic_stream(
 def on_state_change(state: StreamState):
     """Callback for stream state changes."""
     state_icons = {
-        StreamState.IDLE: "🔵",
-        StreamState.LISTENING: "🟢",
-        StreamState.SPEAKING: "🔴",
-        StreamState.PROCESSING: "⏳",
-        StreamState.ERROR: "❌",
+        StreamState.IDLE: "馃數",
+        StreamState.LISTENING: "馃煝",
+        StreamState.SPEAKING: "馃敶",
+        StreamState.PROCESSING: "锟?,
+        StreamState.ERROR: "锟?,
     }
-    icon = state_icons.get(state, "❓")
+    icon = state_icons.get(state, "锟?)
     print(f"  {icon} State: {state.value}")
 
 
 def on_speech_start():
     """Callback when speech is detected."""
-    print("\n  🎤 Speech detected, listening...")
+    print("\n  馃帳 Speech detected, listening...")
 
 
 def on_speech_end(audio: np.ndarray):
     """Callback when speech segment ends."""
     duration = len(audio) / 16000
-    print(f"  🎤 Speech ended ({duration:.1f}s), processing...")
+    print(f"  馃帳 Speech ended ({duration:.1f}s), processing...")
 
 
 def on_transcription(result):
     """Callback when transcription is complete."""
     print()
-    print("  ┌─────────────────────────────────────────────────")
-    print(f"  │ 📝 Transcription ({result.language}):")
-    print(f"  │ {result.text}")
-    print(f"  │ Confidence: {result.confidence:.2f} | "
+    print("  鈹屸攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€")
+    print(f"  锟?馃摑 Transcription ({result.language}):")
+    print(f"  锟?{result.text}")
+    print(f"  锟?Confidence: {result.confidence:.2f} | "
           f"Duration: {result.audio_duration:.1f}s | "
           f"Time: {result.processing_time:.1f}s")
     if result.segments:
-        print(f"  │ Segments: {len(result.segments)}")
-    print("  └─────────────────────────────────────────────────")
+        print(f"  锟?Segments: {len(result.segments)}")
+    print("  鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€")
     print()
     print("  Listening for speech... (Ctrl+C to stop)")
 
@@ -249,7 +249,7 @@ def on_transcription(result):
 def on_event(event):
     """Callback for stream events (debug)."""
     if event.event_type == "error":
-        print(f"  ❌ Error: {event.data}")
+        print(f"  锟?Error: {event.data}")
 
 
 def main():
@@ -286,7 +286,7 @@ def main():
 
     # Print header
     print("=" * 60)
-    print("  Omni-VRAM: Real-Time Voice Assistant")
+    print("  vram_core: Real-Time Voice Assistant")
     print("=" * 60)
     print(f"  Duration:     {args.duration}s")
     print(f"  Model:        {args.model}")
@@ -298,7 +298,7 @@ def main():
         print(f"  Language:     {args.language}")
     print("=" * 60)
 
-    # ── Step 1: Initialize WhisperBridge ──────────────────────────
+    # 鈹€鈹€ Step 1: Initialize WhisperBridge 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     print("\n  [1/3] Initializing Whisper...")
     try:
         whisper = WhisperBridge(
@@ -308,15 +308,15 @@ def main():
             device="cpu" if args.device_cpu else "cuda",
         )
         status = whisper.get_status()
-        print(f"  ✅ Whisper ready (backend: {status['backend']})")
+        print(f"  锟?Whisper ready (backend: {status['backend']})")
     except Exception as e:
-        print(f"  ❌ Failed to initialize Whisper: {e}")
+        print(f"  锟?Failed to initialize Whisper: {e}")
         print()
         print("  Make sure whisper.cpp is installed and configured.")
         print("  See README.md for setup instructions.")
         sys.exit(1)
 
-    # ── Step 2: Initialize StreamProcessor ────────────────────────
+    # 鈹€鈹€ Step 2: Initialize StreamProcessor 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     print("  [2/3] Initializing stream processor...")
     stream_config = StreamConfig(
         sample_rate=args.sample_rate,
@@ -335,9 +335,9 @@ def main():
     processor.on_transcription = on_transcription
     processor.on_event = on_event
 
-    print(f"  ✅ Stream processor ready (chunk: {stream_config.chunk_size} samples)")
+    print(f"  锟?Stream processor ready (chunk: {stream_config.chunk_size} samples)")
 
-    # ── Step 3: Initialize Microphone ────────────────────────────
+    # 鈹€鈹€ Step 3: Initialize Microphone 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     print("  [3/3] Initializing microphone...")
     pa = pyaudio.PyAudio()
 
@@ -351,15 +351,15 @@ def main():
         device_name = "default"
         if args.device is not None:
             device_name = pa.get_device_info_by_index(args.device)["name"]
-        print(f"  ✅ Microphone ready ({device_name})")
+        print(f"  锟?Microphone ready ({device_name})")
     except Exception as e:
-        print(f"  ❌ Failed to open microphone: {e}")
+        print(f"  锟?Failed to open microphone: {e}")
         pa.terminate()
         sys.exit(1)
 
-    # ── Main Loop ─────────────────────────────────────────────────
+    # 鈹€鈹€ Main Loop 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     print()
-    print("  🎙️  Listening for speech... (Ctrl+C to stop)")
+    print("  馃帣锟? Listening for speech... (Ctrl+C to stop)")
     print()
 
     running = True
@@ -367,7 +367,7 @@ def main():
     def signal_handler(sig, frame):
         nonlocal running
         running = False
-        print("\n  ⚠️  Stopping...")
+        print("\n  鈿狅笍  Stopping...")
 
     signal.signal(signal.SIGINT, signal_handler)
 
@@ -379,7 +379,7 @@ def main():
             # Check duration limit
             elapsed = time.time() - start_time
             if elapsed >= args.duration:
-                print(f"\n  ⏱️  Duration limit reached ({args.duration}s)")
+                print(f"\n  鈴憋笍  Duration limit reached ({args.duration}s)")
                 break
 
             # Read audio chunk from microphone
@@ -405,11 +405,11 @@ def main():
             time.sleep(0.001)
 
     except Exception as e:
-        print(f"\n  ❌ Unexpected error: {e}")
+        print(f"\n  锟?Unexpected error: {e}")
         logger.exception("Unexpected error in main loop")
 
     finally:
-        # ── Cleanup ───────────────────────────────────────────────
+        # 鈹€鈹€ Cleanup 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         print("\n  Cleaning up...")
 
         mic_stream.stop_stream()
@@ -432,7 +432,7 @@ def main():
         if stats['speech_segments'] > 0:
             print(f"  Avg latency:       {stats['avg_latency_ms']:.0f}ms")
         print("=" * 60)
-        print("  Done! 👋")
+        print("  Done! 馃憢")
         print("=" * 60)
 
 

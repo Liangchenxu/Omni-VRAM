@@ -1,4 +1,4 @@
-"""
+﻿"""
 Tests for vram_core.speaker_verification module.
 
 Covers:

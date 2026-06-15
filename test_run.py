@@ -1,4 +1,4 @@
-import os
+﻿import os
 import torch 
 import time
 
@@ -10,7 +10,7 @@ if os.path.exists(cuda_bin_path):
 import vram_core
 
 def run_benchmark():
-    print("[INFO] Omni-VRAM KV-Cache Zero-Copy Benchmark")
+    print("[INFO] vram_core KV-Cache Zero-Copy Benchmark")
     print("-" * 50)
 
     # Configuration
@@ -36,8 +36,8 @@ def run_benchmark():
     native_time = (time.perf_counter() - start) * 1000
     print(f"    -> Baseline Latency: {native_time:.2f} ms")
 
-    # --- Optimized: Omni-VRAM Zero-Copy ---
-    print("\n[2] Running Omni-VRAM Optimized (Zero-Copy)...")
+    # --- Optimized: vram_core Zero-Copy ---
+    print("\n[2] Running vram_core Optimized (Zero-Copy)...")
     omni_cache = torch.zeros((max_seq_len, hidden_dim), device='cuda', dtype=torch.float32)
     current_pos = torch.tensor([0], device='cuda', dtype=torch.int32)
 
@@ -52,7 +52,7 @@ def run_benchmark():
     torch.cuda.synchronize()
     omni_time = (time.perf_counter() - start) * 1000
 
-    print(f"    -> Omni-VRAM Latency: {omni_time:.2f} ms")
+    print(f"    -> vram_core Latency: {omni_time:.2f} ms")
     print(f"    -> Final sequence length: {current_pos.item()} tokens")
 
     # --- Results ---

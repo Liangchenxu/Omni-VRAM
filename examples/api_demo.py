@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-Omni-VRAM API Server Demo Client
+vram_core API Server Demo Client
 =================================
 
-Demonstrates how to interact with the Omni-VRAM transcription API.
+Demonstrates how to interact with the vram_core transcription API.
 
 Usage:
     1. Start the API server:
@@ -25,7 +25,7 @@ import argparse
 import tempfile
 import numpy as np
 
-# ── Configuration ────────────────────────────────────────────────
+# 鈹€鈹€ Configuration 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 API_BASE = "http://127.0.0.1:8000"
 
@@ -66,8 +66,8 @@ def demo_health_check():
         print(f"  Available:    {data['available_backends']}")
         return True
     except Exception as e:
-        print(f"  ❌ Connection failed: {e}")
-        print(f"  💡 Make sure the API server is running:")
+        print(f"  锟?Connection failed: {e}")
+        print(f"  馃挕 Make sure the API server is running:")
         print(f"     python vram_core/api_server.py")
         return False
 
@@ -117,7 +117,7 @@ def demo_file_transcribe(audio_path: str = None):
         print(f"  Backend:    {data['backend']}")
         print(f"  Time:       {data['processing_time']:.2f}s")
     else:
-        print(f"  ❌ Error {resp.status_code}: {resp.text}")
+        print(f"  锟?Error {resp.status_code}: {resp.text}")
 
 
 def demo_base64_transcribe(audio_path: str = None):
@@ -152,7 +152,7 @@ def demo_base64_transcribe(audio_path: str = None):
         print(f"  Confidence: {data['confidence']:.2f}")
         print(f"  Time:       {data['processing_time']:.2f}s")
     else:
-        print(f"  ❌ Error {resp.status_code}: {resp.text}")
+        print(f"  锟?Error {resp.status_code}: {resp.text}")
 
 
 def demo_websocket_stream():
@@ -164,8 +164,8 @@ def demo_websocket_stream():
     try:
         import websockets
     except ImportError:
-        print("  ⚠️  websockets package not installed")
-        print("  💡 Install with: pip install websockets")
+        print("  鈿狅笍  websockets package not installed")
+        print("  馃挕 Install with: pip install websockets")
         return
 
     async def _stream():
@@ -190,7 +190,7 @@ def demo_websocket_stream():
                     while True:
                         resp = await asyncio.wait_for(ws.recv(), timeout=0.1)
                         data = json.loads(resp)
-                        print(f"  ← {data}")
+                        print(f"  锟?{data}")
                 except asyncio.TimeoutError:
                     pass
 
@@ -203,7 +203,7 @@ def demo_websocket_stream():
                 while True:
                     resp = await asyncio.wait_for(ws.recv(), timeout=2.0)
                     data = json.loads(resp)
-                    print(f"  ← {data}")
+                    print(f"  锟?{data}")
                     if data.get("type") == "stopped":
                         break
             except asyncio.TimeoutError:
@@ -216,7 +216,7 @@ def demo_websocket_stream():
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Omni-VRAM API Demo Client",
+        description="vram_core API Demo Client",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -241,9 +241,9 @@ Examples:
     global API_BASE
     API_BASE = f"http://{args.host}:{args.port}"
 
-    print("╔══════════════════════════════════════════════════════════╗")
-    print("║         Omni-VRAM API Server Demo Client                ║")
-    print("╚══════════════════════════════════════════════════════════╝")
+    print("鈺斺晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晽")
+    print("锟?        vram_core API Server Demo Client                锟?)
+    print("鈺氣晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨暆")
     print(f"  Server: {API_BASE}")
 
     # Health check
@@ -262,7 +262,7 @@ Examples:
     if args.demo in ("all", "stream"):
         demo_websocket_stream()
 
-    print("\n✅ Demo complete!")
+    print("\n锟?Demo complete!")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Tests for Speaker Diarization Module
 ======================================
 """
@@ -10,6 +10,7 @@ from vram_core.speaker_diarization import (
     SpeakerDiarizer,
     SpeakerSegment,
     SpeakerProfile,
+    MFCCDiarizer,
 )
 
 
@@ -21,19 +22,19 @@ def make_tone(duration_s=2.0, sr=16000, freq=200.0, amp=0.3):
 class TestSpeakerDiarizerInit:
     def test_default(self):
         d = SpeakerDiarizer()
-        assert d.n_mfcc == 13
-        assert d.similarity_threshold == 0.7
-        assert d.segment_duration_ms == 1000.0
+        assert d._mfcc.n_mfcc == 13
+        assert d._mfcc.similarity_threshold == 0.7
+        assert d._mfcc.segment_duration_ms == 1000.0
 
     def test_custom_params(self):
         d = SpeakerDiarizer(n_mfcc=20, similarity_threshold=0.8)
-        assert d.n_mfcc == 20
-        assert d.similarity_threshold == 0.8
+        assert d._mfcc.n_mfcc == 20
+        assert d._mfcc.similarity_threshold == 0.8
 
 
 class TestMFCC:
     def test_extract_basic(self):
-        d = SpeakerDiarizer()
+        d = MFCCDiarizer()
         audio = make_tone()
         mfcc = d.extract_mfcc(audio, sample_rate=16000)
         assert mfcc.shape[0] == d.n_mfcc
@@ -41,13 +42,13 @@ class TestMFCC:
         assert mfcc.dtype == np.float32
 
     def test_extract_empty(self):
-        d = SpeakerDiarizer()
+        d = MFCCDiarizer()
         mfcc = d.extract_mfcc(np.array([], dtype=np.float32))
         assert mfcc.shape[0] == d.n_mfcc
         assert mfcc.shape[1] == 0
 
     def test_extract_short_audio(self):
-        d = SpeakerDiarizer()
+        d = MFCCDiarizer()
         short = np.random.randn(50).astype(np.float32)
         mfcc = d.extract_mfcc(short)
         assert mfcc.shape[0] == d.n_mfcc
@@ -55,7 +56,7 @@ class TestMFCC:
 
 class TestEmbedding:
     def test_compute_embedding(self):
-        d = SpeakerDiarizer()
+        d = MFCCDiarizer()
         mfcc = np.random.randn(13, 50).astype(np.float32)
         emb = d.compute_embedding(mfcc)
         assert emb.shape == (26,)
@@ -64,7 +65,7 @@ class TestEmbedding:
         assert abs(np.linalg.norm(emb) - 1.0) < 1e-5
 
     def test_empty_mfcc(self):
-        d = SpeakerDiarizer()
+        d = MFCCDiarizer()
         mfcc = np.zeros((13, 0), dtype=np.float32)
         emb = d.compute_embedding(mfcc)
         assert np.linalg.norm(emb) == 0.0
@@ -72,34 +73,31 @@ class TestEmbedding:
 
 class TestCosineSimilarity:
     def test_same_vector(self):
-        d = SpeakerDiarizer()
         a = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-        assert abs(d.cosine_similarity(a, a) - 1.0) < 1e-6
+        assert abs(MFCCDiarizer.cosine_similarity(a, a) - 1.0) < 1e-6
 
     def test_orthogonal(self):
-        d = SpeakerDiarizer()
         a = np.array([1.0, 0.0], dtype=np.float32)
         b = np.array([0.0, 1.0], dtype=np.float32)
-        assert abs(d.cosine_similarity(a, b)) < 1e-6
+        assert abs(MFCCDiarizer.cosine_similarity(a, b)) < 1e-6
 
     def test_opposite(self):
-        d = SpeakerDiarizer()
         a = np.array([1.0, 0.0], dtype=np.float32)
         b = np.array([-1.0, 0.0], dtype=np.float32)
-        assert d.cosine_similarity(a, b) < 0
+        assert MFCCDiarizer.cosine_similarity(a, b) < 0
 
     def test_zero_vector(self):
-        d = SpeakerDiarizer()
         a = np.array([0.0, 0.0], dtype=np.float32)
         b = np.array([1.0, 0.0], dtype=np.float32)
-        assert d.cosine_similarity(a, b) == 0.0
+        assert MFCCDiarizer.cosine_similarity(a, b) == 0.0
 
 
 class TestDiarize:
     def test_single_speaker(self):
         d = SpeakerDiarizer()
         audio = make_tone(duration_s=5.0, freq=200)
-        segments = d.diarize(audio, sample_rate=16000)
+        result = d.diarize(audio, sample_rate=16000)
+        segments = result.segments
         assert len(segments) > 0
         # Single tone should produce one speaker
         unique_speakers = set(s.speaker_id for s in segments)
@@ -111,7 +109,8 @@ class TestDiarize:
         tone1 = make_tone(duration_s=3.0, freq=100, amp=0.3)
         tone2 = make_tone(duration_s=3.0, freq=500, amp=0.8)
         audio = np.concatenate([tone1, tone2])
-        segments = d.diarize(audio, sample_rate=16000)
+        result = d.diarize(audio, sample_rate=16000)
+        segments = result.segments
         assert len(segments) > 0
         unique = set(s.speaker_id for s in segments)
         # May detect 1 or 2 speakers depending on MFCC similarity
@@ -119,8 +118,8 @@ class TestDiarize:
 
     def test_empty_audio(self):
         d = SpeakerDiarizer()
-        segments = d.diarize(np.array([], dtype=np.float32))
-        assert segments == []
+        result = d.diarize(np.array([], dtype=np.float32))
+        assert result.segments == []
 
     def test_speaker_count(self):
         d = SpeakerDiarizer()
@@ -157,7 +156,7 @@ class TestSpeakerSegment:
 
 class TestMerge:
     def test_merge_same_speaker(self):
-        d = SpeakerDiarizer()
+        d = MFCCDiarizer()
         segments = [
             SpeakerSegment(0.0, 1.0, "S1"),
             SpeakerSegment(1.0, 2.0, "S1"),
@@ -172,5 +171,5 @@ class TestMerge:
         assert merged[2].duration == 1.0
 
     def test_merge_empty(self):
-        d = SpeakerDiarizer()
+        d = MFCCDiarizer()
         assert d._merge_consecutive([]) == []
