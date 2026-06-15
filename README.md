@@ -1,5 +1,5 @@
-# Omni-VRAM: Zero-Copy CUDA Audio-to-LLM Bridge
-### 零拷贝跨硬件语音大模型底层直通桥
+# Omni-VRAM: LLM 语音交互框架
+### 让大模型长出耳朵和嘴巴
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![CUDA: 11.0+](https://img.shields.io/badge/CUDA-11.0%2B-green.svg)
@@ -7,7 +7,7 @@
 ![Python: 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue.svg)
 [![Tests](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml/badge.svg)](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml)
 [![PyPI](https://img.shields.io/pypi/v/omni-vram.svg)](https://pypi.org/project/omni-vram/)
-[![Version](https://img.shields.io/badge/Version-1.0.0-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
+[![Version](https://img.shields.io/badge/Version-2.0.0-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
 
 [**English**](#english-documentation) | [**中文文档**](#chinese-documentation) | [**Docs**](docs/)
 
@@ -16,48 +16,63 @@
 <a id="english-documentation"></a>
 ## 📖 Overview
 
-**Omni-VRAM** is a production-ready, high-performance audio AI platform built on CUDA zero-copy technology. It eliminates VRAM fragmentation and memory transfer bottlenecks for real-time LLM voice applications, providing 20 core modules covering the entire audio AI pipeline — from speech recognition to synthesis, from single GPU to distributed clusters.
+**Omni-VRAM** is a production-ready **LLM voice interaction framework** that lets large language models hear and speak. Built on CUDA zero-copy technology, it provides **22 core modules** covering the entire audio AI pipeline — from speech recognition to synthesis, from single GPU to distributed clusters.
+
+> **v2.0.0**: Major release with 22 modules including speaker diarization, speaker verification, emotion recognition, noise reduction, TTS, voice translation, multi-GPU support, distributed transcription, plugin system, monitoring, and gRPC service.
 
 Traditional Python audio pipelines and PyTorch operations (e.g., `torch.cat` for KV-Cache) introduce significant overhead. Omni-VRAM implements **Operator Fusion** and **Zero-Copy Memory Injection** at the hardware level, enabling consumer-grade GPUs (RTX 30/40 series) to achieve sub-millisecond latency for real-time voice agents.
 
-### ✨ Core Features
+### ✅ Core Features (22 Modules)
 
-| Module | Description |
-|--------|-------------|
-| **Whisper Transcription** | Multi-backend (faster-whisper / whisper.cpp / API / Distil-Whisper), tiny → large-v3.5, GPU 5× speedup |
-| **Real-Time Streaming ASR** | Sliding-window VAD, partial/final callbacks, <500ms latency |
-| **Noise Reduction** | WebRTC / RNNoise / noisereduce — three backends, auto-applied in pipeline |
-| **Emotion Recognition** | wav2vec2 model, 7 emotions (happy/sad/angry/neutral/surprised/fear/disgust) |
-| **Speaker Diarization** | pyannote-audio / resemblyzer, identifies "who spoke when" |
-| **Speaker Verification** | MFCC voiceprint, 1:1 verification & 1:N identification, voiceprint library |
-| **Wake Word Detection** | Energy-based & Whisper keyword detection, custom vocabulary |
-| **TTS Engine** | edge-tts (300+ voices) / pyttsx3 (offline) |
-| **Voice Translation** | Speech-to-speech pipeline, MarianMT + Google, 50+ language pairs |
-| **Audio Event Detection** | YAMNet / energy-based, detects speech/music/alarm/silence |
-| **Multi-GPU** | Pipeline / data / tensor parallelism, NVLink detection, fault tolerance |
-| **Distributed Transcription** | Multi-machine parallel batch processing, auto load balancing |
-| **KV-Cache VRAM Optimizer** | NF4/FP4 4-bit quantization, LRU eviction, OOM auto-recovery |
-| **Production Monitoring** | Prometheus metrics, Grafana dashboards, health checks, p95/p99 latency |
-| **REST API** | FastAPI async HTTP + WebSocket streaming |
-| **gRPC Server** | High-performance dual-protocol (gRPC + REST) server |
-| **Plugin System** | Extensible architecture with discovery, lifecycle & hook events |
-| **CUDA Kernels** | Zero-Copy KV-Cache (11× faster), Fused Audio Frontend (28× faster) |
+| # | Module | Description |
+|---|--------|-------------|
+| 1 | **Whisper Transcription** | Multi-backend (faster-whisper / whisper.cpp / API / Distil-Whisper), tiny → large-v3.5, GPU 5× speedup |
+| 2 | **Real-Time Streaming ASR** | Sliding-window VAD, partial/final callbacks, <500ms latency |
+| 3 | **Noise Reduction** | Spectral subtraction, adaptive Wiener filter, multi-stage pipeline, silence detection |
+| 4 | **Emotion Recognition** | MFCC + energy + ZCR features, 6 emotions (neutral/happy/sad/angry/surprised/fearful) |
+| 5 | **Speaker Diarization** | MFCC feature extraction + cosine similarity clustering, identifies "who spoke when" |
+| 6 | **Speaker Verification** | MFCC voiceprint, 1:1 verification & 1:N identification, persistent voiceprint library |
+| 7 | **Wake Word Detection** | Energy-based & phoneme-level fuzzy matching, custom vocabulary |
+| 8 | **TTS Engine** | Multi-backend (pyttsx3 / edge-tts / gTTS), 300+ voices, async synthesis |
+| 9 | **Voice Translation** | Speech-to-speech pipeline, 50+ language pairs |
+| 10 | **Audio Event Detection** | Energy threshold + spectral analysis, detects cough/laughter/applause and more |
+| 11 | **Multi-GPU Support** | Auto device discovery, load balancing (round-robin / least-used / VRAM-priority) |
+| 12 | **Distributed Transcription** | Multi-machine parallel batch processing, auto load balancing |
+| 13 | **KV-Cache VRAM Optimizer** | Memory pressure detection (LOW/MEDIUM/HIGH/CRITICAL), KV-Cache estimation, quantization recommendation |
+| 14 | **Production Monitoring** | Real-time GPU monitoring (memory/temp/power/utilization), `@gpu_monitor` decorator |
+| 15 | **REST API** | FastAPI async HTTP + WebSocket streaming |
+| 16 | **gRPC Server** | High-performance dual-protocol (gRPC + REST) server |
+| 17 | **Plugin System** | Extensible architecture with discovery, lifecycle & hook events |
+| 18 | **CUDA Kernels** | Zero-Copy KV-Cache (11× faster), Fused Audio Frontend (28× faster) |
+| 19 | **Stream Processor** | Real-time audio stream processing with VAD, buffering, and segmentation |
+| 20 | **Whisper Bridge** | Modular Whisper integration with model management, CUDA bridge, and preprocessing |
+| 21 | **Audio Utilities** | Audio format detection, conversion, resampling, spectral computation |
+| 22 | **Configuration System** | YAML/JSON config files, environment variable overrides, hot-reload |
 
 ### 📁 Project Structure
 
 ```
 Omni-VRAM/
-├── app.py                      # Gradio Web Demo (语音转写/情绪/分离/麦克风)
+├── app.py                      # Gradio Web Demo (transcription/emotion/diarization/mic)
 ├── vram_hacker.cu              # CUDA kernel source (KV-Cache injection)
 ├── setup.py                    # Build & install script
+├── pyproject.toml              # Modern Python project configuration
+├── requirements.txt            # Python dependencies
 ├── test_run.py                 # Quick integration test
+├── run_tests.py                # Unified test runner
 ├── .env.example                # Configuration template
 │
-├── vram_core/                  # Python core library
-│   ├── __init__.py             # Package exports (v1.0.0)
-│   ├── config.py               # Configuration management (.env loader)
+├── vram_core/                  # Python core library (22 modules)
+│   ├── __init__.py             # Package exports (v2.0.0)
+│   ├── config.py               # Configuration management
+│   ├── utils.py                # General utility functions
 │   ├── audio_utils.py          # Audio format detection & conversion
-│   ├── whisper_bridge.py       # Whisper multi-backend integration
+│   ├── whisper_bridge.py       # Whisper multi-backend integration (legacy)
+│   ├── whisper/                # Whisper sub-module (v2.0)
+│   │   ├── bridge.py           # CUDA Whisper bridge
+│   │   ├── models.py           # Model management
+│   │   ├── preprocessor.py     # Audio preprocessor
+│   │   └── result.py           # Transcription result dataclass
 │   ├── stream_processor.py     # Real-time stream processor + VAD
 │   ├── streaming_asr.py        # Real-time streaming ASR engine
 │   ├── api_server.py           # FastAPI REST + WebSocket API
@@ -68,11 +83,11 @@ Omni-VRAM/
 │   ├── wake_word.py            # Wake word / keyword detection
 │   ├── multi_gpu.py            # Multi-GPU management & parallelism
 │   ├── vram_optimizer.py       # KV-Cache VRAM optimization & OOM recovery
-│   ├── tts_engine.py           # Multi-backend text-to-speech (edge-tts / pyttsx3)
+│   ├── tts_engine.py           # Multi-backend text-to-speech
 │   ├── voice_translator.py     # Speech-to-speech translation pipeline
-│   ├── audio_event_detection.py # Audio event detection (YAMNet / energy-based)
+│   ├── audio_event_detection.py # Audio event detection
 │   ├── distributed_transcriber.py # Multi-GPU/machine parallel transcription
-│   ├── monitoring.py           # Prometheus metrics & Grafana dashboards
+│   ├── monitoring.py           # GPU monitoring & Prometheus metrics
 │   ├── grpc_server.py          # gRPC + HTTP REST dual-protocol server
 │   └── plugin_manager.py       # Plugin discovery, loading & lifecycle
 │
@@ -83,26 +98,33 @@ Omni-VRAM/
 │   ├── benchmark_suite.py           # Performance benchmark suite
 │   ├── api_demo.py                  # API server demo client
 │   ├── test_whisper_local.py        # Whisper local test script
-│   ├── test_emotion.py              # Emotion recognition test
-│   └── test_tts_translator.py       # TTS & translator test
+│   └── test_emotion.py              # Emotion recognition test
 │
-├── tests/                      # Unit tests
+├── tests/                      # Unit tests (13 test files)
 │   ├── test_audio_utils.py
-│   ├── test_whisper_bridge.py
-│   ├── test_stream_processor.py
-│   ├── test_noise_reduction.py
 │   ├── test_emotion_recognition.py
-│   └── test_speaker_diarization.py
+│   ├── test_monitoring.py
+│   ├── test_multi_gpu.py
+│   ├── test_noise_reduction.py
+│   ├── test_plugin_manager.py
+│   ├── test_speaker_diarization.py
+│   ├── test_speaker_verification.py
+│   ├── test_stream_processor.py
+│   ├── test_tts_engine.py
+│   ├── test_vram_optimizer.py
+│   ├── test_wake_word.py
+│   └── test_whisper_bridge.py
 │
 └── docs/                       # Documentation
     ├── installation.md
     ├── quickstart.md
     ├── api_reference.md
     ├── examples.md
-    └── faq.md
+    ├── faq.md
+    └── blog_omni_vram.md
 ```
 
-### 🧩 Examples
+### 🧪 Examples
 
 | Example | Description | Command |
 |---------|-------------|---------|
@@ -111,8 +133,8 @@ Omni-VRAM/
 | **Meeting Transcriber** | Long-form recording with silence auto-segmentation and export | `python examples/meeting_transcriber.py --output meeting.txt` |
 | **Voice Chat Bot** | Multi-turn dialogue with history tracking and LLM-ready architecture | `python examples/voice_chat_bot.py` |
 | **Benchmark Suite** | Performance testing for all modules with Markdown report | `python examples/benchmark_suite.py --skip-whisper` |
-| **TTS & Translation** | Text-to-speech and speech-to-speech translation test | `python examples/test_tts_translator.py` |
 | **Emotion Recognition** | Speech emotion analysis demo | `python examples/test_emotion.py` |
+| **Whisper Local Test** | Local Whisper transcription test | `python examples/test_whisper_local.py` |
 
 ### 🌐 Gradio Web Demo
 
@@ -133,7 +155,7 @@ python app.py --debug            # Debug mode
 
 **Features:**
 - 📝 **Speech Transcription** — Upload audio → get text (with model/language/noise reduction options)
-- 🎭 **Emotion Recognition** — Upload audio → detect emotion (7 emotions with probability bars)
+- 🎭 **Emotion Recognition** — Upload audio → detect emotion (6 emotions with probability bars)
 - 👥 **Speaker Diarization** — Upload conversation → identify who spoke when
 - 🎙️ **Live Microphone** — Record voice → instant transcription
 - 📥 **Download Results** — Export as JSON / TXT / SRT subtitle files
@@ -203,39 +225,13 @@ cp .env.example .env
 
 > See [docs/installation.md](docs/installation.md) for detailed installation guide.
 
-## 💻 Quick Start
-
-### Basic CUDA Operations
-
-```python
-import torch
-import vram_core
-
-# 1. Hardware Initialization
-print(vram_core.scan_hardware_dna())
-
-# 2. Fused Audio Processing
-audio_stream = torch.randn(960000, device='cuda', dtype=torch.float32)
-# Performs VAD, pre-emphasis, and windowing in ~1 ms
-is_speaking, features = vram_core.smart_audio_listen(audio_stream, threshold=0.5)
-
-# 3. Zero-Copy LLM KV-Cache Update
-hidden_dim = 4096
-max_seq_len = 100000
-# Pre-allocate VRAM once
-kv_cache = torch.zeros((max_seq_len, hidden_dim), device='cuda', dtype=torch.float32)
-current_pos = torch.tensor([0], device='cuda', dtype=torch.int32)
-
-if is_speaking.item():
-    # Direct memory injection (0 reallocation overhead)
-    new_tokens = torch.randn((50, hidden_dim), device='cuda', dtype=torch.float32)
-    vram_core.append_to_kv_cache(kv_cache, new_tokens, current_pos)
-```
+## 💡 Quick Start
 
 ### Whisper Transcription
 
 ```python
-from vram_core import WhisperBridge, WhisperBackend
+from vram_core.whisper_bridge import WhisperBridge
+from vram_core.whisper_bridge import WhisperBackend
 
 # Initialize with automatic backend detection
 whisper = WhisperBridge(
@@ -255,7 +251,8 @@ print(f"Duration: {result.audio_duration}s")
 
 ```python
 import numpy as np
-from vram_core import StreamProcessor, StreamConfig, WhisperBridge, WhisperBackend
+from vram_core.stream_processor import StreamProcessor, StreamConfig
+from vram_core.whisper_bridge import WhisperBridge, WhisperBackend
 
 # Initialize components
 whisper = WhisperBridge(backend=WhisperBackend.AUTO, whisper_model="base")
@@ -274,7 +271,8 @@ processor.feed(audio_chunk)
 
 ```python
 import numpy as np
-from vram_core import WhisperBridge, WhisperBackend, StreamASR, StreamASRConfig
+from vram_core.whisper_bridge import WhisperBridge, WhisperBackend
+from vram_core.streaming_asr import StreamASR, StreamASRConfig
 
 # Initialize whisper
 whisper = WhisperBridge(backend=WhisperBackend.AUTO, whisper_model="base")
@@ -297,11 +295,121 @@ audio_chunk = np.random.randn(3200).astype(np.float32)  # from microphone
 asr.feed(audio_chunk)
 ```
 
+### Speaker Diarization
+
+```python
+import numpy as np
+from vram_core.speaker_diarization import SpeakerDiarizer
+
+# Initialize diarizer
+diarizer = SpeakerDiarizer(n_mfcc=13, similarity_threshold=0.7)
+
+# Load audio (float32, mono, 16kHz)
+audio = np.fromfile("audio.raw", dtype=np.float32)
+
+# Perform diarization
+result = diarizer.diarize(audio, sample_rate=16000)
+
+for segment in result.segments:
+    print(f"[{segment.start_time:.1f}s - {segment.end_time:.1f}s] Speaker: {segment.speaker_id}")
+
+print(f"Total speakers: {diarizer.get_speaker_count()}")
+```
+
+### Speaker Verification
+
+```python
+import numpy as np
+from vram_core.speaker_verification import SpeakerVerifier
+
+# Initialize verifier
+verifier = SpeakerVerifier(threshold=0.75, storage_path="voiceprints.json")
+
+# Register a speaker
+audio = np.random.randn(16000).astype(np.float32)  # 1 second of audio
+verifier.register("alice", audio, sample_rate=16000)
+
+# Verify identity
+test_audio = np.random.randn(16000).astype(np.float32)
+result = verifier.verify("alice", test_audio)
+print(f"Verified: {result.verified}, Confidence: {result.confidence:.3f}")
+
+# 1:N identification
+best = verifier.verify_any(test_audio)
+if best:
+    print(f"Identified: {best.speaker_id} ({best.confidence:.3f})")
+```
+
+### Emotion Recognition
+
+```python
+import numpy as np
+from vram_core.emotion_recognition import EmotionRecognizer
+
+# Initialize
+recognizer = EmotionRecognizer(sample_rate=16000)
+
+# Analyze emotion from audio
+audio = np.random.randn(32000).astype(np.float32)  # 2 seconds
+result = recognizer.recognize(audio)
+print(f"Emotion: {result['emotion']}, Confidence: {result['confidence']:.2f}")
+```
+
+### Noise Reduction
+
+```python
+import numpy as np
+from vram_core.noise_reduction import NoiseReducer
+
+# Initialize
+reducer = NoiseReducer(sample_rate=16000)
+
+# Reduce noise
+noisy_audio = np.random.randn(16000).astype(np.float32)
+clean_audio = reducer.reduce_noise(noisy_audio, aggressiveness=0.7)
+```
+
+### VRAM Optimization
+
+```python
+from vram_core.vram_optimizer import VRAMOptimizer
+
+# Initialize
+optimizer = VRAMOptimizer(device_id=0)
+
+# Check VRAM status
+status = optimizer.get_status()
+print(f"GPU: {status.gpu_name}, Usage: {status.usage_pct:.1f}%, Pressure: {status.pressure.value}")
+
+# Estimate KV-Cache memory
+estimate = VRAMOptimizer.estimate_kv_cache(n_layers=32, seq_length=2048, batch_size=1)
+print(f"KV-Cache: {estimate.total_mb:.1f} MB")
+
+# Get quantization recommendation
+dtype = optimizer.recommend_dtype(required_mb=4000)
+print(f"Recommended dtype: {dtype}")
+
+# Auto-optimize (cleanup if pressure is high)
+optimizer.auto_optimize()
+```
+
+### TTS (Text-to-Speech)
+
+```python
+from vram_core.tts_engine import TTSEngine
+
+# Initialize with edge-tts backend
+engine = TTSEngine(backend="edge-tts")
+
+# Synthesize speech
+engine.synthesize("Hello, world!", output_path="output.mp3")
+```
+
 ### Web API Server
 
 ```bash
 # Start the API server
-python vram_core/api_server.py --model base --language zh --port 8000
+python -m vram_core.api_server --model base --language zh --port 8000
 ```
 
 ```python
@@ -318,6 +426,25 @@ async def stream():
         await ws.send(audio_bytes)  # 16-bit PCM, 16kHz mono
         result = await ws.recv()
         print(result)
+```
+
+### Plugin System
+
+```python
+from vram_core.plugin_manager import PluginManager
+
+# Initialize plugin manager
+pm = PluginManager(plugin_dir="./plugins")
+
+# Load a plugin
+pm.load_plugin("my_plugin")
+
+# List loaded plugins
+for plugin in pm.list_plugins():
+    print(f"Plugin: {plugin['name']} v{plugin['version']}")
+
+# Register hooks
+pm.register_hook("on_transcription", my_callback)
 ```
 
 > See [docs/quickstart.md](docs/quickstart.md) for more examples.
@@ -338,32 +465,38 @@ You are free to use, modify, and distribute this software in both commercial and
 <a id="chinese-documentation"></a>
 ## 📖 简介 (Overview)
 
-**Omni-VRAM** 是一个生产级高性能语音 AI 平台，基于 CUDA 零拷贝技术构建。它消除了实时 LLM 语音应用中的显存碎片化与数据搬运瓶颈，提供 20 个核心模块，覆盖完整的语音 AI 管线——从语音识别到语音合成，从单卡到分布式集群。
+**Omni-VRAM** 是一个生产级的 **LLM 语音交互框架**，让大模型长出耳朵和嘴巴。基于 CUDA 零拷贝技术构建，提供 **22 个核心模块**，覆盖完整的语音 AI 管线——从语音识别到语音合成，从单 GPU 到分布式集群。
 
-传统的 Python 音频处理流和 PyTorch 操作（如 `torch.cat` 更新 KV-Cache）会引入严重的开销。Omni-VRAM 在硬件底层实现**算子融合**与**零拷贝内存注入**，使消费级显卡（RTX 30/40 系列）能够为实时语音助手提供亚毫秒级延迟。
+> **v2.0.0**：重大版本更新，新增说话人分离、声纹验证、情绪识别、噪声消除、TTS 语音合成、语音翻译、多 GPU 支持、分布式转录、插件系统、监控系统、gRPC 服务等 22 个模块。
 
-### ✨ 核心功能
+传统的 Python 音频处理管线和 PyTorch 操作（如 `torch.cat` 更新 KV-Cache）会引入严重的性能开销。Omni-VRAM 在硬件层面实现**算子融合**和**零拷贝内存注入**，使消费级显卡（RTX 30/40 系列）能够为实时语音助手提供亚毫秒级延迟。
 
-| 模块 | 说明 |
-|------|------|
-| **Whisper 语音转写** | 多后端（faster-whisper / whisper.cpp / API / Distil-Whisper），tiny → large-v3.5，GPU 加速 5 倍 |
-| **实时流式 ASR** | 滑动窗口 VAD，部分/最终结果回调，延迟 <500ms |
-| **噪声抑制** | WebRTC / RNNoise / noisereduce 三后端，自动集成到管线 |
-| **情绪识别** | wav2vec2 模型，7 种情绪（开心/悲伤/愤怒/中性/惊讶/恐惧/厌恶） |
-| **说话人分离** | pyannote-audio / resemblyzer，自动识别"谁在什么时候说话" |
-| **声纹验证** | MFCC 声纹提取，1:1 验证 & 1:N 识别，声纹库管理 |
-| **唤醒词检测** | 能量检测 & Whisper 关键词检测，自定义词汇 |
-| **语音合成 TTS** | edge-tts（300+ 语音）/ pyttsx3（离线） |
-| **语音翻译** | 语音到语音翻译管线，MarianMT + Google，50+ 语言对 |
-| **音频事件检测** | YAMNet / 能量分析，检测语音/音乐/警报/静音 |
-| **多 GPU 支持** | 管线/数据/张量并行，NVLink 检测，故障容错 |
-| **分布式转录** | 多机多卡并行批量处理，自动负载均衡 |
-| **KV-Cache 显存优化** | NF4/FP4 4-bit 量化，LRU 淘汰，OOM 自动恢复 |
-| **生产监控** | Prometheus 指标，Grafana 仪表盘，健康检查，p95/p99 延迟 |
-| **REST API** | FastAPI 异步 HTTP + WebSocket 流式服务 |
-| **gRPC 服务** | 高性能双协议（gRPC + REST）服务器 |
-| **插件系统** | 可扩展架构，支持发现、生命周期与钩子事件 |
-| **CUDA 内核** | 零拷贝 KV-Cache（11 倍加速），融合音频前端（28 倍加速） |
+### ✅ 核心功能（22 个模块）
+
+| # | 模块 | 说明 |
+|---|------|------|
+| 1 | **Whisper 语音转写** | 多后端（faster-whisper / whisper.cpp / API / Distil-Whisper），tiny → large-v3.5，GPU 加速 5 倍 |
+| 2 | **实时流式 ASR** | 滑动窗口 VAD，部分/最终结果回调，延迟 <500ms |
+| 3 | **噪声消除** | 频谱减法、自适应维纳滤波、多级降噪管道、静音检测 |
+| 4 | **情绪识别** | MFCC + 能量 + 过零率特征，6 种情绪（中性/开心/悲伤/愤怒/惊讶/恐惧） |
+| 5 | **说话人分离** | MFCC 特征提取 + 余弦相似度聚类，自动识别"谁在什么时间说话" |
+| 6 | **声纹验证** | MFCC 声纹提取，1:1 验证 & 1:N 识别，声纹持久化存储 |
+| 7 | **唤醒词检测** | 能量检测 & 音素级模糊匹配，自定义唤醒词 |
+| 8 | **TTS 语音合成** | 多后端（pyttsx3 / edge-tts / gTTS），300+ 音色，异步合成 |
+| 9 | **语音翻译** | 语音到语音翻译管线，50+ 语言对 |
+| 10 | **音频事件检测** | 能量阈值 + 频谱分析，检测咳嗽/笑声/掌声等事件 |
+| 11 | **多 GPU 支持** | 自动设备发现，负载均衡（轮询/最少使用/显存优先） |
+| 12 | **分布式转写** | 多机多卡并行批量处理，自动负载均衡 |
+| 13 | **KV-Cache 显存优化** | 显存压力检测（LOW/MEDIUM/HIGH/CRITICAL），KV-Cache 估算，量化精度推荐 |
+| 14 | **生产监控** | 实时 GPU 监控（显存/温度/功耗/利用率），`@gpu_monitor` 装饰器 |
+| 15 | **REST API** | FastAPI 异步 HTTP + WebSocket 流式传输 |
+| 16 | **gRPC 服务** | 高性能双协议（gRPC + REST）服务器 |
+| 17 | **插件系统** | 可扩展架构，支持发现、生命周期与钩子事件 |
+| 18 | **CUDA 内核** | 零拷贝 KV-Cache（11 倍加速），融合音频前端（28 倍加速） |
+| 19 | **流式处理器** | 实时音频流处理，支持 VAD、缓冲区管理和分段处理 |
+| 20 | **Whisper 桥接** | 模块化 Whisper 集成，含模型管理、CUDA 桥接和预处理 |
+| 21 | **音频工具集** | 音频格式检测、转换、重采样、频谱计算 |
+| 22 | **配置系统** | YAML/JSON 配置文件，环境变量覆盖，热重载 |
 
 ### 📁 目录结构
 
@@ -372,29 +505,38 @@ Omni-VRAM/
 ├── app.py                      # Gradio Web Demo（语音转写/情绪/分离/麦克风）
 ├── vram_hacker.cu              # CUDA 核函数源码（KV-Cache 注入）
 ├── setup.py                    # 编译安装脚本
+├── pyproject.toml              # 现代 Python 项目配置
+├── requirements.txt            # Python 依赖清单
 ├── test_run.py                 # 快速集成测试
+├── run_tests.py                # 统一测试运行器
 ├── .env.example                # 配置模板
 │
-├── vram_core/                  # Python 核心库
-│   ├── __init__.py             # 包导出（v1.0.0）
-│   ├── config.py               # 配置管理（.env 加载）
+├── vram_core/                  # Python 核心库（22 个模块）
+│   ├── __init__.py             # 包导出（v2.0.0）
+│   ├── config.py               # 配置管理
+│   ├── utils.py                # 通用工具函数
 │   ├── audio_utils.py          # 音频格式检测与转换
-│   ├── whisper_bridge.py       # Whisper 多后端集成
+│   ├── whisper_bridge.py       # Whisper 多后端集成（旧版）
+│   ├── whisper/                # Whisper 子模块（v2.0）
+│   │   ├── bridge.py           # CUDA Whisper 桥接
+│   │   ├── models.py           # 模型管理
+│   │   ├── preprocessor.py     # 音频预处理器
+│   │   └── result.py           # 转录结果数据结构
 │   ├── stream_processor.py     # 实时流处理器 + VAD
 │   ├── streaming_asr.py        # 实时流式语音识别引擎
 │   ├── api_server.py           # FastAPI REST + WebSocket API
-│   ├── noise_reduction.py      # STFT 谱减法噪声抑制
+│   ├── noise_reduction.py      # STFT 谱减法噪声消除
 │   ├── emotion_recognition.py  # 声学特征情绪识别
-│   ├── speaker_diarization.py  # MFCC 说话人识别与聚类
+│   ├── speaker_diarization.py  # MFCC 说话人分离与聚类
 │   ├── speaker_verification.py # 声纹验证（1:1 验证 & 1:N 识别）
 │   ├── wake_word.py            # 唤醒词 / 关键词检测
 │   ├── multi_gpu.py            # 多 GPU 管理与并行
 │   ├── vram_optimizer.py       # KV-Cache 显存优化与 OOM 恢复
-│   ├── tts_engine.py           # 多后端语音合成（edge-tts / pyttsx3）
+│   ├── tts_engine.py           # 多后端语音合成
 │   ├── voice_translator.py     # 语音到语音翻译管线
-│   ├── audio_event_detection.py # 音频事件检测（YAMNet / 能量分析）
-│   ├── distributed_transcriber.py # 多 GPU/多机并行转录
-│   ├── monitoring.py           # Prometheus 指标与 Grafana 仪表盘
+│   ├── audio_event_detection.py # 音频事件检测
+│   ├── distributed_transcriber.py # 多GPU/多机并行转写
+│   ├── monitoring.py           # GPU 监控与 Prometheus 指标
 │   ├── grpc_server.py          # gRPC + HTTP REST 双协议服务器
 │   └── plugin_manager.py       # 插件发现、加载与生命周期管理
 │
@@ -403,48 +545,55 @@ Omni-VRAM/
 │   ├── meeting_transcriber.py       # 会议录音转写与摘要
 │   ├── voice_chat_bot.py            # 多轮语音对话机器人
 │   ├── benchmark_suite.py           # 性能基准测试套件
-│   ├── api_demo.py                  # API 服务演示客户端
+│   ├── api_demo.py                  # API 服务端示例客户端
 │   ├── test_whisper_local.py        # Whisper 本地测试
-│   ├── test_emotion.py              # 情绪识别测试
-│   └── test_tts_translator.py       # 语音合成与翻译测试
+│   └── test_emotion.py              # 情绪识别测试
 │
-├── tests/                      # 单元测试
+├── tests/                      # 单元测试（13 个测试文件）
 │   ├── test_audio_utils.py
-│   ├── test_whisper_bridge.py
-│   ├── test_stream_processor.py
-│   ├── test_noise_reduction.py
 │   ├── test_emotion_recognition.py
-│   └── test_speaker_diarization.py
+│   ├── test_monitoring.py
+│   ├── test_multi_gpu.py
+│   ├── test_noise_reduction.py
+│   ├── test_plugin_manager.py
+│   ├── test_speaker_diarization.py
+│   ├── test_speaker_verification.py
+│   ├── test_stream_processor.py
+│   ├── test_tts_engine.py
+│   ├── test_vram_optimizer.py
+│   ├── test_wake_word.py
+│   └── test_whisper_bridge.py
 │
 └── docs/                       # 文档
     ├── installation.md
     ├── quickstart.md
     ├── api_reference.md
     ├── examples.md
-    └── faq.md
+    ├── faq.md
+    └── blog_omni_vram.md
 ```
 
-### 🧩 示例项目
+### 🧪 示例目录
 
 | 示例 | 说明 | 运行命令 |
 |------|------|----------|
 | **Gradio Web Demo** | Web 界面：转写、情绪、分离、麦克风录音 | `python app.py` |
-| **实时语音助手** | 麦克风 → VAD → Whisper → 显示，支持文件录制 | `python examples/realtime_voice_assistant.py` |
-| **会议录音转写** | 长时间录音，自动静音分段，导出文字记录 | `python examples/meeting_transcriber.py --output meeting.txt` |
-| **语音对话机器人** | 多轮对话，对话历史追踪，LLM 可接入架构 | `python examples/voice_chat_bot.py` |
+| **实时语音助手** | 麦克风 → VAD → Whisper → 显示，支持文件录音 | `python examples/realtime_voice_assistant.py` |
+| **会议录音转写** | 长时间录音，自动静音分段，导出文字结果 | `python examples/meeting_transcriber.py --output meeting.txt` |
+| **语音对话机器人** | 多轮对话，对话历史跟踪，LLM 可接入架构 | `python examples/voice_chat_bot.py` |
 | **性能基准测试** | 全模块性能测试，自动生成 Markdown 报告 | `python examples/benchmark_suite.py --skip-whisper` |
-| **语音合成与翻译** | TTS 语音合成和语音到语音翻译测试 | `python examples/test_tts_translator.py` |
 | **情绪识别** | 语音情绪分析演示 | `python examples/test_emotion.py` |
+| **Whisper 本地测试** | 本地 Whisper 转写测试 | `python examples/test_whisper_local.py` |
 
 ### 🌐 Gradio Web Demo
 
-一条命令启动交互式 Web 界面：
+一键启动交互式 Web 界面：
 
 ```bash
 # 安装 Gradio（如尚未安装）
 pip install gradio
 
-# 启动演示（默认: http://localhost:7860）
+# 启动演示（默认：http://localhost:7860）
 python app.py
 
 # 可选参数
@@ -454,32 +603,32 @@ python app.py --debug            # 调试模式
 ```
 
 **功能：**
-- 📝 **语音转写** — 上传音频 → 转写文字（支持模型/语言/噪声抑制选项）
-- 🎭 **情绪识别** — 上传音频 → 分析情绪（7 种情绪，带概率条形图）
-- 👥 **说话人分离** — 上传对话音频 → 识别谁在什么时候说话
-- 🎙️ **实时麦克风** — 录制语音 → 即时转写
+- 📝 **语音转写** — 上传音频 → 转写文字（支持模型/语言/降噪选项）
+- 🎭 **情绪识别** — 上传音频 → 分析情绪（6 种情绪，概率条展示）
+- 👥 **说话人分离** — 上传对话 → 识别谁在什么时间说话
+- 🎙️ **实时麦克风** — 录音 → 即时转写
 - 📥 **下载结果** — 导出为 JSON / TXT / SRT 字幕文件
 
 ---
 
 ## 📊 性能基准测试 (Benchmarks)
 
-*硬件环境: NVIDIA RTX 3060 (12GB) | 平台: Windows WDDM | CUDA 版本: 12.1*
+*硬件环境：NVIDIA RTX 3060 (12GB) | 平台：Windows WDDM | CUDA 版本：12.1*
 
 ### 1. KV-Cache 显存注入
 *任务：在一个容量为 100,000、维度为 4096 的 KV-Cache 张量中，连续追加 100 次（每次 50 个 token）的新特征。*
 
-| 引擎 / 方法 | 延迟 | 复杂度 | 爆显存 (OOM) 风险 |
+| 引擎 / 方法 | 延迟 | 复杂度 | 爆显存(OOM) 风险 |
 | :--- | :--- | :--- | :--- |
 | PyTorch 原生 (`torch.cat`) | 90.32 ms | $O(N)$ (显存重新分配) | 极高 (显存碎片化) |
 | **Omni-VRAM (零拷贝)** | **8.07 ms** | **$O(1)$ (底层指针偏移)** | **无** |
 | **性能提升** | **11.19 倍** | - | - |
 
 ### 2. 音频处理管线
-| 管线阶段 | 输入数据规模 | PyTorch / CPU 基准线 | Omni-VRAM C++ 算子 | 加速比 |
+| 管线阶段 | 输入数据规模 | PyTorch / CPU 基准 | Omni-VRAM C++ 算子 | 加速比 |
 | :--- | :--- | :--- | :--- | :--- |
 | **并发 VAD 检测** | 10 分钟 (16kHz) | 9.45 ms (CPU `unfold`) | **0.33 ms** | **约 28 倍** |
-| **融合特征提取** | 60 秒 (16kHz) | 20.33 ms (VRAM 堆叠)| **1.05 ms** | **约 19 倍** |
+| **融合特征提取** | 60 秒(16kHz) | 20.33 ms (VRAM 堆叠)| **1.05 ms** | **约 19 倍** |
 
 ### 3. Whisper 语音转写 (CPU)
 | 模型 | 1 秒音频 | 5 秒音频 | 10 秒音频 |
@@ -494,19 +643,19 @@ python app.py --debug            # 调试模式
 ## 🛠️ 安装 (Installation)
 
 ```bash
-# 快速安装（仅 Python 包，无 CUDA 内核）
+# 快速安装（只装 Python 包，无 CUDA 内核）
 pip install omni-vram
 
-# 完整安装（含 CUDA 内核，获得 11 倍 / 28 倍加速）
+# 完整安装（含 CUDA 内核，享受 11 倍 / 28 倍加速）
 git clone https://github.com/Liangchenxu/Omni-VRAM.git
 cd Omni-VRAM
 pip install -r requirements.txt
 
 # 编译并安装 CUDA 扩展模块
-# 注意：请确保已正确配置 NVCC 与 Visual Studio C++ 编译工具
+# 注意：请确保已正确配置 NVCC 和 Visual Studio C++ 编译工具
 python setup.py install
 
-# (可选) 安装 Web API 服务依赖
+# (可选) 安装 Web API 服务器依赖
 pip install fastapi uvicorn python-multipart
 
 # (可选) 安装 whisper.cpp 用于本地语音转写
@@ -525,39 +674,12 @@ cp .env.example .env
 
 > 详细安装指南请参阅 [docs/installation.md](docs/installation.md)。
 
-## 💻 快速开始 (Quick Start)
-
-### 基本 CUDA 操作
-
-```python
-import torch
-import vram_core
-
-# 1. 硬件底层雷达初始化
-print(vram_core.scan_hardware_dna())
-
-# 2. 算子融合音频处理
-audio_stream = torch.randn(960000, device='cuda', dtype=torch.float32)
-# 1毫秒内并发完成 VAD 检测、预加重与加窗
-is_speaking, features = vram_core.smart_audio_listen(audio_stream, threshold=0.5)
-
-# 3. 零拷贝大模型 KV-Cache 更新
-hidden_dim = 4096
-max_seq_len = 100000
-# 仅进行一次物理显存预分配
-kv_cache = torch.zeros((max_seq_len, hidden_dim), device='cuda', dtype=torch.float32)
-current_pos = torch.tensor([0], device='cuda', dtype=torch.int32)
-
-if is_speaking.item():
-    # 物理级显存直通注入（0 内存重新分配开销）
-    new_tokens = torch.randn((50, hidden_dim), device='cuda', dtype=torch.float32)
-    vram_core.append_to_kv_cache(kv_cache, new_tokens, current_pos)
-```
+## 💡 快速开始 (Quick Start)
 
 ### Whisper 语音转写
 
 ```python
-from vram_core import WhisperBridge, WhisperBackend
+from vram_core.whisper_bridge import WhisperBridge, WhisperBackend
 
 # 自动后端检测初始化
 whisper = WhisperBridge(
@@ -577,7 +699,8 @@ print(f"时长: {result.audio_duration}秒")
 
 ```python
 import numpy as np
-from vram_core import StreamProcessor, StreamConfig, WhisperBridge, WhisperBackend
+from vram_core.stream_processor import StreamProcessor, StreamConfig
+from vram_core.whisper_bridge import WhisperBridge, WhisperBackend
 
 # 初始化组件
 whisper = WhisperBridge(backend=WhisperBackend.AUTO, whisper_model="base")
@@ -592,38 +715,121 @@ audio_chunk = np.random.randn(1600).astype(np.float32)
 processor.feed(audio_chunk)
 ```
 
-### 实时流式语音识别 (Streaming ASR)
+### 说话人分离
 
 ```python
 import numpy as np
-from vram_core import WhisperBridge, WhisperBackend, StreamASR, StreamASRConfig
+from vram_core.speaker_diarization import SpeakerDiarizer
 
-# 初始化 Whisper
-whisper = WhisperBridge(backend=WhisperBackend.AUTO, whisper_model="base")
+# 初始化分离器
+diarizer = SpeakerDiarizer(n_mfcc=13, similarity_threshold=0.7)
 
-# 配置流式 ASR
-config = StreamASRConfig(
-    sample_rate=16000,
-    vad_threshold=0.015,
-    language="zh",
-)
-asr = StreamASR(config=config, whisper_bridge=whisper)
+# 加载音频（float32, 单声道, 16kHz）
+audio = np.fromfile("audio.raw", dtype=np.float32)
 
-# 设置回调
-asr.on_partial_result = lambda text: print(f"[部分] {text}")
-asr.on_final_result = lambda result: print(f"[最终] {result.text}")
+# 执行说话人分离
+result = diarizer.diarize(audio, sample_rate=16000)
 
-# 启动并喂入音频
-asr.start()
-audio_chunk = np.random.randn(3200).astype(np.float32)  # 来自麦克风
-asr.feed(audio_chunk)
+for segment in result.segments:
+    print(f"[{segment.start_time:.1f}s - {segment.end_time:.1f}s] 说话人: {segment.speaker_id}")
+
+print(f"总说话人数: {diarizer.get_speaker_count()}")
+```
+
+### 声纹验证
+
+```python
+import numpy as np
+from vram_core.speaker_verification import SpeakerVerifier
+
+# 初始化验证器
+verifier = SpeakerVerifier(threshold=0.75, storage_path="voiceprints.json")
+
+# 注册声纹
+audio = np.random.randn(16000).astype(np.float32)  # 1 秒音频
+verifier.register("alice", audio, sample_rate=16000)
+
+# 验证身份
+test_audio = np.random.randn(16000).astype(np.float32)
+result = verifier.verify("alice", test_audio)
+print(f"验证结果: {result.verified}, 置信度: {result.confidence:.3f}")
+
+# 1:N 识别
+best = verifier.verify_any(test_audio)
+if best:
+    print(f"识别结果: {best.speaker_id} ({best.confidence:.3f})")
+```
+
+### 情绪识别
+
+```python
+import numpy as np
+from vram_core.emotion_recognition import EmotionRecognizer
+
+# 初始化
+recognizer = EmotionRecognizer(sample_rate=16000)
+
+# 分析情绪
+audio = np.random.randn(32000).astype(np.float32)  # 2 秒音频
+result = recognizer.recognize(audio)
+print(f"情绪: {result['emotion']}, 置信度: {result['confidence']:.2f}")
+```
+
+### 噪声消除
+
+```python
+import numpy as np
+from vram_core.noise_reduction import NoiseReducer
+
+# 初始化
+reducer = NoiseReducer(sample_rate=16000)
+
+# 降噪处理
+noisy_audio = np.random.randn(16000).astype(np.float32)
+clean_audio = reducer.reduce_noise(noisy_audio, aggressiveness=0.7)
+```
+
+### VRAM 显存优化
+
+```python
+from vram_core.vram_optimizer import VRAMOptimizer
+
+# 初始化
+optimizer = VRAMOptimizer(device_id=0)
+
+# 查看显存状态
+status = optimizer.get_status()
+print(f"GPU: {status.gpu_name}, 使用率: {status.usage_pct:.1f}%, 压力: {status.pressure.value}")
+
+# 估算 KV-Cache 显存
+estimate = VRAMOptimizer.estimate_kv_cache(n_layers=32, seq_length=2048, batch_size=1)
+print(f"KV-Cache: {estimate.total_mb:.1f} MB")
+
+# 获取量化精度推荐
+dtype = optimizer.recommend_dtype(required_mb=4000)
+print(f"推荐精度: {dtype}")
+
+# 自动优化（高压力时自动清理）
+optimizer.auto_optimize()
+```
+
+### TTS 语音合成
+
+```python
+from vram_core.tts_engine import TTSEngine
+
+# 初始化（使用 edge-tts 后端）
+engine = TTSEngine(backend="edge-tts")
+
+# 合成语音
+engine.synthesize("你好，世界！", output_path="output.mp3")
 ```
 
 ### Web API 服务
 
 ```bash
 # 启动 API 服务
-python vram_core/api_server.py --model base --language zh --port 8000
+python -m vram_core.api_server --model base --language zh --port 8000
 ```
 
 ```python
@@ -642,13 +848,32 @@ async def stream():
         print(result)
 ```
 
+### 插件系统
+
+```python
+from vram_core.plugin_manager import PluginManager
+
+# 初始化插件管理器
+pm = PluginManager(plugin_dir="./plugins")
+
+# 加载插件
+pm.load_plugin("my_plugin")
+
+# 列出已加载插件
+for plugin in pm.list_plugins():
+    print(f"插件: {plugin['name']} v{plugin['version']}")
+
+# 注册钩子
+pm.register_hook("on_transcription", my_callback)
+```
+
 > 更多示例请参阅 [docs/quickstart.md](docs/quickstart.md)。
 
 ---
 
 ## ⚠️ 免责声明 (Disclaimer)
-**硬件交互警告：** Omni-VRAM 在 CUDA C++ 级别直接与物理 GPU 硬件交互，并采用激进的零拷贝指针操作以压榨极限吞吐量。
-尽管经过了测试，但本软件按**"原样 (as is)"**提供，不作任何形式的担保。对于因使用本底层引擎而导致的任何内核崩溃、系统死锁、数据丢失或硬件不稳定，作者概不负责。**在生产环境中使用本软件，请自行承担一切风险。**
+**硬件交互警告：** Omni-VRAM 在 CUDA C++ 层级直接与物理 GPU 硬件交互，将采用激进的零拷贝指针操作以追求极限吞吐。
+尽管已经过充分测试，但本软件仍按 *"原样 (as is)"* 提供，不作任何形式的保证。对于因使用本引擎而导致的任何内核崩溃、系统死锁、数据丢失或硬件不稳定，作者概不负责。**在生产环境中使用本软件，请自行承担一切风险。**
 
 ## 📜 协议 (License)
 本项目基于 [**MIT License**](https://opensource.org/licenses/MIT) 开源。
@@ -658,11 +883,11 @@ async def stream():
 
 ## 🤝 贡献指南 (Contributing)
 
-我们欢迎任何形式的贡献！
+我们欢迎任何形式的贡献。
 
 1. **Fork** 本仓库
 2. 创建你的特性分支：`git checkout -b feature/amazing-feature`
-3. 提交你的修改：`git commit -m 'feat: add amazing feature'`
+3. 提交你的更改：`git commit -m 'feat: add amazing feature'`
 4. 推送到分支：`git push origin feature/amazing-feature`
 5. 提交 **Pull Request**
 
@@ -683,7 +908,7 @@ async def stream():
 
 <div align="center">
 
-**[⬆ 回到顶部](#omni-vram-zero-copy-cuda-audio-to-llm-bridge)**
+**[⬅ 回到顶部](#omni-vram-llm-语音交互框架)**
 
 Made with ❤️ by [Liangchenxu](https://github.com/Liangchenxu)
 
