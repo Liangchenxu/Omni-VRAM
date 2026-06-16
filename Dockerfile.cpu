@@ -1,0 +1,79 @@
+# ============================================================
+# Omni-VRAM v2.1.1 — CPU Dockerfile
+# ============================================================
+# Build:   docker build -f Dockerfile.cpu -t omni-vram:cpu .
+# Run:     docker run -p 7860:7860 -p 8000:8000 omni-vram:cpu
+# ============================================================
+
+FROM python:3.10-slim
+
+LABEL maintainer="Liangchenxu <lcx1479632@gmail.com>"
+LABEL version="2.1.1"
+LABEL description="Omni-VRAM CPU — No GPU required"
+
+# ── Environment Variables ────────────────────────────────────
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+# ── System Dependencies ──────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libsndfile1 \
+    portaudio19-dev \
+    libportaudio2 \
+    git \
+    curl \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# ── Python Dependencies ──────────────────────────────────────
+RUN pip install --upgrade pip setuptools wheel
+
+WORKDIR /app
+
+# Copy dependency files first (Docker layer caching)
+COPY requirements.txt setup.py pyproject.toml ./
+COPY README.md ./
+
+# Install core dependencies (CPU-only PyTorch)
+RUN pip install -r requirements.txt
+
+# Install PyTorch CPU version (much smaller)
+RUN pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# Install optional dependencies (GPU-only packages excluded)
+RUN pip install \
+    openai-whisper \
+    edge-tts \
+    deep-translator \
+    gradio \
+    fastapi \
+    uvicorn \
+    grpcio \
+    grpcio-tools \
+    flask \
+    2>/dev/null || true
+
+# ── Copy Application ─────────────────────────────────────────
+COPY vram_core/ ./vram_core/
+COPY examples/ ./examples/
+COPY tests/ ./tests/
+COPY docs/ ./docs/
+COPY app.py ./
+
+# Install package
+RUN pip install -e . 2>/dev/null || pip install -e .
+
+# ── Expose Ports ──────────────────────────────────────────────
+# 7860: Gradio Web UI
+# 8000: FastAPI REST API
+EXPOSE 7860 8000
+
+# ── Health Check ──────────────────────────────────────────────
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+    CMD python3 -c "import vram_core; print('OK')" || exit 1
+
+# ── Default Command ───────────────────────────────────────────
+CMD ["python3", "app.py", "--server-name", "0.0.0.0", "--server-port", "7860"]

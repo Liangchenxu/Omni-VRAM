@@ -9,6 +9,7 @@ Main Whisper transcription engine supporting multiple backends:
   - Distil-Whisper    (optimized variant)
 """
 
+import asyncio
 import logging
 import os
 import re
@@ -300,6 +301,45 @@ class WhisperBridge:
         )
 
         return result
+
+    async def async_transcribe(
+        self,
+        audio: Union[str, Path, np.ndarray, bytes],
+        sample_rate: int = 16000,
+        language: Optional[str] = None,
+        task: str = "transcribe",
+        output_format: str = "text",
+        **kwargs,
+    ) -> WhisperResult:
+        """
+        Async wrapper for :meth:`transcribe`.
+
+        Runs the synchronous transcription in a thread pool executor
+        so the event loop is not blocked.
+
+        Args:
+            audio:         File path, numpy array, or bytes.
+            sample_rate:   Sample rate (for numpy array input).
+            language:      Override language.
+            task:          'transcribe' or 'translate'.
+            output_format: 'text' or 'json'.
+            **kwargs:      Backend-specific options.
+
+        Returns:
+            WhisperResult with transcription.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.transcribe(
+                audio,
+                sample_rate=sample_rate,
+                language=language,
+                task=task,
+                output_format=output_format,
+                **kwargs,
+            ),
+        )
 
     def transcribe_file(
         self,

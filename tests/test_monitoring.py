@@ -10,7 +10,7 @@ Covers:
     - Thread safety, reset, edge cases
 """
 
-import unittest
+import pytest
 import time
 import tempfile
 from pathlib import Path
@@ -24,33 +24,33 @@ from vram_core.monitoring import (
 )
 
 
-class TestTranscriptionMetric(unittest.TestCase):
+class TestTranscriptionMetric:
     """Test TranscriptionMetric data class."""
 
     def test_default_values(self):
         m = TranscriptionMetric()
-        self.assertEqual(m.timestamp, 0.0)
-        self.assertEqual(m.latency, 0.0)
-        self.assertTrue(m.success)
-        self.assertEqual(m.backend, "")
+        assert m.timestamp == 0.0
+        assert m.latency == 0.0
+        assert m.success
+        assert m.backend == ""
 
     def test_custom_values(self):
         m = TranscriptionMetric(
             timestamp=100.0, latency=0.5, audio_duration=10.0,
             success=False, backend="faster_whisper", error="timeout",
         )
-        self.assertFalse(m.success)
-        self.assertEqual(m.backend, "faster_whisper")
+        assert not m.success
+        assert m.backend == "faster_whisper"
 
 
-class TestSystemHealth(unittest.TestCase):
+class TestSystemHealth:
     """Test SystemHealth data class."""
 
     def test_default_values(self):
         h = SystemHealth()
-        self.assertEqual(h.status, "healthy")
-        self.assertEqual(h.total_requests, 0)
-        self.assertEqual(h.success_rate, 100.0)
+        assert h.status == "healthy"
+        assert h.total_requests == 0
+        assert h.success_rate == 100.0
 
     def test_to_dict(self):
         h = SystemHealth(
@@ -62,76 +62,76 @@ class TestSystemHealth(unittest.TestCase):
             error_count=1,
         )
         d = h.to_dict()
-        self.assertEqual(d["status"], "healthy")
-        self.assertEqual(d["total_requests"], 100)
-        self.assertIn("avg_latency_ms", d)
-        self.assertIn("gpu_utilization_pct", d)
+        assert d["status"] == "healthy"
+        assert d["total_requests"] == 100
+        assert "avg_latency_ms" in d
+        assert "gpu_utilization_pct" in d
 
 
-class TestMetricsCollector(unittest.TestCase):
+class TestMetricsCollector:
     """Test MetricsCollector core functionality."""
 
     def test_init_default(self):
         collector = MetricsCollector()
-        self.assertEqual(collector._success_count, 0)
-        self.assertEqual(collector._failure_count, 0)
+        assert collector._success_count == 0
+        assert collector._failure_count == 0
 
     def test_init_custom_max_history(self):
         collector = MetricsCollector(max_history=500)
-        self.assertEqual(collector._max_history, 500)
+        assert collector._max_history == 500
 
     def test_record_transcription_success(self):
         collector = MetricsCollector()
         collector.record_transcription(latency=0.5, success=True, backend="faster_whisper")
-        self.assertEqual(collector._success_count, 1)
-        self.assertEqual(collector._failure_count, 0)
-        self.assertIn("faster_whisper", collector._backend_counts)
+        assert collector._success_count == 1
+        assert collector._failure_count == 0
+        assert "faster_whisper" in collector._backend_counts
 
     def test_record_transcription_failure(self):
         collector = MetricsCollector()
         collector.record_transcription(
             latency=1.0, success=False, backend="openai", error="timeout"
         )
-        self.assertEqual(collector._failure_count, 1)
-        self.assertEqual(collector._error_counts["timeout"], 1)
+        assert collector._failure_count == 1
+        assert collector._error_counts["timeout"] == 1
 
     def test_record_multiple_transcriptions(self):
         collector = MetricsCollector()
         for i in range(10):
             collector.record_transcription(latency=0.1 * i, success=i % 3 != 0)
-        self.assertEqual(collector._success_count + collector._failure_count, 10)
+        assert collector._success_count + collector._failure_count == 10
 
     def test_record_error(self):
         collector = MetricsCollector()
         collector.record_error("connection_refused")
         collector.record_error("connection_refused")
-        self.assertEqual(collector._failure_count, 2)
-        self.assertEqual(collector._error_counts["connection_refused"], 2)
+        assert collector._failure_count == 2
+        assert collector._error_counts["connection_refused"] == 2
 
     def test_set_gauge(self):
         collector = MetricsCollector()
         collector.set_gauge("gpu_temp", 72.5)
-        self.assertEqual(collector._gauges["gpu_temp"], 72.5)
+        assert collector._gauges["gpu_temp"] == 72.5
 
     def test_set_gauge_overwrite(self):
         collector = MetricsCollector()
         collector.set_gauge("cpu", 50.0)
         collector.set_gauge("cpu", 80.0)
-        self.assertEqual(collector._gauges["cpu"], 80.0)
+        assert collector._gauges["cpu"] == 80.0
 
     def test_increment_counter(self):
         collector = MetricsCollector()
         collector.increment_counter("requests")
         collector.increment_counter("requests", value=5)
-        self.assertEqual(collector._counters["requests"], 6)
+        assert collector._counters["requests"] == 6
 
     def test_get_health_no_data(self):
         """Health with no data returns healthy with 100% success rate."""
         collector = MetricsCollector()
         health = collector.get_health()
-        self.assertEqual(health.status, "healthy")
-        self.assertEqual(health.success_rate, 100.0)
-        self.assertEqual(health.total_requests, 0)
+        assert health.status == "healthy"
+        assert health.success_rate == 100.0
+        assert health.total_requests == 0
 
     def test_get_health_healthy(self):
         """High success rate returns healthy status."""
@@ -139,8 +139,8 @@ class TestMetricsCollector(unittest.TestCase):
         for _ in range(100):
             collector.record_transcription(latency=0.1, success=True)
         health = collector.get_health()
-        self.assertEqual(health.status, "healthy")
-        self.assertEqual(health.success_rate, 100.0)
+        assert health.status == "healthy"
+        assert health.success_rate == 100.0
 
     def test_get_health_degraded(self):
         """Success rate < 95% returns degraded."""
@@ -148,7 +148,7 @@ class TestMetricsCollector(unittest.TestCase):
         for i in range(100):
             collector.record_transcription(latency=0.1, success=i < 90)
         health = collector.get_health()
-        self.assertEqual(health.status, "degraded")
+        assert health.status == "degraded"
 
     def test_get_health_unhealthy(self):
         """Success rate < 80% returns unhealthy."""
@@ -156,7 +156,7 @@ class TestMetricsCollector(unittest.TestCase):
         for i in range(100):
             collector.record_transcription(latency=0.1, success=i < 50)
         health = collector.get_health()
-        self.assertEqual(health.status, "unhealthy")
+        assert health.status == "unhealthy"
 
     def test_latency_percentiles(self):
         """Percentile latencies are computed correctly."""
@@ -164,9 +164,9 @@ class TestMetricsCollector(unittest.TestCase):
         for i in range(100):
             collector.record_transcription(latency=i * 0.01, success=True)
         health = collector.get_health()
-        self.assertGreater(health.avg_latency, 0)
-        self.assertGreaterEqual(health.p95_latency, health.avg_latency)
-        self.assertGreaterEqual(health.p99_latency, health.p95_latency)
+        assert health.avg_latency > 0
+        assert health.p95_latency >= health.avg_latency
+        assert health.p99_latency >= health.p95_latency
 
     def test_get_metrics_includes_all_sections(self):
         """get_metrics returns all expected sections."""
@@ -175,23 +175,23 @@ class TestMetricsCollector(unittest.TestCase):
         collector.set_gauge("test_gauge", 1.0)
         collector.increment_counter("test_counter")
         metrics = collector.get_metrics()
-        self.assertIn("status", metrics)
-        self.assertIn("backend_distribution", metrics)
-        self.assertIn("error_distribution", metrics)
-        self.assertIn("custom_gauges", metrics)
-        self.assertIn("custom_counters", metrics)
-        self.assertEqual(metrics["custom_gauges"]["test_gauge"], 1.0)
+        assert "status" in metrics
+        assert "backend_distribution" in metrics
+        assert "error_distribution" in metrics
+        assert "custom_gauges" in metrics
+        assert "custom_counters" in metrics
+        assert metrics["custom_gauges"]["test_gauge"] == 1.0
 
     def test_export_prometheus_format(self):
         """Prometheus export contains expected metric names."""
         collector = MetricsCollector()
         collector.record_transcription(latency=0.3, success=True, backend="faster_whisper")
         prom = collector.export_prometheus()
-        self.assertIn("omnivram_requests_total", prom)
-        self.assertIn("omnivram_latency_seconds", prom)
-        self.assertIn("omnivram_gpu_memory_used_mb", prom)
-        self.assertIn("# HELP", prom)
-        self.assertIn("# TYPE", prom)
+        assert "omnivram_requests_total" in prom
+        assert "omnivram_latency_seconds" in prom
+        assert "omnivram_gpu_memory_used_mb" in prom
+        assert "# HELP" in prom
+        assert "# TYPE" in prom
 
     def test_export_prometheus_backend_labels(self):
         """Prometheus export includes backend labels."""
@@ -199,17 +199,17 @@ class TestMetricsCollector(unittest.TestCase):
         collector.record_transcription(latency=0.1, success=True, backend="faster_whisper")
         collector.record_transcription(latency=0.2, success=True, backend="openai_api")
         prom = collector.export_prometheus()
-        self.assertIn('backend="faster_whisper"', prom)
-        self.assertIn('backend="openai_api"', prom)
+        assert 'backend="faster_whisper"' in prom
+        assert 'backend="openai_api"' in prom
 
     def test_export_grafana_dashboard_structure(self):
         """Grafana dashboard has expected structure."""
         collector = MetricsCollector()
         dashboard = collector.export_grafana_dashboard()
-        self.assertIn("dashboard", dashboard)
-        self.assertEqual(dashboard["dashboard"]["title"], "vram_core Production Dashboard")
+        assert "dashboard" in dashboard
+        assert dashboard["dashboard"]["title"] == "vram_core Production Dashboard"
         panels = dashboard["dashboard"]["panels"]
-        self.assertGreater(len(panels), 0)
+        assert len(panels) > 0
 
     def test_save_grafana_dashboard(self):
         """Dashboard JSON can be saved to file."""
@@ -217,10 +217,10 @@ class TestMetricsCollector(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = str(Path(tmpdir) / "dashboard.json")
             collector.save_grafana_dashboard(path)
-            self.assertTrue(Path(path).exists())
+            assert Path(path).exists()
             import json
             data = json.loads(Path(path).read_text())
-            self.assertIn("dashboard", data)
+            assert "dashboard" in data
 
     def test_reset_clears_all(self):
         """reset() clears all metrics."""
@@ -230,11 +230,11 @@ class TestMetricsCollector(unittest.TestCase):
         collector.set_gauge("g", 1.0)
         collector.increment_counter("c")
         collector.reset()
-        self.assertEqual(collector._success_count, 0)
-        self.assertEqual(collector._failure_count, 0)
-        self.assertEqual(len(collector._latencies), 0)
-        self.assertEqual(len(collector._gauges), 0)
-        self.assertEqual(len(collector._counters), 0)
+        assert collector._success_count == 0
+        assert collector._failure_count == 0
+        assert len(collector._latencies) == 0
+        assert len(collector._gauges) == 0
+        assert len(collector._counters) == 0
 
     def test_health_endpoint_healthy(self):
         """create_health_endpoint returns 200 for healthy."""
@@ -242,8 +242,8 @@ class TestMetricsCollector(unittest.TestCase):
         for _ in range(10):
             collector.record_transcription(latency=0.1, success=True)
         endpoint = create_health_endpoint(collector)
-        self.assertEqual(endpoint["status_code"], 200)
-        self.assertEqual(endpoint["body"]["status"], "healthy")
+        assert endpoint["status_code"] == 200
+        assert endpoint["body"]["status"] == "healthy"
 
     def test_health_endpoint_unhealthy(self):
         """create_health_endpoint returns 503 for unhealthy."""
@@ -251,7 +251,7 @@ class TestMetricsCollector(unittest.TestCase):
         for i in range(100):
             collector.record_transcription(latency=0.1, success=i < 30)
         endpoint = create_health_endpoint(collector)
-        self.assertEqual(endpoint["status_code"], 503)
+        assert endpoint["status_code"] == 503
 
     def test_thread_safety(self):
         """Concurrent recording does not crash."""
@@ -271,8 +271,8 @@ class TestMetricsCollector(unittest.TestCase):
             t.start()
         for t in threads:
             t.join()
-        self.assertEqual(len(errors), 0)
-        self.assertEqual(collector._success_count, 400)
+        assert len(errors) == 0
+        assert collector._success_count == 400
 
     def test_uptime_increases(self):
         """Uptime increases over time."""
@@ -280,8 +280,6 @@ class TestMetricsCollector(unittest.TestCase):
         h1 = collector.get_health()
         time.sleep(0.05)
         h2 = collector.get_health()
-        self.assertGreater(h2.uptime, h1.uptime)
+        assert h2.uptime > h1.uptime
 
 
-if __name__ == "__main__":
-    unittest.main()

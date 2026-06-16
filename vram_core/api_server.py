@@ -405,6 +405,137 @@ def create_app(
                 asr.stop()
             logger.info("WebSocket session ended")
 
+    # 鈹€鈹€ WebSocket /ws/stream (browser real-time recording) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+
+    @app.websocket("/ws/stream")
+    async def websocket_ws_stream(websocket: WebSocket):
+        """
+        WebSocket endpoint for browser real-time recording.
+
+        Accepts binary Float32 PCM audio (as sent by browser RecordingWorklet)
+        and returns partial/final JSON results.
+
+        Protocol:
+            Client sends: Binary Float32 PCM chunks (16kHz, mono)
+                          or JSON text messages with config
+            Server sends: JSON messages
+                {"type": "partial", "text": "..."}
+                {"type": "final", "text": "...", "start": 0.0, "end": 2.5}
+                {"type": "error", "message": "..."}
+                {"type": "ready"}
+        """
+        await websocket.accept()
+
+        asr_config = StreamASRConfig(
+            language=whisper.language,
+            whisper_model=whisper.whisper_model,
+        )
+        asr = StreamASR(
+            config=asr_config,
+            whisper_bridge=whisper,
+        )
+
+        async def send_json(data: dict):
+            await websocket.send_text(json.dumps(data, ensure_ascii=False))
+
+        partial_results = queue.Queue()
+        final_results = queue.Queue()
+
+        def on_partial(text):
+            partial_results.put({"type": "partial", "text": text})
+
+        def on_final(result):
+            final_results.put({
+                "type": "final",
+                "text": result.text,
+                "start": result.start_time,
+                "end": result.end_time,
+                "confidence": result.confidence,
+                "language": result.language,
+            })
+
+        asr.on_partial_result = on_partial
+        asr.on_final_result = on_final
+
+        await send_json({"type": "ready"})
+        logger.info("WebSocket /ws/stream client connected")
+
+        try:
+            asr.start()
+
+            while True:
+                message = await websocket.receive()
+
+                if message.get("type") == "websocket.receive":
+                    if "bytes" in message and message["bytes"]:
+                        raw_bytes = message["bytes"]
+                        audio_chunk = np.frombuffer(raw_bytes, dtype=np.float32)
+                        asr.feed(audio_chunk)
+
+                        while not partial_results.empty():
+                            try:
+                                await send_json(partial_results.get_nowait())
+                            except queue.Empty:
+                                break
+                        while not final_results.empty():
+                            try:
+                                await send_json(final_results.get_nowait())
+                            except queue.Empty:
+                                break
+
+                    elif "text" in message and message["text"]:
+                        try:
+                            cmd = json.loads(message["text"])
+                            if cmd.get("action") == "stop":
+                                final = asr.stop()
+                                while not partial_results.empty():
+                                    try:
+                                        await send_json(partial_results.get_nowait())
+                                    except queue.Empty:
+                                        break
+                                while not final_results.empty():
+                                    try:
+                                        await send_json(final_results.get_nowait())
+                                    except queue.Empty:
+                                        break
+                                if final:
+                                    await send_json({
+                                        "type": "final",
+                                        "text": final.text,
+                                        "start": final.start_time,
+                                        "end": final.end_time,
+                                        "confidence": final.confidence,
+                                        "language": final.language,
+                                    })
+                                await send_json({"type": "stopped"})
+                                break
+                            elif cmd.get("action") == "config":
+                                if "language" in cmd:
+                                    asr.config.language = cmd["language"]
+                                    whisper.language = cmd["language"]
+                                await send_json({"type": "config_updated"})
+                        except json.JSONDecodeError:
+                            await send_json({
+                                "type": "error",
+                                "message": "Invalid JSON command",
+                            })
+
+                elif message.get("type") == "websocket.disconnect":
+                    break
+
+        except WebSocketDisconnect:
+            logger.info("WebSocket /ws/stream client disconnected")
+        except Exception as e:
+            logger.error(f"WebSocket /ws/stream error: {e}", exc_info=True)
+            try:
+                await send_json({"type": "error", "message": str(e)})
+            except Exception:
+                pass
+        finally:
+            if asr.is_running:
+                asr.stop()
+            logger.info("WebSocket /ws/stream session ended")
+
     # 鈹€鈹€ GET /health 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     @app.get("/health", response_model=HealthResponse)

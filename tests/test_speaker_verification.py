@@ -8,7 +8,7 @@ Covers:
     - Edge cases: empty audio, zero vectors, threshold bounds
 """
 
-import unittest
+import pytest
 import tempfile
 import json
 from pathlib import Path
@@ -23,16 +23,16 @@ from vram_core.speaker_verification import (
 )
 
 
-class TestVoiceprint(unittest.TestCase):
+class TestVoiceprint:
     """Test Voiceprint data class."""
 
     def test_create_default(self):
         """Default voiceprint has expected empty values."""
         vp = Voiceprint()
-        self.assertEqual(vp.speaker_id, "")
-        self.assertIsNone(vp.mfcc_mean)
-        self.assertIsNone(vp.mfcc_std)
-        self.assertEqual(vp.num_samples, 0)
+        assert vp.speaker_id == ""
+        assert vp.mfcc_mean is None
+        assert vp.mfcc_std is None
+        assert vp.num_samples == 0
 
     def test_to_dict_with_arrays(self):
         """Serialization converts numpy arrays to lists."""
@@ -46,17 +46,17 @@ class TestVoiceprint(unittest.TestCase):
             metadata={"lang": "en"},
         )
         d = vp.to_dict()
-        self.assertEqual(d["speaker_id"], "alice")
-        self.assertEqual(d["num_samples"], 5)
-        self.assertIsInstance(d["mfcc_mean"], list)
-        self.assertAlmostEqual(d["mfcc_mean"][0], 1.0)
+        assert d["speaker_id"] == "alice"
+        assert d["num_samples"] == 5
+        assert isinstance(d["mfcc_mean"], list)
+        assert d["mfcc_mean"][0] == pytest.approx(1.0)
 
     def test_to_dict_none_arrays(self):
         """Serialization handles None arrays gracefully."""
         vp = Voiceprint(speaker_id="bob")
         d = vp.to_dict()
-        self.assertIsNone(d["mfcc_mean"])
-        self.assertIsNone(d["mfcc_std"])
+        assert d["mfcc_mean"] is None
+        assert d["mfcc_std"] is None
 
     def test_from_dict_roundtrip(self):
         """Deserialization restores original data."""
@@ -70,43 +70,43 @@ class TestVoiceprint(unittest.TestCase):
             metadata={"key": "value"},
         )
         restored = Voiceprint.from_dict(original.to_dict())
-        self.assertEqual(restored.speaker_id, "carol")
-        self.assertEqual(restored.num_samples, 3)
+        assert restored.speaker_id == "carol"
+        assert restored.num_samples == 3
         np.testing.assert_array_almost_equal(restored.mfcc_mean, original.mfcc_mean)
-        self.assertEqual(restored.metadata["key"], "value")
+        assert restored.metadata["key"] == "value"
 
     def test_from_dict_missing_fields(self):
         """Deserialization handles missing optional fields."""
         data = {"speaker_id": "minimal"}
         vp = Voiceprint.from_dict(data)
-        self.assertEqual(vp.speaker_id, "minimal")
-        self.assertIsNone(vp.mfcc_mean)
-        self.assertEqual(vp.num_samples, 0)
+        assert vp.speaker_id == "minimal"
+        assert vp.mfcc_mean is None
+        assert vp.num_samples == 0
 
 
-class TestVerificationResult(unittest.TestCase):
+class TestVerificationResult:
     """Test VerificationResult data class."""
 
     def test_default_values(self):
         """Default result is rejected with 0 confidence."""
         r = VerificationResult()
-        self.assertFalse(r.verified)
-        self.assertEqual(r.confidence, 0.0)
+        assert not r.verified
+        assert r.confidence == 0.0
 
     def test_repr_verified(self):
         """String representation shows verification status."""
         r = VerificationResult(speaker_id="alice", verified=True, confidence=0.92, threshold=0.75)
         s = repr(r)
-        self.assertIn("alice", s)
-        self.assertIn("VERIFIED", s)
+        assert "alice" in s
+        assert "VERIFIED" in s
 
     def test_repr_rejected(self):
         r = VerificationResult(speaker_id="bob", verified=False, confidence=0.3, threshold=0.75)
         s = repr(r)
-        self.assertIn("REJECTED", s)
+        assert "REJECTED" in s
 
 
-class TestSpeakerVerifier(unittest.TestCase):
+class TestSpeakerVerifier:
     """Test SpeakerVerifier engine."""
 
     def _make_audio(self, duration_sec=1.0, sr=16000):
@@ -117,21 +117,21 @@ class TestSpeakerVerifier(unittest.TestCase):
     def test_init_default(self):
         """Default initialization has no voiceprints."""
         verifier = SpeakerVerifier()
-        self.assertEqual(verifier.threshold, 0.75)
-        self.assertEqual(len(verifier._voiceprints), 0)
+        assert verifier.threshold == 0.75
+        assert len(verifier._voiceprints) == 0
 
     def test_init_custom_threshold(self):
         verifier = SpeakerVerifier(threshold=0.9)
-        self.assertEqual(verifier.threshold, 0.9)
+        assert verifier.threshold == 0.9
 
     def test_register_new_speaker(self):
         """Registering a new speaker creates a voiceprint."""
         verifier = SpeakerVerifier()
         audio = self._make_audio()
         vp = verifier.register("alice", audio)
-        self.assertEqual(vp.speaker_id, "alice")
-        self.assertEqual(vp.num_samples, 1)
-        self.assertIn("alice", verifier._voiceprints)
+        assert vp.speaker_id == "alice"
+        assert vp.num_samples == 1
+        assert "alice" in verifier._voiceprints
 
     def test_register_update_existing(self):
         """Registering the same speaker updates the voiceprint (EMA)."""
@@ -140,22 +140,22 @@ class TestSpeakerVerifier(unittest.TestCase):
         audio2 = self._make_audio(duration_sec=2.0)
         verifier.register("alice", audio1)
         vp2 = verifier.register("alice", audio2)
-        self.assertEqual(vp2.num_samples, 2)
+        assert vp2.num_samples == 2
 
     def test_register_with_metadata(self):
         """Metadata is stored with voiceprint."""
         verifier = SpeakerVerifier()
         audio = self._make_audio()
         vp = verifier.register("alice", audio, metadata={"lang": "zh"})
-        self.assertEqual(vp.metadata["lang"], "zh")
+        assert vp.metadata["lang"] == "zh"
 
     def test_register_from_samples(self):
         """Multi-sample registration combines MFCC features."""
         verifier = SpeakerVerifier()
         samples = [self._make_audio(0.5) for _ in range(3)]
         vp = verifier.register_from_samples("bob", samples)
-        self.assertEqual(vp.num_samples, 3)
-        self.assertIsNotNone(vp.mfcc_mean)
+        assert vp.num_samples == 3
+        assert vp.mfcc_mean is not None
 
     def test_verify_registered_speaker(self):
         """Verification against registered speaker returns a result."""
@@ -163,15 +163,15 @@ class TestSpeakerVerifier(unittest.TestCase):
         audio = self._make_audio()
         verifier.register("alice", audio)
         result = verifier.verify("alice", audio)
-        self.assertIsInstance(result, VerificationResult)
-        self.assertEqual(result.speaker_id, "alice")
-        self.assertGreater(result.confidence, 0.0)
+        assert isinstance(result, VerificationResult)
+        assert result.speaker_id == "alice"
+        assert result.confidence > 0.0
 
     def test_verify_unregistered_raises(self):
         """Verifying unregistered speaker raises KeyError."""
         verifier = SpeakerVerifier()
         audio = self._make_audio()
-        with self.assertRaises(KeyError):
+        with pytest.raises(KeyError):
             verifier.verify("ghost", audio)
 
     def test_verify_custom_threshold(self):
@@ -181,7 +181,7 @@ class TestSpeakerVerifier(unittest.TestCase):
         verifier.register("alice", audio)
         result = verifier.verify("alice", audio, threshold=0.99)
         # Same audio vs itself should still pass even at 0.99
-        self.assertGreater(result.confidence, 0.9)
+        assert result.confidence > 0.9
 
     def test_verify_any_returns_best_match(self):
         """verify_any returns the best matching speaker."""
@@ -191,8 +191,8 @@ class TestSpeakerVerifier(unittest.TestCase):
         verifier.register("alice", audio_a)
         verifier.register("bob", audio_b)
         result = verifier.verify_any(audio_a)
-        self.assertIsNotNone(result)
-        self.assertEqual(result.speaker_id, "alice")
+        assert result is not None
+        assert result.speaker_id == "alice"
 
     def test_verify_any_no_match(self):
         """verify_any returns None when no speaker matches."""
@@ -204,19 +204,19 @@ class TestSpeakerVerifier(unittest.TestCase):
         result = verifier.verify_any(silence)
         # Could be None or a rejected result depending on impl
         if result is not None:
-            self.assertFalse(result.verified)
+            assert not result.verified
 
     def test_delete_existing(self):
         """Deleting an existing speaker returns True."""
         verifier = SpeakerVerifier()
         verifier.register("alice", self._make_audio())
-        self.assertTrue(verifier.delete("alice"))
-        self.assertNotIn("alice", verifier._voiceprints)
+        assert verifier.delete("alice")
+        assert "alice" not in verifier._voiceprints
 
     def test_delete_nonexistent(self):
         """Deleting a non-existent speaker returns False."""
         verifier = SpeakerVerifier()
-        self.assertFalse(verifier.delete("ghost"))
+        assert not verifier.delete("ghost")
 
     def test_list_speakers(self):
         """list_speakers returns registered speakers."""
@@ -224,54 +224,55 @@ class TestSpeakerVerifier(unittest.TestCase):
         verifier.register("alice", self._make_audio())
         verifier.register("bob", self._make_audio())
         speakers = verifier.list_speakers()
-        self.assertEqual(len(speakers), 2)
+        assert len(speakers) == 2
         ids = [s["speaker_id"] for s in speakers]
-        self.assertIn("alice", ids)
-        self.assertIn("bob", ids)
+        assert "alice" in ids
+        assert "bob" in ids
 
     def test_get_speaker(self):
         """get_speaker returns voiceprint for existing speaker."""
         verifier = SpeakerVerifier()
         verifier.register("alice", self._make_audio())
         vp = verifier.get_speaker("alice")
-        self.assertIsNotNone(vp)
-        self.assertEqual(vp.speaker_id, "alice")
+        assert vp is not None
+        assert vp.speaker_id == "alice"
 
     def test_get_speaker_nonexistent(self):
         """get_speaker returns None for unknown speaker."""
         verifier = SpeakerVerifier()
-        self.assertIsNone(verifier.get_speaker("ghost"))
+        assert verifier.get_speaker("ghost") is None
 
     def test_set_threshold_valid(self):
         """set_threshold updates threshold within bounds."""
         verifier = SpeakerVerifier()
         verifier.set_threshold(0.85)
-        self.assertEqual(verifier.threshold, 0.85)
+        assert verifier.threshold == 0.85
 
     def test_set_threshold_out_of_bounds(self):
         """set_threshold raises ValueError for out-of-bounds."""
         verifier = SpeakerVerifier()
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
             verifier.set_threshold(-0.1)
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
             verifier.set_threshold(1.5)
 
     def test_cosine_similarity_identical(self):
         """Cosine similarity of identical vectors is 1.0."""
         a = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-        self.assertAlmostEqual(SpeakerVerifier._cosine_similarity(a, a), 1.0, places=5)
+        # Identical vectors: cosine similarity should be 1.0
+        assert round(abs(SpeakerVerifier._cosine_similarity(a, a) - 1.0), 5) == 0
 
     def test_cosine_similarity_orthogonal(self):
         """Cosine similarity of orthogonal vectors is 0.0."""
         a = np.array([1.0, 0.0], dtype=np.float32)
         b = np.array([0.0, 1.0], dtype=np.float32)
-        self.assertAlmostEqual(SpeakerVerifier._cosine_similarity(a, b), 0.0)
+        assert SpeakerVerifier._cosine_similarity(a, b) == pytest.approx(0.0)
 
     def test_cosine_similarity_zero_vector(self):
         """Cosine similarity with zero vector returns 0.0."""
         a = np.array([0.0, 0.0], dtype=np.float32)
         b = np.array([1.0, 0.0], dtype=np.float32)
-        self.assertAlmostEqual(SpeakerVerifier._cosine_similarity(a, b), 0.0)
+        assert SpeakerVerifier._cosine_similarity(a, b) == pytest.approx(0.0, abs=1e-6)
 
     def test_persistence_save_load(self):
         """Voiceprints persist across save/load."""
@@ -282,8 +283,8 @@ class TestSpeakerVerifier(unittest.TestCase):
 
             # Reload from file
             verifier2 = SpeakerVerifier(storage_path=path)
-            self.assertIn("alice", verifier2._voiceprints)
-            self.assertEqual(verifier2._voiceprints["alice"].num_samples, 1)
+            assert "alice" in verifier2._voiceprints
+            assert verifier2._voiceprints["alice"].num_samples == 1
 
     def test_persistence_corrupt_file(self):
         """Corrupt storage file is handled gracefully."""
@@ -292,7 +293,7 @@ class TestSpeakerVerifier(unittest.TestCase):
             path.write_text("NOT VALID JSON", encoding="utf-8")
             verifier = SpeakerVerifier(storage_path=path)
             # Should not raise, just log error
-            self.assertEqual(len(verifier._voiceprints), 0)
+            assert len(verifier._voiceprints) == 0
 
     def test_int16_audio_input(self):
         """Integer audio is converted to float32 internally."""
@@ -300,8 +301,6 @@ class TestSpeakerVerifier(unittest.TestCase):
         audio_int16 = np.random.randint(-32768, 32767, size=16000, dtype=np.int16)
         # Should not raise
         vp = verifier.register("alice", audio_int16)
-        self.assertIsNotNone(vp.mfcc_mean)
+        assert vp.mfcc_mean is not None
 
 
-if __name__ == "__main__":
-    unittest.main()

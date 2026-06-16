@@ -77,7 +77,7 @@ class TestAudioPipelineIntegration:
         reducer = NoiseReducer(strength="medium")
 
         # Process through AudioProcessor (normalize)
-        processed = processor.process(audio, sample_rate=sr)
+        processed = AudioProcessor.normalize(audio)
         assert processed is not None
         assert len(processed) > 0
 
@@ -129,42 +129,48 @@ class TestSpeakerPipelineIntegration:
             verifier = SpeakerVerifier()
 
             # Diarize
-            segments = diarizer.diarize(audio, sample_rate=sr)
+            result = diarizer.diarize(audio, sample_rate=sr)
+            assert result is not None
+            # Result may be a DiarizationResult or a list of segments
+            segments = result.segments if hasattr(result, 'segments') else result
             assert isinstance(segments, list)
 
             # If we got segments, try verification
             if segments:
                 first_seg = segments[0]
-                assert hasattr(first_seg, "start_sample") or hasattr(first_seg, "start")
+                # SpeakerSegment has start_time/end_time (seconds)
+                assert hasattr(first_seg, "start_time")
 
-                # Enroll with first segment
-                if hasattr(first_seg, "start_sample"):
-                    seg_audio = audio[first_seg.start_sample:first_seg.end_sample]
-                else:
+                # Extract segment audio using time-based indices
+                start_idx = int(first_seg.start_time * sr)
+                end_idx = int(first_seg.end_time * sr)
+                seg_audio = audio[start_idx:end_idx]
+                if len(seg_audio) == 0:
                     seg_audio = audio  # fallback
 
                 if len(seg_audio) > sr * 0.5:  # at least 0.5s
-                    verifier.enroll("speaker_0", seg_audio, sample_rate=sr)
-                    result = verifier.verify(seg_audio, sample_rate=sr)
+                    verifier.register("speaker_0", seg_audio, sample_rate=sr)
+                    result = verifier.verify("speaker_0", seg_audio, sample_rate=sr)
                     assert result is not None
-                    assert hasattr(result, "similarity") or hasattr(result, "match")
+                    assert hasattr(result, "confidence") or hasattr(result, "verified")
 
         except ImportError as e:
             pytest.skip(f"Missing dependency: {e}")
 
     def test_speaker_verifier_enroll_verify_cycle(self, synthetic_audio):
-        """Full enroll-then-verify cycle works correctly."""
+        """Full register-then-verify cycle works correctly."""
         from vram_core.speaker_verification import SpeakerVerifier
 
         audio, sr = synthetic_audio
         verifier = SpeakerVerifier()
 
-        # Enroll
-        verifier.enroll("test_user", audio, sample_rate=sr)
-        assert "test_user" in verifier.speakers or len(verifier.speakers) > 0
+        # Register
+        verifier.register("test_user", audio, sample_rate=sr)
+        speakers = verifier.list_speakers()
+        assert len(speakers) > 0
 
         # Verify same audio
-        result = verifier.verify(audio, sample_rate=sr)
+        result = verifier.verify("test_user", audio, sample_rate=sr)
         assert result is not None
 
 
@@ -177,10 +183,10 @@ class TestChineseNLPPipelineIntegration:
 
     def test_normalizer_to_tokenizer(self, chinese_texts):
         """Normalized text can be tokenized."""
-        from vram_core.chinese.normalizer import ChineseNormalizer
+        from vram_core.chinese.normalizer import TextNormalizer
         from vram_core.chinese.tokenizer import ChineseTokenizer
 
-        normalizer = ChineseNormalizer()
+        normalizer = TextNormalizer()
         tokenizer = ChineseTokenizer()
 
         for text in chinese_texts:
@@ -205,33 +211,37 @@ class TestChineseNLPPipelineIntegration:
     def test_domain_dict_integration(self):
         """Domain dictionary works with normalized text."""
         from vram_core.chinese.domain_dict import DomainDictionary
-        from vram_core.chinese.normalizer import ChineseNormalizer
 
-        ddict = DomainDictionary()
-        normalizer = ChineseNormalizer()
+        # DomainDictionary requires a domain to load built-in terms
+        ddict = DomainDictionary(domain="tech")
 
-        tech_terms = ["GPU", "CUDA", "KV-Cache"]
-        for term in tech_terms:
-            result = ddict.lookup(term)
-            assert result is not None
+        # DomainDictionary provides terms and post-correction
+        terms = ddict.get_terms()
+        assert isinstance(terms, list)
+        assert len(terms) > 0
+
+        # post_correct should handle text
+        corrected = ddict.post_correct("今天用gpu训练模型")
+        assert isinstance(corrected, str)
+        assert len(corrected) > 0
 
     def test_dialect_converter_roundtrip(self):
-        """Dialect converter can convert cantonese -> mandarin."""
-        from vram_core.chinese.dialect import DialectConverter
+        """Dialect detector can detect dialect from text."""
+        from vram_core.chinese.dialect import DialectDetector
 
-        converter = DialectConverter()
-        # Test basic conversion
-        result = converter.convert("你好", source="cantonese")
-        assert isinstance(result, str)
-        assert len(result) > 0
+        detector = DialectDetector()
+        # Test detection on text with dialect markers
+        result = detector.detect("今日天氣唔錯喎")
+        assert result is not None
+        assert hasattr(result, "dialect") or hasattr(result, "confidence")
 
     def test_full_chinese_pipeline(self, chinese_texts):
         """Full pipeline: normalize -> tokenize -> punctuate."""
-        from vram_core.chinese.normalizer import ChineseNormalizer
+        from vram_core.chinese.normalizer import TextNormalizer
         from vram_core.chinese.tokenizer import ChineseTokenizer
         from vram_core.chinese.punctuation import PunctuationRestorer
 
-        normalizer = ChineseNormalizer()
+        normalizer = TextNormalizer()
         tokenizer = ChineseTokenizer()
         restorer = PunctuationRestorer()
 
@@ -278,7 +288,7 @@ class TestPluginIntegration:
         pm.register_hook("process", hook_b)
 
         # Dispatch
-        pm.dispatch_hook("process", "start")
+        pm.execute_hook("process", data="start")
         assert results == ["a", "b"]
 
     def test_plugin_with_audio_module(self, synthetic_audio):
@@ -304,9 +314,11 @@ class TestPluginIntegration:
         reducer = NoiseReducer()
 
         # Manual integration: plugin dispatch + module call
-        prepped = pm.dispatch_hook("before_noise_reduction", audio)
-        cleaned = reducer.process(prepped if isinstance(prepped, np.ndarray) else audio, sample_rate=sr)
-        pm.dispatch_hook("after_noise_reduction", cleaned)
+        prepped = pm.execute_hook("before_noise_reduction", audio=audio)
+        # execute_hook returns a list; use first result if it's an ndarray
+        audio_in = prepped[0] if prepped and isinstance(prepped[0], np.ndarray) else audio
+        cleaned = reducer.process(audio_in, sample_rate=sr)
+        pm.execute_hook("after_noise_reduction", result=cleaned)
 
         assert call_log == ["pre", "post"]
         assert cleaned is not None
@@ -328,9 +340,9 @@ class TestConfigIntegration:
     def test_config_has_required_sections(self):
         """Config has all required sections."""
         from vram_core.config import config
-        # Should have whisper, audio, and other sections
-        assert hasattr(config, "whisper") or hasattr(config, "get")
-        assert hasattr(config, "audio") or hasattr(config, "get")
+        # Should have core attributes
+        assert hasattr(config, "device")
+        assert hasattr(config, "sample_rate")
 
     def test_config_with_noise_reducer(self):
         """NoiseReducer can be created with config-like parameters."""
@@ -402,6 +414,10 @@ class TestCrossImportCompatibility:
     def test_deprecated_whisper_bridge_import(self):
         """Deprecated whisper_bridge still works but emits warning."""
         import warnings
+        import importlib
+        # Force re-import to trigger the warning
+        if "vram_core.whisper_bridge" in sys.modules:
+            del sys.modules["vram_core.whisper_bridge"]
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             from vram_core.whisper_bridge import WhisperBridge
@@ -433,9 +449,11 @@ class TestAudioEventIntegration:
         detector = AudioEventDetector()
 
         # Process
-        processed = processor.process(audio, sample_rate=sr)
-        events = detector.detect(processed, sample_rate=sr)
-        assert isinstance(events, (list, dict, type(None)))
+        processed = AudioProcessor.normalize(audio)
+        result = detector.detect(processed, sample_rate=sr)
+        assert result is not None
+        # Result is an AEDResult with events attribute
+        assert hasattr(result, "events") or hasattr(result, "total_events")
 
 
 # ---------------------------------------------------------------------------
@@ -450,7 +468,7 @@ class TestWakeWordStreamIntegration:
         from vram_core.wake_word import WakeWordDetector
 
         audio, sr = synthetic_audio
-        detector = WakeWordDetector(engine="energy", energy_threshold=0.01)
+        detector = WakeWordDetector(mode="energy", energy_threshold=0.01)
 
         # Simulate streaming by chunking audio
         chunk_size = sr  # 1 second chunks
@@ -459,13 +477,13 @@ class TestWakeWordStreamIntegration:
             chunk = audio[i:i + chunk_size]
             if len(chunk) < chunk_size // 2:
                 break
-            result = detector.detect(chunk, sample_rate=sr)
+            result = detector.process_chunk(chunk)
             results.append(result)
 
         assert len(results) >= 2
-        # All results should be valid
+        # All results are either WakeWordEvent or None
         for r in results:
-            assert r is not None
+            assert r is None or hasattr(r, "keyword")
 
 
 # ---------------------------------------------------------------------------
@@ -476,26 +494,27 @@ class TestMonitoringIntegration:
     """Test: monitoring works across module calls."""
 
     def test_metrics_collector_basic(self):
-        """MetricsCollector can record module metrics."""
+        """MetricsCollector can record transcription metrics."""
         from vram_core.monitoring import MetricsCollector
 
         collector = MetricsCollector()
-        # Record some metrics
-        collector.record("inference_latency", 42.5)
-        collector.record("inference_latency", 38.2)
-        collector.record("inference_latency", 51.0)
+        # Record some transcription metrics (API: latency is the first required param)
+        collector.record_transcription(latency=0.5, audio_duration=3.0, backend="test")
+        collector.record_transcription(latency=1.0, audio_duration=5.0, backend="test")
 
-        # Should be able to get stats
-        stats = collector.get_stats("inference_latency")
-        assert stats is not None
+        # Should be able to get health
+        health = collector.get_health()
+        assert health is not None
+        assert health.total_requests >= 2
 
     def test_system_health_check(self):
         """SystemHealth can report system status."""
-        from vram_core.monitoring import SystemHealth
+        from vram_core.monitoring import MetricsCollector, SystemHealth
 
-        health = SystemHealth()
-        status = health.check()
-        assert status is not None
+        collector = MetricsCollector()
+        health = collector.get_health()
+        assert isinstance(health, SystemHealth)
+        assert hasattr(health, "status")
 
 
 # ---------------------------------------------------------------------------
@@ -514,8 +533,7 @@ class TestEndToEndPipeline:
         audio, sr = synthetic_audio
 
         # Step 1: Audio processing
-        processor = AudioProcessor()
-        processed = processor.process(audio, sample_rate=sr)
+        processed = AudioProcessor.normalize(audio)
         assert processed is not None
 
         # Step 2: Noise reduction
@@ -540,8 +558,7 @@ class TestEndToEndPipeline:
         audio, sr = synthetic_audio
 
         t0 = time.perf_counter()
-        processor = AudioProcessor()
-        processed = processor.process(audio, sample_rate=sr)
+        processed = AudioProcessor.normalize(audio)
         reducer = NoiseReducer(strength="medium")
         cleaned = reducer.process(processed, sample_rate=sr)
         elapsed = time.perf_counter() - t0

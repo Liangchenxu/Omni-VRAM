@@ -10,7 +10,7 @@ Covers:
     - Edge cases: missing deps, non-existent plugin, unload_all
 """
 
-import unittest
+import pytest
 import tempfile
 import os
 from pathlib import Path
@@ -89,17 +89,17 @@ class BrokenPlugin(PluginBase):
         raise RuntimeError("Intentional load failure")
 
 
-class TestPluginInfo(unittest.TestCase):
+class TestPluginInfo:
     """Test PluginInfo data class."""
 
     def test_default_values(self):
         info = PluginInfo(name="test")
-        self.assertEqual(info.name, "test")
-        self.assertEqual(info.version, "0.0.1")
-        self.assertEqual(info.author, "unknown")
-        self.assertTrue(info.enabled)
-        self.assertEqual(info.dependencies, [])
-        self.assertEqual(info.hooks, [])
+        assert info.name == "test"
+        assert info.version == "0.0.1"
+        assert info.author == "unknown"
+        assert info.enabled
+        assert info.dependencies == []
+        assert info.hooks == []
 
     def test_custom_values(self):
         info = PluginInfo(
@@ -111,68 +111,68 @@ class TestPluginInfo(unittest.TestCase):
             hooks=["on_transcribe", "on_emotion"],
             enabled=False,
         )
-        self.assertEqual(info.version, "2.0.0")
-        self.assertEqual(len(info.dependencies), 2)
-        self.assertFalse(info.enabled)
+        assert info.version == "2.0.0"
+        assert len(info.dependencies) == 2
+        assert not info.enabled
 
 
-class TestPluginBase(unittest.TestCase):
+class TestPluginBase:
     """Test PluginBase abstract class."""
 
     def test_cannot_instantiate_directly(self):
         """PluginBase cannot be instantiated (abstract)."""
-        with self.assertRaises(TypeError):
+        with pytest.raises(TypeError):
             PluginBase()
 
     def test_simple_plugin_info(self):
         p = SimplePlugin()
-        self.assertEqual(p.info.name, "simple_plugin")
-        self.assertEqual(p.info.version, "1.0.0")
+        assert p.info.name == "simple_plugin"
+        assert p.info.version == "1.0.0"
 
     def test_simple_plugin_lifecycle(self):
         p = SimplePlugin()
-        self.assertFalse(p.loaded)
+        assert not p.loaded
         p.on_load()
-        self.assertTrue(p.loaded)
+        assert p.loaded
         p.on_unload()
-        self.assertTrue(p.unloaded)
+        assert p.unloaded
 
     def test_on_transcribe_returns_dict(self):
         p = SimplePlugin()
         result = p.on_transcribe(b"audio", {"text": "hello"})
-        self.assertIsNotNone(result)
-        self.assertTrue(result["modified"])
+        assert result is not None
+        assert result["modified"]
 
     def test_on_diarize_returns_none(self):
         p = SimplePlugin()
         result = p.on_diarize(b"audio", {})
-        self.assertIsNone(result)
+        assert result is None
 
     def test_on_emotion_returns_none(self):
         p = SimplePlugin()
         result = p.on_emotion(b"audio", {})
-        self.assertIsNone(result)
+        assert result is None
 
     def test_on_noise_reduce_returns_none(self):
         p = SimplePlugin()
         result = p.on_noise_reduce(b"audio", b"clean")
-        self.assertIsNone(result)
+        assert result is None
 
 
-class TestPluginManagerInit(unittest.TestCase):
+class TestPluginManagerInit:
     """Test PluginManager initialization."""
 
     def test_init_default(self):
         pm = PluginManager()
-        self.assertEqual(len(pm._plugins), 0)
-        self.assertEqual(len(pm._hooks), 0)
+        assert len(pm._plugins) == 0
+        assert len(pm._hooks) == 0
 
     def test_init_with_plugin_dirs(self):
         pm = PluginManager(plugin_dirs=["/tmp/plugins"])
-        self.assertIn("/tmp/plugins", pm._plugin_dirs)
+        assert "/tmp/plugins" in pm._plugin_dirs
 
 
-class TestPluginManagerLoad(unittest.TestCase):
+class TestPluginManagerLoad:
     """Test plugin loading."""
 
     def test_load_direct_instance(self):
@@ -184,36 +184,36 @@ class TestPluginManagerLoad(unittest.TestCase):
         # Manually add to search paths and load
         pm._search_paths.append(("simple_plugin", SimplePlugin, ""))
         result = pm.load_plugin("simple_plugin")
-        self.assertTrue(result)
-        self.assertTrue(pm.is_loaded("simple_plugin"))
+        assert result
+        assert pm.is_loaded("simple_plugin")
 
     def test_load_nonexistent_plugin(self):
         """Loading non-existent plugin returns False."""
         pm = PluginManager()
         result = pm.load_plugin("nonexistent")
-        self.assertFalse(result)
+        assert not result
 
     def test_load_broken_plugin(self):
         """Loading plugin that raises on_load returns False."""
         pm = PluginManager()
         pm._search_paths.append(("broken_plugin", BrokenPlugin, ""))
         result = pm.load_plugin("broken_plugin")
-        self.assertFalse(result)
-        self.assertFalse(pm.is_loaded("broken_plugin"))
+        assert not result
+        assert not pm.is_loaded("broken_plugin")
 
     def test_load_with_missing_deps(self):
         """Loading plugin with missing dependencies returns False."""
         pm = PluginManager()
         pm._search_paths.append(("dependent_plugin", DependentPlugin, ""))
         result = pm.load_plugin("dependent_plugin")
-        self.assertFalse(result)
+        assert not result
 
     def test_is_loaded_false_for_unloaded(self):
         pm = PluginManager()
-        self.assertFalse(pm.is_loaded("anything"))
+        assert not pm.is_loaded("anything")
 
 
-class TestPluginManagerUnload(unittest.TestCase):
+class TestPluginManagerUnload:
     """Test plugin unloading."""
 
     def test_unload_existing(self):
@@ -221,13 +221,13 @@ class TestPluginManagerUnload(unittest.TestCase):
         pm._search_paths.append(("simple_plugin", SimplePlugin, ""))
         pm.load_plugin("simple_plugin")
         result = pm.unload_plugin("simple_plugin")
-        self.assertTrue(result)
-        self.assertFalse(pm.is_loaded("simple_plugin"))
+        assert result
+        assert not pm.is_loaded("simple_plugin")
 
     def test_unload_nonexistent(self):
         pm = PluginManager()
         result = pm.unload_plugin("ghost")
-        self.assertFalse(result)
+        assert not result
 
     def test_unload_all(self):
         pm = PluginManager()
@@ -235,33 +235,33 @@ class TestPluginManagerUnload(unittest.TestCase):
         pm._search_paths.append(("no_hook_plugin", NoHookPlugin, ""))
         pm.load_plugin("simple_plugin")
         pm.load_plugin("no_hook_plugin")
-        self.assertEqual(len(pm._plugins), 2)
+        assert len(pm._plugins) == 2
         pm.unload_all()
-        self.assertEqual(len(pm._plugins), 0)
+        assert len(pm._plugins) == 0
 
 
-class TestPluginManagerHooks(unittest.TestCase):
+class TestPluginManagerHooks:
     """Test hook registration and execution."""
 
     def test_register_external_hook(self):
         pm = PluginManager()
         callback = MagicMock(return_value="result")
         pm.register_hook("on_test", callback)
-        self.assertIn("on_test", pm.list_hooks())
-        self.assertEqual(pm.list_hooks()["on_test"], 1)
+        assert "on_test" in pm.list_hooks()
+        assert pm.list_hooks()["on_test"] == 1
 
     def test_execute_hook_calls_callback(self):
         pm = PluginManager()
         callback = MagicMock(return_value="ok")
         pm.register_hook("on_test", callback)
         results = pm.execute_hook("on_test", audio=b"data", result={})
-        self.assertEqual(len(results), 1)
+        assert len(results) == 1
         callback.assert_called_once()
 
     def test_execute_hook_with_no_callbacks(self):
         pm = PluginManager()
         results = pm.execute_hook("nonexistent_hook")
-        self.assertEqual(results, [])
+        assert results == []
 
     def test_execute_hook_multiple_callbacks(self):
         pm = PluginManager()
@@ -270,7 +270,7 @@ class TestPluginManagerHooks(unittest.TestCase):
         pm.register_hook("on_test", cb1)
         pm.register_hook("on_test", cb2)
         results = pm.execute_hook("on_test")
-        self.assertEqual(len(results), 2)
+        assert len(results) == 2
 
     def test_execute_hook_callback_error(self):
         """Hook execution continues even if one callback raises."""
@@ -281,7 +281,7 @@ class TestPluginManagerHooks(unittest.TestCase):
         pm.register_hook("on_test", good_cb)
         results = pm.execute_hook("on_test")
         # bad_cb fails silently, good_cb still runs
-        self.assertEqual(len(results), 1)
+        assert len(results) == 1
 
     def test_plugin_hooks_registered_on_load(self):
         """Loading a plugin with hooks registers them."""
@@ -289,7 +289,7 @@ class TestPluginManagerHooks(unittest.TestCase):
         pm._search_paths.append(("simple_plugin", SimplePlugin, ""))
         pm.load_plugin("simple_plugin")
         hooks = pm.list_hooks()
-        self.assertIn("on_transcribe", hooks)
+        assert "on_transcribe" in hooks
 
     def test_plugin_hooks_removed_on_unload(self):
         """Unloading a plugin removes its hooks."""
@@ -300,24 +300,24 @@ class TestPluginManagerHooks(unittest.TestCase):
         # After unload, hook should be empty or removed
         hooks = pm.list_hooks()
         if "on_transcribe" in hooks:
-            self.assertEqual(hooks["on_transcribe"], 0)
+            assert hooks["on_transcribe"] == 0
 
 
-class TestPluginManagerDiscovery(unittest.TestCase):
+class TestPluginManagerDiscovery:
     """Test plugin discovery from directory."""
 
     def test_discover_nonexistent_dir(self):
         """Discovery of non-existent directory returns empty list."""
         pm = PluginManager()
         result = pm.discover_plugins("/nonexistent/path/xyz")
-        self.assertEqual(result, [])
+        assert result == []
 
     def test_discover_empty_dir(self):
         """Discovery of empty directory returns empty list."""
         pm = PluginManager()
         with tempfile.TemporaryDirectory() as tmpdir:
             result = pm.discover_plugins(tmpdir)
-            self.assertEqual(result, [])
+            assert result == []
 
     def test_discover_with_plugin_file(self):
         """Discovery finds PluginBase subclass in .py files."""
@@ -335,7 +335,7 @@ class TestDiscoveryPlugin(PluginBase):
             plugin_file.write_text(plugin_code, encoding="utf-8")
 
             discovered = pm.discover_plugins(tmpdir)
-            self.assertIn("discovered_plugin", discovered)
+            assert "discovered_plugin" in discovered
 
     def test_discover_skips_underscore_files(self):
         """Discovery skips files starting with underscore."""
@@ -344,10 +344,10 @@ class TestDiscoveryPlugin(PluginBase):
             (Path(tmpdir) / "__init__.py").write_text("", encoding="utf-8")
             (Path(tmpdir) / "_private.py").write_text("", encoding="utf-8")
             result = pm.discover_plugins(tmpdir)
-            self.assertEqual(result, [])
+            assert result == []
 
 
-class TestPluginManagerGetAndList(unittest.TestCase):
+class TestPluginManagerGetAndList:
     """Test plugin querying methods."""
 
     def test_get_plugin(self):
@@ -355,41 +355,39 @@ class TestPluginManagerGetAndList(unittest.TestCase):
         pm._search_paths.append(("simple_plugin", SimplePlugin, ""))
         pm.load_plugin("simple_plugin")
         plugin = pm.get_plugin("simple_plugin")
-        self.assertIsNotNone(plugin)
-        self.assertIsInstance(plugin, SimplePlugin)
+        assert plugin is not None
+        assert isinstance(plugin, SimplePlugin)
 
     def test_get_plugin_not_loaded(self):
         pm = PluginManager()
-        self.assertIsNone(pm.get_plugin("ghost"))
+        assert pm.get_plugin("ghost") is None
 
     def test_list_plugins(self):
         pm = PluginManager()
         pm._search_paths.append(("simple_plugin", SimplePlugin, ""))
         pm.load_plugin("simple_plugin")
         plugins = pm.list_plugins()
-        self.assertEqual(len(plugins), 1)
-        self.assertEqual(plugins[0].name, "simple_plugin")
+        assert len(plugins) == 1
+        assert plugins[0].name == "simple_plugin"
 
     def test_list_plugins_empty(self):
         pm = PluginManager()
-        self.assertEqual(pm.list_plugins(), [])
+        assert pm.list_plugins() == []
 
 
-class TestDependencyCheck(unittest.TestCase):
+class TestDependencyCheck:
     """Test dependency checking."""
 
     def test_check_missing_dependency(self):
         missing = PluginManager._check_dependencies(["nonexistent_xyz_module"])
-        self.assertIn("nonexistent_xyz_module", missing)
+        assert "nonexistent_xyz_module" in missing
 
     def test_check_existing_dependency(self):
         missing = PluginManager._check_dependencies(["json", "os", "sys"])
-        self.assertEqual(missing, [])
+        assert missing == []
 
     def test_check_mixed_dependencies(self):
         missing = PluginManager._check_dependencies(["json", "nonexistent_xyz"])
-        self.assertEqual(len(missing), 1)
+        assert len(missing) == 1
 
 
-if __name__ == "__main__":
-    unittest.main()

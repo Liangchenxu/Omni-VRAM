@@ -12,7 +12,7 @@ Covers:
     - Status formatting
 """
 
-import unittest
+import pytest
 from unittest.mock import patch, MagicMock, PropertyMock
 from concurrent.futures import Future
 
@@ -25,7 +25,7 @@ from vram_core.multi_gpu import (
 )
 
 
-class TestGPUInfo(unittest.TestCase):
+class TestGPUInfo:
     """Test GPUInfo dataclass."""
 
     def test_default_values(self):
@@ -33,74 +33,74 @@ class TestGPUInfo(unittest.TestCase):
             device_id=0, name="RTX 4090",
             total_memory_mb=24000, free_memory_mb=20000, used_memory_mb=4000,
         )
-        self.assertEqual(info.device_id, 0)
-        self.assertTrue(info.is_available)
-        self.assertEqual(info.utilization_pct, 0.0)
-        self.assertEqual(info.temperature_c, 0)
+        assert info.device_id == 0
+        assert info.is_available
+        assert info.utilization_pct == 0.0
+        assert info.temperature_c == 0
 
     def test_free_memory_gb(self):
         info = GPUInfo(
             device_id=0, name="Test", total_memory_mb=24576,
             free_memory_mb=12288, used_memory_mb=12288,
         )
-        self.assertAlmostEqual(info.free_memory_gb, 12.0, places=1)
+        assert round(abs(info.free_memory_gb - 12.0), 1) == 0
 
     def test_total_memory_gb(self):
         info = GPUInfo(
             device_id=0, name="Test", total_memory_mb=24576,
             free_memory_mb=12288, used_memory_mb=12288,
         )
-        self.assertAlmostEqual(info.total_memory_gb, 24.0, places=1)
+        assert round(abs(info.total_memory_gb - 24.0), 1) == 0
 
     def test_usage_pct(self):
         info = GPUInfo(
             device_id=0, name="Test", total_memory_mb=10000,
             free_memory_mb=3000, used_memory_mb=7000,
         )
-        self.assertAlmostEqual(info.usage_pct, 70.0, places=1)
+        assert round(abs(info.usage_pct - 70.0), 1) == 0
 
     def test_usage_pct_zero_total(self):
         info = GPUInfo(
             device_id=0, name="Test", total_memory_mb=0,
             free_memory_mb=0, used_memory_mb=0,
         )
-        self.assertEqual(info.usage_pct, 0.0)
+        assert info.usage_pct == 0.0
 
 
-class TestTaskAssignment(unittest.TestCase):
+class TestTaskAssignment:
     """Test TaskAssignment dataclass."""
 
     def test_creation(self):
         assignment = TaskAssignment(
             device_id=1, gpu_name="RTX 3090", free_memory_mb=18000, task_id="t1",
         )
-        self.assertEqual(assignment.device_id, 1)
-        self.assertEqual(assignment.task_id, "t1")
+        assert assignment.device_id == 1
+        assert assignment.task_id == "t1"
 
 
-class TestMultiGPUManagerInit(unittest.TestCase):
+class TestMultiGPUManagerInit:
     """Test MultiGPUManager initialization."""
 
     @patch.object(MultiGPUManager, '_detect_gpu_count', return_value=0)
     def test_init_no_gpus(self, mock_detect):
         manager = MultiGPUManager()
-        self.assertEqual(manager.gpu_count, 0)
-        self.assertFalse(manager.is_available)
+        assert manager.gpu_count == 0
+        assert not manager.is_available
 
     @patch.object(MultiGPUManager, '_detect_gpu_count', return_value=4)
     def test_init_with_gpus(self, mock_detect):
         manager = MultiGPUManager()
-        self.assertEqual(manager.gpu_count, 4)
-        self.assertTrue(manager.is_available)
+        assert manager.gpu_count == 4
+        assert manager.is_available
 
     @patch.object(MultiGPUManager, '_detect_gpu_count', return_value=2)
     def test_init_custom_params(self, mock_detect):
         manager = MultiGPUManager(min_free_memory_mb=2048, prefer_device=1)
-        self.assertEqual(manager.min_free_memory_mb, 2048)
-        self.assertEqual(manager.prefer_device, 1)
+        assert manager.min_free_memory_mb == 2048
+        assert manager.prefer_device == 1
 
 
-class TestMultiGPUManagerDetection(unittest.TestCase):
+class TestMultiGPUManagerDetection:
     """Test GPU detection logic."""
 
     @patch('vram_core.multi_gpu._CUDA_AVAILABLE', False)
@@ -108,24 +108,24 @@ class TestMultiGPUManagerDetection(unittest.TestCase):
     @patch('vram_core.multi_gpu._TORCH_AVAILABLE', False)
     def test_detect_no_backends(self):
         count = MultiGPUManager._detect_gpu_count()
-        self.assertEqual(count, 0)
+        assert count == 0
 
     @patch('vram_core.multi_gpu._NVML_AVAILABLE', False)
     def test_detect_zero_gpus(self):
         # Manager init calls _detect_gpu_count
         with patch.object(MultiGPUManager, '_detect_gpu_count', return_value=0):
             manager = MultiGPUManager()
-        self.assertEqual(manager.gpu_count, 0)
+        assert manager.gpu_count == 0
 
 
-class TestGetStatus(unittest.TestCase):
+class TestGetStatus:
     """Test status reporting."""
 
     @patch.object(MultiGPUManager, '_detect_gpu_count', return_value=0)
     def test_status_no_gpus(self, mock_detect):
         manager = MultiGPUManager()
         status = manager.get_status()
-        self.assertEqual(status, "No GPUs available")
+        assert status == "No GPUs available"
 
     @patch.object(MultiGPUManager, '_detect_gpu_count', return_value=2)
     def test_status_with_gpus(self, mock_detect):
@@ -137,11 +137,11 @@ class TestGetStatus(unittest.TestCase):
         )
         with patch.object(manager, 'get_all_gpu_info', return_value=[mock_info, mock_info]):
             status = manager.get_status()
-        self.assertIn("2 GPU(s)", status)
-        self.assertIn("RTX 4090", status)
+        assert "2 GPU(s)" in status
+        assert "RTX 4090" in status
 
 
-class TestGetBestGPU(unittest.TestCase):
+class TestGetBestGPU:
     """Test load balancing logic."""
 
     def _make_manager(self, gpu_count=2):
@@ -152,7 +152,7 @@ class TestGetBestGPU(unittest.TestCase):
     def test_best_gpu_no_gpus(self):
         manager = self._make_manager(gpu_count=0)
         result = manager.get_best_gpu()
-        self.assertIsNone(result)
+        assert result is None
 
     def test_best_gpu_returns_most_free(self):
         manager = self._make_manager(gpu_count=2)
@@ -162,8 +162,8 @@ class TestGetBestGPU(unittest.TestCase):
                         free_memory_mb=12000, used_memory_mb=4000)
         with patch.object(manager, 'get_gpu_info', side_effect=lambda i: [gpu0, gpu1][i]):
             result = manager.get_best_gpu()
-        self.assertIsNotNone(result)
-        self.assertEqual(result.device_id, 1)
+        assert result is not None
+        assert result.device_id == 1
 
     def test_best_gpu_insufficient_memory(self):
         manager = self._make_manager(gpu_count=1)
@@ -171,7 +171,7 @@ class TestGetBestGPU(unittest.TestCase):
                        free_memory_mb=100, used_memory_mb=15900)
         with patch.object(manager, 'get_gpu_info', return_value=gpu):
             result = manager.get_best_gpu(required_memory_mb=5000)
-        self.assertIsNone(result)
+        assert result is None
 
     def test_best_gpu_preferred_device(self):
         manager = self._make_manager(gpu_count=2)
@@ -180,17 +180,17 @@ class TestGetBestGPU(unittest.TestCase):
                         free_memory_mb=8000, used_memory_mb=8000)
         with patch.object(manager, 'get_gpu_info', return_value=gpu0):
             result = manager.get_best_gpu()
-        self.assertIsNotNone(result)
-        self.assertEqual(result.device_id, 0)
+        assert result is not None
+        assert result.device_id == 0
 
 
-class TestGetGPUInfo(unittest.TestCase):
+class TestGetGPUInfo:
     """Test GPU info retrieval."""
 
     def test_invalid_device_id(self):
         with patch.object(MultiGPUManager, '_detect_gpu_count', return_value=1):
             manager = MultiGPUManager()
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
             manager.get_gpu_info(5)
 
     def test_fallback_no_backends(self):
@@ -199,18 +199,18 @@ class TestGetGPUInfo(unittest.TestCase):
         with patch('vram_core.multi_gpu._TORCH_AVAILABLE', False), \
              patch('vram_core.multi_gpu._NVML_AVAILABLE', False):
             info = manager.get_gpu_info(0)
-        self.assertEqual(info.name, "Unknown")
-        self.assertEqual(info.total_memory_mb, 0)
+        assert info.name == "Unknown"
+        assert info.total_memory_mb == 0
 
 
-class TestTranscribeParallel(unittest.TestCase):
+class TestTranscribeParallel:
     """Test parallel transcription."""
 
     def test_empty_input(self):
         with patch.object(MultiGPUManager, '_detect_gpu_count', return_value=1):
             manager = MultiGPUManager()
         results = manager.transcribe_parallel([])
-        self.assertEqual(results, [])
+        assert results == []
 
     def test_parallel_with_custom_fn(self):
         with patch.object(MultiGPUManager, '_detect_gpu_count', return_value=1):
@@ -226,9 +226,9 @@ class TestTranscribeParallel(unittest.TestCase):
             results = manager.transcribe_parallel(
                 audio_files, transcribe_fn=mock_transcribe, max_workers=1,
             )
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["status"], "success")
-        self.assertEqual(results[0]["result"], "transcribed text")
+        assert len(results) == 1
+        assert results[0]["status"] == "success"
+        assert results[0]["result"] == "transcribed text"
 
     def test_parallel_with_error(self):
         with patch.object(MultiGPUManager, '_detect_gpu_count', return_value=1):
@@ -244,11 +244,11 @@ class TestTranscribeParallel(unittest.TestCase):
             results = manager.transcribe_parallel(
                 audio_files, transcribe_fn=failing_fn, max_workers=1,
             )
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["status"], "error")
+        assert len(results) == 1
+        assert results[0]["status"] == "error"
 
 
-class TestClearGPUCache(unittest.TestCase):
+class TestClearGPUCache:
     """Test cache clearing."""
 
     @patch.object(MultiGPUManager, '_detect_gpu_count', return_value=0)
@@ -258,7 +258,7 @@ class TestClearGPUCache(unittest.TestCase):
             manager.clear_gpu_cache()  # Should not raise
 
 
-class TestTotalFreeMemory(unittest.TestCase):
+class TestTotalFreeMemory:
     """Test total free memory calculation."""
 
     @patch.object(MultiGPUManager, '_detect_gpu_count', return_value=2)
@@ -270,13 +270,11 @@ class TestTotalFreeMemory(unittest.TestCase):
                         free_memory_mb=6000, used_memory_mb=10000)
         with patch.object(manager, 'get_gpu_info', side_effect=lambda i: [gpu0, gpu1][i]):
             total = manager.get_total_free_memory()
-        self.assertEqual(total, 14000)
+        assert total == 14000
 
     @patch.object(MultiGPUManager, '_detect_gpu_count', return_value=0)
     def test_total_free_memory_no_gpus(self, mock_detect):
         manager = MultiGPUManager()
-        self.assertEqual(manager.get_total_free_memory(), 0)
+        assert manager.get_total_free_memory() == 0
 
 
-if __name__ == "__main__":
-    unittest.main()

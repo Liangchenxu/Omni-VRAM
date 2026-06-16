@@ -102,7 +102,7 @@ else:
 # Package Setup
 setup(
     name='vram_core',
-    version='2.1.0',
+    version='2.1.1',
     description='vram_core - LLM Voice Interaction Framework',
     long_description=open('README.MD', encoding='utf-8').read(),
     long_description_content_type='text/markdown',

@@ -1,3 +1,4 @@
+import pytest
 """
 End-to-End Latency Tests for RealtimePipeline
 ===============================================

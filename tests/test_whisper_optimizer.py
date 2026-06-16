@@ -4,7 +4,7 @@ Unit & Performance Tests for WhisperOptimizer
 """
 
 import time
-import unittest
+import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
 import numpy as np
 
@@ -18,7 +18,7 @@ from vram_core.whisper.optimizer import (
 from vram_core.whisper.result import WhisperResult
 
 
-class TestTranscriptionCache(unittest.TestCase):
+class TestTranscriptionCache:
     """Test the SHA256-based transcription cache."""
 
     def test_cache_miss_then_hit(self):
@@ -27,15 +27,15 @@ class TestTranscriptionCache(unittest.TestCase):
         result = WhisperResult(text="hello world", language="en", confidence=0.9)
 
         # Miss
-        self.assertIsNone(cache.get(audio, "base", "en", "int8"))
+        assert cache.get(audio, "base", "en", "int8") is None
 
         # Put
         cache.put(audio, "base", "en", "int8", result)
 
         # Hit
         cached = cache.get(audio, "base", "en", "int8")
-        self.assertIsNotNone(cached)
-        self.assertEqual(cached.text, "hello world")
+        assert cached is not None
+        assert cached.text == "hello world"
 
     def test_cache_different_model_misses(self):
         cache = TranscriptionCache(max_entries=10, enable_disk=False)
@@ -45,9 +45,9 @@ class TestTranscriptionCache(unittest.TestCase):
         cache.put(audio, "base", "en", "int8", result)
 
         # Different model should miss
-        self.assertIsNone(cache.get(audio, "small", "en", "int8"))
+        assert cache.get(audio, "small", "en", "int8") is None
         # Different language should miss
-        self.assertIsNone(cache.get(audio, "base", "zh", "int8"))
+        assert cache.get(audio, "base", "zh", "int8") is None
 
     def test_cache_eviction(self):
         cache = TranscriptionCache(max_entries=2, enable_disk=False)
@@ -58,7 +58,7 @@ class TestTranscriptionCache(unittest.TestCase):
             cache.put(audio, "base", "en", "int8", result)
 
         stats = cache.stats()
-        self.assertEqual(stats.total_entries, 2)
+        assert stats.total_entries == 2
 
     def test_cache_clear(self):
         cache = TranscriptionCache(max_entries=10, enable_disk=False)
@@ -66,8 +66,8 @@ class TestTranscriptionCache(unittest.TestCase):
         cache.put(audio, "base", "en", "int8", WhisperResult(text="x", language="en"))
 
         cache.clear()
-        self.assertIsNone(cache.get(audio, "base", "en", "int8"))
-        self.assertEqual(cache.stats().total_entries, 0)
+        assert cache.get(audio, "base", "en", "int8") is None
+        assert cache.stats().total_entries == 0
 
     def test_cache_stats_hit_rate(self):
         cache = TranscriptionCache(max_entries=10, enable_disk=False)
@@ -76,21 +76,21 @@ class TestTranscriptionCache(unittest.TestCase):
 
         # 1 hit, 0 miss
         cache.get(audio, "base", "en", "int8")
-        self.assertEqual(cache.stats().hit_rate, 1.0)
+        assert cache.stats().hit_rate == 1.0
 
         # 1 hit, 1 miss
         cache.get(np.zeros(16000, dtype=np.float32), "base", "en", "int8")
-        self.assertAlmostEqual(cache.stats().hit_rate, 0.5)
+        assert cache.stats().hit_rate == pytest.approx(0.5)
 
 
-class TestBatchResult(unittest.TestCase):
+class TestBatchResult:
     """Test BatchResult dataclass."""
 
     def test_empty_batch(self):
         br = BatchResult()
-        self.assertEqual(br.avg_rtf, 0.0)
-        self.assertEqual(br.texts, [])
-        self.assertEqual(br.summary()["total_files"], 0)
+        assert br.avg_rtf == 0.0
+        assert br.texts == []
+        assert br.summary()["total_files"] == 0
 
     def test_batch_summary(self):
         br = BatchResult(
@@ -105,36 +105,36 @@ class TestBatchResult(unittest.TestCase):
             total_processing_time=5.0,
             errors={"bad.wav": "not found"},
         )
-        self.assertAlmostEqual(br.avg_rtf, 0.5)
-        self.assertEqual(br.texts, ["a", "b"])
+        assert br.avg_rtf == pytest.approx(0.5)
+        assert br.texts == ["a", "b"]
         s = br.summary()
-        self.assertEqual(s["total_files"], 3)
-        self.assertEqual(s["successful"], 2)
+        assert s["total_files"] == 3
+        assert s["successful"] == 2
 
 
-class TestStreamChunk(unittest.TestCase):
+class TestStreamChunk:
     """Test StreamChunk dataclass."""
 
     def test_chunk_fields(self):
         sc = StreamChunk(text="hello", start=0.0, end=30.0, is_final=True, chunk_index=2)
-        self.assertEqual(sc.text, "hello")
-        self.assertTrue(sc.is_final)
-        self.assertEqual(sc.chunk_index, 2)
+        assert sc.text == "hello"
+        assert sc.is_final
+        assert sc.chunk_index == 2
 
 
-class TestWhisperOptimizerInit(unittest.TestCase):
+class TestWhisperOptimizerInit:
     """Test WhisperOptimizer initialization."""
 
     def test_default_init(self):
         opt = WhisperOptimizer()
-        self.assertEqual(opt.model_name, "base")
-        self.assertEqual(opt.device, "cpu")
-        self.assertEqual(opt.compute_type, "int8")
-        self.assertIsNone(opt.language)
-        self.assertEqual(opt.beam_size, 5)
-        self.assertTrue(opt.vad_filter)
-        self.assertFalse(opt.is_warm)
-        self.assertIsNotNone(opt._cache)
+        assert opt.model_name == "base"
+        assert opt.device == "cpu"
+        assert opt.compute_type == "int8"
+        assert opt.language is None
+        assert opt.beam_size == 5
+        assert opt.vad_filter
+        assert not opt.is_warm
+        assert opt._cache is not None
 
     def test_custom_init(self):
         opt = WhisperOptimizer(
@@ -146,100 +146,100 @@ class TestWhisperOptimizerInit(unittest.TestCase):
             beam_size=3,
             vad_filter=False,
         )
-        self.assertEqual(opt.model_name, "small")
-        self.assertEqual(opt.device, "cuda")
-        self.assertEqual(opt.language, "zh")
-        self.assertEqual(opt.beam_size, 3)
-        self.assertFalse(opt.vad_filter)
-        self.assertIsNone(opt._cache)
+        assert opt.model_name == "small"
+        assert opt.device == "cuda"
+        assert opt.language == "zh"
+        assert opt.beam_size == 3
+        assert not opt.vad_filter
+        assert opt._cache is None
 
     def test_quantization_presets(self):
-        self.assertIn("int8", WhisperOptimizer.QUANTIZE_PRESETS)
-        self.assertIn("float16", WhisperOptimizer.QUANTIZE_PRESETS)
-        self.assertIn("float32", WhisperOptimizer.QUANTIZE_PRESETS)
+        assert "int8" in WhisperOptimizer.QUANTIZE_PRESETS
+        assert "float16" in WhisperOptimizer.QUANTIZE_PRESETS
+        assert "float32" in WhisperOptimizer.QUANTIZE_PRESETS
 
 
-class TestWhisperOptimizerQuantization(unittest.TestCase):
+class TestWhisperOptimizerQuantization:
     """Test quantization preset switching."""
 
     def test_set_quantization_valid(self):
         opt = WhisperOptimizer(compute_type="float16", device="cuda")
         opt.set_quantization("int8")
-        self.assertEqual(opt.compute_type, "int8")
+        assert opt.compute_type == "int8"
 
     def test_set_quantization_invalid(self):
         opt = WhisperOptimizer()
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
             opt.set_quantization("nonexistent")
 
     def test_cpu_forces_int8_for_gpu_presets(self):
         opt = WhisperOptimizer(device="cpu", compute_type="int8")
         opt.set_quantization("float16")
-        self.assertEqual(opt.compute_type, "int8")
+        assert opt.compute_type == "int8"
 
     def test_same_quantization_no_change(self):
         opt = WhisperOptimizer(compute_type="int8")
         opt.set_quantization("int8")
-        self.assertEqual(opt.compute_type, "int8")
+        assert opt.compute_type == "int8"
 
 
-class TestWhisperOptimizerAudioPreparation(unittest.TestCase):
+class TestWhisperOptimizerAudioPreparation:
     """Test audio preparation utilities."""
 
     def test_prepare_float32_audio(self):
         opt = WhisperOptimizer()
         audio = np.random.randn(16000).astype(np.float32) * 0.5
         result = opt._prepare_audio(audio)
-        self.assertEqual(result.dtype, np.float32)
-        self.assertTrue(len(result) == 16000)
+        assert result.dtype == np.float32
+        assert len(result) == 16000
 
     def test_prepare_int16_audio_normalized(self):
         opt = WhisperOptimizer()
         audio = np.random.randint(-32768, 32767, size=16000, dtype=np.int16).astype(np.float32)
         result = opt._prepare_audio(audio)
-        self.assertTrue(result.max() <= 1.0)
-        self.assertTrue(result.min() >= -1.0)
+        assert result.max() <= 1.0
+        assert result.min() >= -1.0
 
     def test_audio_to_wav_bytes_roundtrip(self):
         opt = WhisperOptimizer()
         audio = np.sin(2 * np.pi * 440 * np.arange(16000) / 16000).astype(np.float32) * 0.5
         wav_bytes = opt._audio_to_wav_bytes(audio, 16000)
-        self.assertTrue(wav_bytes.startswith(b"RIFF"))
-        self.assertIn(b"WAVE", wav_bytes)
-        self.assertGreater(len(wav_bytes), 44)
+        assert wav_bytes.startswith(b"RIFF")
+        assert b"WAVE" in wav_bytes
+        assert len(wav_bytes) > 44
 
     def test_prepare_nonexistent_file(self):
         opt = WhisperOptimizer()
-        with self.assertRaises(FileNotFoundError):
+        with pytest.raises(FileNotFoundError):
             opt._prepare_audio("/nonexistent/path/audio.wav")
 
 
-class TestWhisperOptimizerStats(unittest.TestCase):
+class TestWhisperOptimizerStats:
     """Test statistics and diagnostics."""
 
     def test_initial_stats(self):
         opt = WhisperOptimizer(model_name="base", device="cpu", compute_type="int8")
         stats = opt.get_stats()
-        self.assertEqual(stats["model"], "base")
-        self.assertEqual(stats["device"], "cpu")
-        self.assertEqual(stats["transcribe_count"], 0)
-        self.assertEqual(stats["avg_rtf"], 0.0)
-        self.assertFalse(stats["warmup_done"])
-        self.assertFalse(stats["model_loaded"])
+        assert stats["model"] == "base"
+        assert stats["device"] == "cpu"
+        assert stats["transcribe_count"] == 0
+        assert stats["avg_rtf"] == 0.0
+        assert not stats["warmup_done"]
+        assert not stats["model_loaded"]
 
     def test_stats_with_cache(self):
         opt = WhisperOptimizer(enable_cache=True)
         stats = opt.get_stats()
-        self.assertIn("cache", stats)
-        self.assertEqual(stats["cache"]["entries"], 0)
+        assert "cache" in stats
+        assert stats["cache"]["entries"] == 0
 
     def test_stats_without_cache(self):
         opt = WhisperOptimizer(enable_cache=False)
         stats = opt.get_stats()
-        self.assertNotIn("cache", stats)
+        assert "cache" not in stats
 
 
-class TestWhisperOptimizerMockedTranscription(unittest.TestCase):
+class TestWhisperOptimizerMockedTranscription:
     """Test transcription flow with mocked faster-whisper."""
 
     @patch("vram_core.whisper.optimizer.WhisperOptimizer._ensure_model")
@@ -253,8 +253,8 @@ class TestWhisperOptimizerMockedTranscription(unittest.TestCase):
 
         opt = WhisperOptimizer()
         elapsed = opt.warmup(duration_s=1.0)
-        self.assertTrue(opt.is_warm)
-        self.assertGreater(elapsed, 0)
+        assert opt.is_warm
+        assert elapsed > 0
 
     @patch("vram_core.whisper.optimizer.WhisperOptimizer._ensure_model")
     def test_transcribe_uses_cache(self, mock_ensure):
@@ -271,12 +271,12 @@ class TestWhisperOptimizerMockedTranscription(unittest.TestCase):
 
         # First call - cache miss, should call model
         r1 = opt.transcribe(audio, sample_rate=16000)
-        self.assertEqual(mock_model.transcribe.call_count, 1)
+        assert mock_model.transcribe.call_count == 1
 
         # Second call - cache hit, should NOT call model again
         r2 = opt.transcribe(audio, sample_rate=16000)
-        self.assertEqual(mock_model.transcribe.call_count, 1)
-        self.assertEqual(r1.text, r2.text)
+        assert mock_model.transcribe.call_count == 1
+        assert r1.text == r2.text
 
     @patch("vram_core.whisper.optimizer.WhisperOptimizer._ensure_model")
     def test_streaming_yields_chunks(self, mock_ensure):
@@ -300,21 +300,21 @@ class TestWhisperOptimizerMockedTranscription(unittest.TestCase):
         audio = np.random.randn(70 * 16000).astype(np.float32) * 0.1
 
         chunks = list(opt.transcribe_streaming(audio, chunk_duration_s=30.0, overlap_s=2.0))
-        self.assertGreaterEqual(len(chunks), 2)
+        assert len(chunks) >= 2
         for chunk in chunks:
-            self.assertIsInstance(chunk, StreamChunk)
-            self.assertGreater(chunk.start, -1)
+            assert isinstance(chunk, StreamChunk)
+            assert chunk.start > -1
         # Last chunk should be marked as final
-        self.assertTrue(chunks[-1].is_final)
+        assert chunks[-1].is_final
 
     def test_release_vram_returns_stats(self):
         opt = WhisperOptimizer()
         stats = opt.release_vram()
-        self.assertIn("before_mb", stats)
-        self.assertIn("after_mb", stats)
+        assert "before_mb" in stats
+        assert "after_mb" in stats
 
 
-class TestWhisperOptimizerBenchmark(unittest.TestCase):
+class TestWhisperOptimizerBenchmark:
     """Test benchmark functionality."""
 
     @patch("pathlib.Path.exists", return_value=True)
@@ -329,11 +329,9 @@ class TestWhisperOptimizerBenchmark(unittest.TestCase):
         opt = WhisperOptimizer()
         result = opt.benchmark("test.wav", iterations=2, warmup=False)
 
-        self.assertEqual(result["iterations"], 2)
-        self.assertIn("avg_time_s", result)
-        self.assertIn("avg_rtf", result)
-        self.assertIn("throughput_x_realtime", result)
+        assert result["iterations"] == 2
+        assert "avg_time_s" in result
+        assert "avg_rtf" in result
+        assert "throughput_x_realtime" in result
 
 
-if __name__ == "__main__":
-    unittest.main()

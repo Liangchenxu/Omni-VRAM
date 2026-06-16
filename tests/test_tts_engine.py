@@ -10,7 +10,7 @@ Covers:
     - Edge cases: empty text, no backend available
 """
 
-import unittest
+import pytest
 import tempfile
 import asyncio
 from pathlib import Path
@@ -25,14 +25,14 @@ from vram_core.tts_engine import (
 )
 
 
-class TestTTSVoice(unittest.TestCase):
+class TestTTSVoice:
     """Test TTSVoice data class."""
 
     def test_create_default(self):
         v = TTSVoice(voice_id="en-US-AriaNeural", name="Aria", language="en-US")
-        self.assertEqual(v.voice_id, "en-US-AriaNeural")
-        self.assertEqual(v.gender, "unknown")
-        self.assertEqual(v.provider, "unknown")
+        assert v.voice_id == "en-US-AriaNeural"
+        assert v.gender == "unknown"
+        assert v.provider == "unknown"
 
     def test_create_with_all_fields(self):
         v = TTSVoice(
@@ -42,19 +42,19 @@ class TestTTSVoice(unittest.TestCase):
             gender="Female",
             provider="edge-tts",
         )
-        self.assertEqual(v.gender, "Female")
-        self.assertEqual(v.provider, "edge-tts")
+        assert v.gender == "Female"
+        assert v.provider == "edge-tts"
 
 
-class TestTTSResult(unittest.TestCase):
+class TestTTSResult:
     """Test TTSResult data class."""
 
     def test_default_values(self):
         r = TTSResult()
-        self.assertIsNone(r.audio)
-        self.assertEqual(r.sample_rate, 24000)
-        self.assertEqual(r.duration_seconds, 0.0)
-        self.assertEqual(r.text, "")
+        assert r.audio is None
+        assert r.sample_rate == 24000
+        assert r.duration_seconds == 0.0
+        assert r.text == ""
 
     def test_custom_values(self):
         audio = np.random.randn(24000).astype(np.float32)
@@ -66,11 +66,11 @@ class TestTTSResult(unittest.TestCase):
             text="Hello",
             file_path="/tmp/test.mp3",
         )
-        self.assertIsNotNone(r.audio)
-        self.assertEqual(r.file_path, "/tmp/test.mp3")
+        assert r.audio is not None
+        assert r.file_path == "/tmp/test.mp3"
 
 
-class TestTTSEngineInit(unittest.TestCase):
+class TestTTSEngineInit:
     """Test TTSEngine initialization."""
 
     @patch("vram_core.tts_engine._EDGE_TTS_AVAILABLE", False)
@@ -78,13 +78,13 @@ class TestTTSEngineInit(unittest.TestCase):
     def test_no_backend_available(self):
         """Engine with no backend sets active_backend to 'none'."""
         engine = TTSEngine(backend="auto")
-        self.assertEqual(engine.backend, "none")
+        assert engine.backend == "none"
 
     @patch("vram_core.tts_engine._EDGE_TTS_AVAILABLE", True)
     def test_auto_selects_edge_tts(self):
         """Auto mode selects edge-tts when available."""
         engine = TTSEngine(backend="auto")
-        self.assertEqual(engine.backend, "edge-tts")
+        assert engine.backend == "edge-tts"
 
     @patch("vram_core.tts_engine._EDGE_TTS_AVAILABLE", False)
     @patch("vram_core.tts_engine._PYTTSX3_AVAILABLE", True)
@@ -94,39 +94,39 @@ class TestTTSEngineInit(unittest.TestCase):
         mock_engine = MagicMock()
         mock_pyttsx3.init.return_value = mock_engine
         engine = TTSEngine(backend="auto")
-        self.assertEqual(engine.backend, "pyttsx3")
+        assert engine.backend == "pyttsx3"
 
     @patch("vram_core.tts_engine._EDGE_TTS_AVAILABLE", True)
     def test_explicit_edge_tts(self):
         engine = TTSEngine(backend="edge-tts")
-        self.assertEqual(engine.backend, "edge-tts")
+        assert engine.backend == "edge-tts"
 
     @patch("vram_core.tts_engine._EDGE_TTS_AVAILABLE", False)
     @patch("vram_core.tts_engine._PYTTSX3_AVAILABLE", False)
     def test_explicit_unavailable_backend(self):
         """Requesting unavailable backend results in 'none'."""
         engine = TTSEngine(backend="pyttsx3")
-        self.assertEqual(engine.backend, "none")
+        assert engine.backend == "none"
 
     @patch("vram_core.tts_engine._EDGE_TTS_AVAILABLE", True)
     def test_custom_voice(self):
         engine = TTSEngine(voice="zh-CN-XiaoxiaoNeural")
-        self.assertEqual(engine.voice, "zh-CN-XiaoxiaoNeural")
+        assert engine.voice == "zh-CN-XiaoxiaoNeural"
 
     @patch("vram_core.tts_engine._EDGE_TTS_AVAILABLE", True)
     def test_default_voice(self):
         engine = TTSEngine()
-        self.assertEqual(engine.voice, "en-US-AriaNeural")
+        assert engine.voice == "en-US-AriaNeural"
 
     @patch("vram_core.tts_engine._EDGE_TTS_AVAILABLE", True)
     def test_custom_params(self):
         engine = TTSEngine(rate="+20%", volume="+50%", pitch="-5Hz")
-        self.assertEqual(engine.rate, "+20%")
-        self.assertEqual(engine.volume, "+50%")
-        self.assertEqual(engine.pitch, "-5Hz")
+        assert engine.rate == "+20%"
+        assert engine.volume == "+50%"
+        assert engine.pitch == "-5Hz"
 
 
-class TestTTSEngineSynthesize(unittest.TestCase):
+class TestTTSEngineSynthesize:
     """Test TTSEngine.synthesize()."""
 
     @patch("vram_core.tts_engine._EDGE_TTS_AVAILABLE", False)
@@ -134,7 +134,7 @@ class TestTTSEngineSynthesize(unittest.TestCase):
     def test_synthesize_no_backend_raises(self):
         """synthesize with no backend raises RuntimeError."""
         engine = TTSEngine(backend="auto")
-        with self.assertRaises(RuntimeError):
+        with pytest.raises(RuntimeError):
             engine.synthesize("Hello")
 
     @patch("vram_core.tts_engine._EDGE_TTS_AVAILABLE", True)
@@ -142,15 +142,15 @@ class TestTTSEngineSynthesize(unittest.TestCase):
         """Empty text returns result without error."""
         engine = TTSEngine(backend="edge-tts")
         result = engine.synthesize("")
-        self.assertEqual(result.text, "")
-        self.assertIsNone(result.audio)
+        assert result.text == ""
+        assert result.audio is None
 
     @patch("vram_core.tts_engine._EDGE_TTS_AVAILABLE", True)
     def test_synthesize_whitespace_only(self):
         """Whitespace-only text returns result without synthesis."""
         engine = TTSEngine(backend="edge-tts")
         result = engine.synthesize("   ")
-        self.assertEqual(result.text, "   ")
+        assert result.text == "   "
 
     @patch("vram_core.tts_engine._EDGE_TTS_AVAILABLE", True)
     @patch("vram_core.tts_engine.edge_tts")
@@ -188,11 +188,11 @@ class TestTTSEngineSynthesize(unittest.TestCase):
             # Create a dummy wav file for sf.read
             Path(output).write_bytes(b"\x00" * 100)
             result = engine.synthesize("Hello", output_path=output)
-            self.assertEqual(result.voice_id, engine.voice)
-            self.assertEqual(result.text, "Hello")
+            assert result.voice_id == engine.voice
+            assert result.text == "Hello"
 
 
-class TestTTSEngineSpeak(unittest.TestCase):
+class TestTTSEngineSpeak:
     """Test TTSEngine.speak()."""
 
     @patch("vram_core.tts_engine._EDGE_TTS_AVAILABLE", False)
@@ -208,18 +208,18 @@ class TestTTSEngineSpeak(unittest.TestCase):
         mock_engine.runAndWait.assert_called_once()
 
 
-class TestTTSEngineSynthesizeToFile(unittest.TestCase):
+class TestTTSEngineSynthesizeToFile:
     """Test TTSEngine.synthesize_to_file()."""
 
     @patch("vram_core.tts_engine._EDGE_TTS_AVAILABLE", False)
     @patch("vram_core.tts_engine._PYTTSX3_AVAILABLE", False)
     def test_synthesize_to_file_no_backend(self):
         engine = TTSEngine(backend="auto")
-        with self.assertRaises(RuntimeError):
+        with pytest.raises(RuntimeError):
             engine.synthesize_to_file("Hello", "/tmp/out.mp3")
 
 
-class TestTTSEngineVoiceListing(unittest.TestCase):
+class TestTTSEngineVoiceListing:
     """Test voice listing methods."""
 
     @patch("vram_core.tts_engine._EDGE_TTS_AVAILABLE", True)
@@ -235,7 +235,7 @@ class TestTTSEngineVoiceListing(unittest.TestCase):
             engine = TTSEngine(backend="edge-tts")
             # list_voices uses asyncio.run internally
             voices = engine.list_voices(language="en")
-            self.assertIsInstance(voices, list)
+            assert isinstance(voices, list)
             # Check the mock was called
             mock_edge.list_voices.assert_called()
 
@@ -245,42 +245,42 @@ class TestTTSEngineVoiceListing(unittest.TestCase):
         """list_voices with no backend returns empty list."""
         engine = TTSEngine(backend="auto")
         voices = engine.list_voices()
-        self.assertEqual(voices, [])
+        assert voices == []
 
     @patch("vram_core.tts_engine._EDGE_TTS_AVAILABLE", True)
     def test_available_backends_edge_tts(self):
         """available_backends includes edge-tts when available."""
         backends = TTSEngine.available_backends()
-        self.assertIn("edge-tts", backends)
+        assert "edge-tts" in backends
 
     @patch("vram_core.tts_engine._EDGE_TTS_AVAILABLE", False)
     @patch("vram_core.tts_engine._PYTTSX3_AVAILABLE", False)
     def test_available_backends_none(self):
         backends = TTSEngine.available_backends()
-        self.assertEqual(backends, [])
+        assert backends == []
 
     def test_available_languages(self):
         langs = TTSEngine.available_languages()
-        self.assertIn("en", langs)
-        self.assertIn("zh", langs)
-        self.assertIn("ja", langs)
+        assert "en" in langs
+        assert "zh" in langs
+        assert "ja" in langs
 
     def test_default_voices_dict(self):
-        self.assertIn("en", TTSEngine.DEFAULT_VOICES)
-        self.assertIn("zh", TTSEngine.DEFAULT_VOICES)
+        assert "en" in TTSEngine.DEFAULT_VOICES
+        assert "zh" in TTSEngine.DEFAULT_VOICES
 
 
-class TestTTSEngineVoiceProperty(unittest.TestCase):
+class TestTTSEngineVoiceProperty:
     """Test voice property getter/setter."""
 
     @patch("vram_core.tts_engine._EDGE_TTS_AVAILABLE", True)
     def test_voice_setter(self):
         engine = TTSEngine()
         engine.voice = "zh-CN-YunxiNeural"
-        self.assertEqual(engine.voice, "zh-CN-YunxiNeural")
+        assert engine.voice == "zh-CN-YunxiNeural"
 
 
-class TestTTSEngineClose(unittest.TestCase):
+class TestTTSEngineClose:
     """Test engine close/cleanup."""
 
     @patch("vram_core.tts_engine._EDGE_TTS_AVAILABLE", True)
@@ -301,7 +301,7 @@ class TestTTSEngineClose(unittest.TestCase):
         mock_engine.stop.assert_called_once()
 
 
-class TestTTSEngineStreaming(unittest.TestCase):
+class TestTTSEngineStreaming:
     """Test async streaming synthesis."""
 
     @patch("vram_core.tts_engine._EDGE_TTS_AVAILABLE", True)
@@ -316,9 +316,7 @@ class TestTTSEngineStreaming(unittest.TestCase):
                     async for _ in engine.stream_synthesize("test"):
                         pass
 
-                with self.assertRaises(RuntimeError):
+                with pytest.raises(RuntimeError):
                     asyncio.run(run())
 
 
-if __name__ == "__main__":
-    unittest.main()

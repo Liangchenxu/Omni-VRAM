@@ -1,3 +1,4 @@
+import pytest
 """Quick validation tests for realtime_optimizer module."""
 import sys
 import time

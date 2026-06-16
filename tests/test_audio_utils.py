@@ -9,7 +9,7 @@ stereo-to-mono functionality.
 import os
 import struct
 import tempfile
-import unittest
+import pytest
 from pathlib import Path
 
 import numpy as np
@@ -21,53 +21,53 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from vram_core.audio_utils import AudioProcessor, AudioFormatError, SUPPORTED_FORMATS
 
 
-class TestAudioFormatDetection(unittest.TestCase):
+class TestAudioFormatDetection:
     """Test audio format detection from magic bytes."""
 
     def test_wav_magic_detection(self):
         """Test WAV format detection from RIFF header."""
         header = b"RIFF\x00\x00\x00\x00WAVE" + b"\x00" * 4
         result = AudioProcessor._detect_from_magic(header)
-        self.assertEqual(result, "wav")
+        assert result == "wav"
 
     def test_flac_magic_detection(self):
         """Test FLAC format detection from fLaC header."""
         header = b"fLaC\x00\x00\x00\x22" + b"\x00" * 4
         result = AudioProcessor._detect_from_magic(header)
-        self.assertEqual(result, "flac")
+        assert result == "flac"
 
     def test_ogg_magic_detection(self):
         """Test OGG format detection from OggS header."""
         header = b"OggS\x00\x02\x00\x00" + b"\x00" * 4
         result = AudioProcessor._detect_from_magic(header)
-        self.assertEqual(result, "ogg")
+        assert result == "ogg"
 
     def test_mp3_id3_magic_detection(self):
         """Test MP3 format detection from ID3 tag."""
         header = b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\x00" * 2
         result = AudioProcessor._detect_from_magic(header)
-        self.assertEqual(result, "mp3")
+        assert result == "mp3"
 
     def test_mp3_sync_magic_detection(self):
         """Test MP3 format detection from frame sync bytes."""
         header = bytes([0xFF, 0xFB, 0x90, 0x00]) + b"\x00" * 8
         result = AudioProcessor._detect_from_magic(header)
-        self.assertEqual(result, "mp3")
+        assert result == "mp3"
 
     def test_unknown_magic(self):
         """Test unknown format returns None."""
         header = b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
         result = AudioProcessor._detect_from_magic(header)
-        self.assertIsNone(result)
+        assert result is None
 
     def test_short_header(self):
         """Test short header returns None."""
         header = b"\x00\x00"
         result = AudioProcessor._detect_from_magic(header)
-        self.assertIsNone(result)
+        assert result is None
 
 
-class TestAudioFormatDetectionFile(unittest.TestCase):
+class TestAudioFormatDetectionFile:
     """Test audio format detection from files."""
 
     def _create_temp_wav(self, sample_rate=16000, duration_s=1.0, channels=1):
@@ -104,13 +104,13 @@ class TestAudioFormatDetectionFile(unittest.TestCase):
         path = self._create_temp_wav()
         try:
             fmt = AudioProcessor.detect_format(path)
-            self.assertEqual(fmt, "wav")
+            assert fmt == "wav"
         finally:
             os.unlink(path)
 
     def test_detect_format_nonexistent_file(self):
         """Test format detection raises error for missing file."""
-        with self.assertRaises(FileNotFoundError):
+        with pytest.raises(FileNotFoundError):
             AudioProcessor.detect_format("/nonexistent/file.wav")
 
     def test_detect_sample_rate_wav(self):
@@ -118,12 +118,12 @@ class TestAudioFormatDetectionFile(unittest.TestCase):
         path = self._create_temp_wav(sample_rate=44100)
         try:
             sr = AudioProcessor.detect_sample_rate(path)
-            self.assertEqual(sr, 44100)
+            assert sr == 44100
         finally:
             os.unlink(path)
 
 
-class TestWAVLoading(unittest.TestCase):
+class TestWAVLoading:
     """Test WAV file loading."""
 
     def _create_temp_wav(self, sample_rate=16000, duration_s=1.0, channels=1):
@@ -161,9 +161,9 @@ class TestWAVLoading(unittest.TestCase):
         try:
             proc = AudioProcessor(target_sample_rate=16000)
             audio, sr = proc.load(path, normalize=False)
-            self.assertEqual(sr, 16000)
-            self.assertEqual(len(audio), 16000)
-            self.assertEqual(audio.dtype, np.float32)
+            assert sr == 16000
+            assert len(audio) == 16000
+            assert audio.dtype == np.float32
         finally:
             os.unlink(path)
 
@@ -173,9 +173,9 @@ class TestWAVLoading(unittest.TestCase):
         try:
             proc = AudioProcessor(target_sample_rate=16000)
             audio, sr = proc.load(path, normalize=False)
-            self.assertEqual(sr, 16000)
-            self.assertEqual(audio.ndim, 1)  # Mono
-            self.assertEqual(len(audio), 16000)
+            assert sr == 16000
+            assert audio.ndim == 1  # Mono
+            assert len(audio) == 16000
         finally:
             os.unlink(path)
 
@@ -185,10 +185,10 @@ class TestWAVLoading(unittest.TestCase):
         try:
             proc = AudioProcessor(target_sample_rate=16000)
             audio, sr = proc.load(path, normalize=False)
-            self.assertEqual(sr, 16000)
+            assert sr == 16000
             # Allow some tolerance in resampled length
             expected_len = 16000
-            self.assertAlmostEqual(len(audio), expected_len, delta=100)
+            assert abs(len(audio) - expected_len) <= 100
         finally:
             os.unlink(path)
 
@@ -199,12 +199,12 @@ class TestWAVLoading(unittest.TestCase):
             proc = AudioProcessor(target_sample_rate=16000)
             audio, _ = proc.load(path, normalize=True)
             max_val = np.max(np.abs(audio))
-            self.assertAlmostEqual(max_val, 1.0, places=5)
+            assert round(abs(max_val - 1.0), 5) == 0
         finally:
             os.unlink(path)
 
 
-class TestConversionUtilities(unittest.TestCase):
+class TestConversionUtilities:
     """Test audio conversion utilities."""
 
     def test_stereo_to_mono(self):
@@ -213,7 +213,7 @@ class TestConversionUtilities(unittest.TestCase):
         mono = AudioProcessor.stereo_to_mono(stereo)
         expected = np.mean(stereo, axis=1)
         np.testing.assert_array_almost_equal(mono, expected)
-        self.assertEqual(mono.dtype, np.float32)
+        assert mono.dtype == np.float32
 
     def test_stereo_to_mono_already_mono(self):
         """Test that mono input passes through unchanged."""
@@ -225,15 +225,15 @@ class TestConversionUtilities(unittest.TestCase):
         """Test int16 to float32 conversion."""
         int16_data = np.array([0, 16384, -16384, 32767, -32768], dtype=np.int16)
         result = AudioProcessor._to_float32(int16_data)
-        self.assertEqual(result.dtype, np.float32)
-        self.assertAlmostEqual(result[0], 0.0, places=5)
-        self.assertAlmostEqual(result[3], 32767 / 32768.0, places=3)
+        assert result.dtype == np.float32
+        assert round(abs(result[0] - 0.0), 5) == 0
+        assert round(abs(result[3] - 32767 / 32768.0), 3) == 0
 
     def test_to_float32_from_int32(self):
         """Test int32 to float32 conversion."""
         int32_data = np.array([0, 1073741824, -1073741824], dtype=np.int32)
         result = AudioProcessor._to_float32(int32_data)
-        self.assertEqual(result.dtype, np.float32)
+        assert result.dtype == np.float32
 
     def test_to_float32_already_float32(self):
         """Test float32 passes through unchanged."""
@@ -245,7 +245,7 @@ class TestConversionUtilities(unittest.TestCase):
         """Test audio normalization."""
         audio = np.array([0.1, -0.5, 0.3, -0.2], dtype=np.float32)
         result = AudioProcessor.normalize(audio, peak=1.0)
-        self.assertAlmostEqual(np.max(np.abs(result)), 1.0, places=5)
+        assert round(abs(np.max(np.abs(result)) - 1.0), 5) == 0
 
     def test_normalize_silent_audio(self):
         """Test normalization of silent audio."""
@@ -264,28 +264,28 @@ class TestConversionUtilities(unittest.TestCase):
         audio = np.random.randn(44100).astype(np.float32)
         result = AudioProcessor.resample(audio, 44100, 16000)
         expected_len = int(44100 / 44100 * 16000)
-        self.assertAlmostEqual(len(result), expected_len, delta=10)
-        self.assertEqual(result.dtype, np.float32)
+        assert abs(len(result) - expected_len) <= 10
+        assert result.dtype == np.float32
 
     def test_resample_upsample(self):
         """Test upsampling."""
         audio = np.random.randn(8000).astype(np.float32)
         result = AudioProcessor.resample(audio, 8000, 16000)
         expected_len = 16000
-        self.assertAlmostEqual(len(result), expected_len, delta=10)
+        assert abs(len(result) - expected_len) <= 10
 
 
-class TestWAVExport(unittest.TestCase):
+class TestWAVExport:
     """Test WAV encoding."""
 
     def test_to_wav_bytes(self):
         """Test encoding audio to WAV bytes."""
         audio = np.random.randn(16000).astype(np.float32) * 0.5
         wav_bytes = AudioProcessor.to_wav_bytes(audio, 16000)
-        self.assertIsInstance(wav_bytes, bytes)
-        self.assertTrue(len(wav_bytes) > 44)  # At least header + some data
-        self.assertEqual(wav_bytes[:4], b"RIFF")
-        self.assertEqual(wav_bytes[8:12], b"WAVE")
+        assert isinstance(wav_bytes, bytes)
+        assert len(wav_bytes) > 44  # At least header + some data
+        assert wav_bytes[:4] == b"RIFF"
+        assert wav_bytes[8:12] == b"WAVE"
 
     def test_wav_bytes_roundtrip(self):
         """Test that WAV bytes can be loaded back."""
@@ -295,12 +295,12 @@ class TestWAVExport(unittest.TestCase):
 
         proc = AudioProcessor(target_sample_rate=16000)
         loaded, sr = proc.load_from_bytes(wav_bytes, normalize=False)
-        self.assertEqual(sr, 16000)
+        assert sr == 16000
         # Allow small precision loss from int16 conversion
         np.testing.assert_array_almost_equal(loaded, original, decimal=3)
 
 
-class TestByteLoading(unittest.TestCase):
+class TestByteLoading:
     """Test loading audio from bytes."""
 
     def test_load_from_wav_bytes(self):
@@ -311,25 +311,25 @@ class TestByteLoading(unittest.TestCase):
 
         proc = AudioProcessor(target_sample_rate=16000)
         loaded, sr = proc.load_from_bytes(wav_bytes)
-        self.assertEqual(sr, 16000)
-        self.assertEqual(len(loaded), 16000)
-        self.assertEqual(loaded.dtype, np.float32)
+        assert sr == 16000
+        assert len(loaded) == 16000
+        assert loaded.dtype == np.float32
 
 
-class TestEdgeCases(unittest.TestCase):
+class TestEdgeCases:
     """Test edge cases and error handling."""
 
     def test_empty_audio(self):
         """Test handling of empty audio."""
         empty = np.array([], dtype=np.float32)
         result = AudioProcessor.stereo_to_mono(empty)
-        self.assertEqual(len(result), 0)
+        assert len(result) == 0
 
     def test_single_sample(self):
         """Test handling of single sample."""
         single = np.array([0.5], dtype=np.float32)
         result = AudioProcessor.normalize(single)
-        self.assertAlmostEqual(result[0], 1.0, places=5)
+        assert round(abs(result[0] - 1.0), 5) == 0
 
     def test_silent_audio_stereo_to_mono(self):
         """Test stereo to mono with silent audio."""
@@ -339,11 +339,9 @@ class TestEdgeCases(unittest.TestCase):
 
     def test_supported_formats_constant(self):
         """Test that supported formats are defined."""
-        self.assertIn("wav", SUPPORTED_FORMATS)
-        self.assertIn("mp3", SUPPORTED_FORMATS)
-        self.assertIn("flac", SUPPORTED_FORMATS)
-        self.assertIn("ogg", SUPPORTED_FORMATS)
+        assert "wav" in SUPPORTED_FORMATS
+        assert "mp3" in SUPPORTED_FORMATS
+        assert "flac" in SUPPORTED_FORMATS
+        assert "ogg" in SUPPORTED_FORMATS
 
 
-if __name__ == "__main__":
-    unittest.main()

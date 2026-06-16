@@ -1,0 +1,63 @@
+# ============================================================
+# Omni-VRAM v2.1.1 — Docker Compose
+# ============================================================
+# Start GPU service:  docker compose up gpu
+# Start CPU service:  docker compose up cpu
+# Start all:          docker compose up
+# ============================================================
+
+services:
+  # ── GPU Service ──────────────────────────────────────────
+  gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: omni-vram:gpu
+    container_name: omni-vram-gpu
+    ports:
+      - "7860:7860"   # Gradio Web UI
+      - "8000:8000"   # FastAPI REST API
+      - "50051:50051" # gRPC Server
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - ./models:/app/models         # Model cache
+      - ./output:/app/output         # Transcription output
+      - ./.env:/app/.env:ro          # Environment config
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import vram_core; print('OK')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── CPU Service ──────────────────────────────────────────
+  cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpu
+    image: omni-vram:cpu
+    container_name: omni-vram-cpu
+    ports:
+      - "7861:7860"   # Gradio Web UI (different host port to avoid conflict)
+      - "8001:8000"   # FastAPI REST API
+    volumes:
+      - ./models:/app/models
+      - ./output:/app/output
+      - ./.env:/app/.env:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import vram_core; print('OK')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    profiles:
+      - cpu

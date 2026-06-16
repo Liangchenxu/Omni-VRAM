@@ -7,12 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Unified test framework**: Migrated all 14 test files from `unittest` to `pytest` (fixtures, `pytest.raises`, `pytest.mark`)
+- **Unified logging**: Replaced all `print()` in `vram_core/` with `logging` module; no runtime `print()` remains in core library
+- **Async interface**: `WhisperBridge.async_transcribe()` — non-blocking transcription via `run_in_executor`
+- **WebSocket `/ws/stream` endpoint**: Browser-friendly real-time streaming accepting Float32 PCM binary frames (alongside existing `/stream` for Int16 PCM)
+
 ### Planned
-- Docker deployment support
 - CUDA 12.x optimized kernels
 - LLM function-calling integration (OpenAI / local models)
 - Real-time voice conversation with LLM (full duplex)
 - Streaming TTS with chunked output
+
+---
+
+## [2.1.1] - 2026-06-16
+
+### Added
+- **Docker Deployment**: Full containerization support with GPU and CPU Dockerfiles
+  - `Dockerfile`: GPU image based on `nvidia/cuda:11.8.0` with PyTorch CUDA 11.8
+  - `Dockerfile.cpu`: CPU-only image based on `python:3.10-slim` (no GPU required)
+  - `docker-compose.yml`: One-command deployment for both GPU and CPU services
+  - Health checks, volume mounts for model cache and output, environment config
+- **Performance Benchmark**: `tests/benchmark_comparison.py` — head-to-head comparison vs faster-whisper
+  - Transcription speed (RTF) comparison at multiple audio durations (10s, 60s)
+  - First-token latency measurement
+  - VRAM peak usage tracking
+  - Real-time streaming latency (P95/P99) benchmark
+  - Auto-generated Markdown report with hardware info and summary
+
+### Changed
+- Version bumped to 2.1.1 across setup.py, pyproject.toml, and vram_core/__init__.py
 
 ---
 

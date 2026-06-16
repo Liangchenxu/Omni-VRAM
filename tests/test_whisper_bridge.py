@@ -9,7 +9,7 @@ and backend auto-selection logic.
 import os
 import sys
 import tempfile
-import unittest
+import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -24,22 +24,22 @@ from vram_core.whisper_bridge import (
 )
 
 
-class TestWhisperBackendEnum(unittest.TestCase):
+class TestWhisperBackendEnum:
     """Test WhisperBackend enum values."""
 
     def test_backend_values(self):
         """Test enum values are correct."""
-        self.assertEqual(WhisperBackend.WHISPER_CPP.value, "whisper_cpp")
-        self.assertEqual(WhisperBackend.OPENAI_API.value, "openai_api")
-        self.assertEqual(WhisperBackend.AUTO.value, "auto")
+        assert WhisperBackend.WHISPER_CPP.value == "whisper_cpp"
+        assert WhisperBackend.OPENAI_API.value == "openai_api"
+        assert WhisperBackend.AUTO.value == "auto"
 
     def test_backend_from_value(self):
         """Test creating backend from string value."""
-        self.assertEqual(WhisperBackend("whisper_cpp"), WhisperBackend.WHISPER_CPP)
-        self.assertEqual(WhisperBackend("openai_api"), WhisperBackend.OPENAI_API)
+        assert WhisperBackend("whisper_cpp") == WhisperBackend.WHISPER_CPP
+        assert WhisperBackend("openai_api") == WhisperBackend.OPENAI_API
 
 
-class TestTranscriptionResult(unittest.TestCase):
+class TestTranscriptionResult:
     """Test TranscriptionResult data class."""
 
     def test_creation(self):
@@ -52,12 +52,12 @@ class TestTranscriptionResult(unittest.TestCase):
             duration=1.0,
             processing_time=0.5,
         )
-        self.assertEqual(result.text, "Hello world")
-        self.assertEqual(result.language, "en")
-        self.assertEqual(len(result.segments), 1)
-        self.assertEqual(result.backend, WhisperBackend.OPENAI_API)
-        self.assertEqual(result.duration, 1.0)
-        self.assertEqual(result.processing_time, 0.5)
+        assert result.text == "Hello world"
+        assert result.language == "en"
+        assert len(result.segments) == 1
+        assert result.backend == WhisperBackend.OPENAI_API
+        assert result.duration == 1.0
+        assert result.processing_time == 0.5
 
     def test_to_dict(self):
         """Test dictionary conversion."""
@@ -67,36 +67,36 @@ class TestTranscriptionResult(unittest.TestCase):
             backend=WhisperBackend.WHISPER_CPP,
         )
         d = result.to_dict()
-        self.assertEqual(d["text"], "Test")
-        self.assertEqual(d["language"], "zh")
-        self.assertEqual(d["backend"], "whisper_cpp")
-        self.assertEqual(d["segments"], [])
-        self.assertEqual(d["duration"], 0.0)
+        assert d["text"] == "Test"
+        assert d["language"] == "zh"
+        assert d["backend"] == "whisper_cpp"
+        assert d["segments"] == []
+        assert d["duration"] == 0.0
 
     def test_repr(self):
         """Test string representation."""
         result = TranscriptionResult(text="Hello", language="en")
         repr_str = repr(result)
-        self.assertIn("TranscriptionResult", repr_str)
-        self.assertIn("Hello", repr_str)
-        self.assertIn("en", repr_str)
+        assert "TranscriptionResult" in repr_str
+        assert "Hello" in repr_str
+        assert "en" in repr_str
 
     def test_default_segments(self):
         """Test default empty segments."""
         result = TranscriptionResult(text="", language="")
-        self.assertEqual(result.segments, [])
+        assert result.segments == []
 
 
-class TestWhisperBridgeInit(unittest.TestCase):
+class TestWhisperBridgeInit:
     """Test WhisperBridge initialization."""
 
     def test_default_init(self):
         """Test default initialization."""
         with patch.object(WhisperBridge, '_auto_detect_backend', return_value=WhisperBackend.WHISPER_CPP):
             bridge = WhisperBridge(backend=WhisperBackend.WHISPER_CPP)
-            self.assertEqual(bridge.backend, WhisperBackend.WHISPER_CPP)
-            self.assertEqual(bridge.whisper_model, "base")
-            self.assertEqual(bridge.device, "cuda")
+            assert bridge.backend == WhisperBackend.WHISPER_CPP
+            assert bridge.whisper_model == "base"
+            assert bridge.device == "cuda"
 
     def test_init_with_openai_key(self):
         """Test initialization with OpenAI API key."""
@@ -104,8 +104,8 @@ class TestWhisperBridgeInit(unittest.TestCase):
             backend=WhisperBackend.OPENAI_API,
             openai_api_key="test-key-123",
         )
-        self.assertEqual(bridge.backend, WhisperBackend.OPENAI_API)
-        self.assertEqual(bridge.openai_api_key, "test-key-123")
+        assert bridge.backend == WhisperBackend.OPENAI_API
+        assert bridge.openai_api_key == "test-key-123"
 
     def test_init_with_env_api_key(self):
         """Test initialization picks up environment API key."""
@@ -113,7 +113,7 @@ class TestWhisperBridgeInit(unittest.TestCase):
             bridge = WhisperBridge(
                 backend=WhisperBackend.OPENAI_API,
             )
-            self.assertEqual(bridge.openai_api_key, "env-key-456")
+            assert bridge.openai_api_key == "env-key-456"
 
     def test_init_with_language(self):
         """Test initialization with forced language."""
@@ -122,19 +122,19 @@ class TestWhisperBridgeInit(unittest.TestCase):
             openai_api_key="test",
             language="zh",
         )
-        self.assertEqual(bridge.language, "zh")
+        assert bridge.language == "zh"
 
     def test_supported_languages(self):
         """Test that supported languages are defined."""
-        self.assertIn("zh", WhisperBridge.SUPPORTED_LANGUAGES)
-        self.assertIn("en", WhisperBridge.SUPPORTED_LANGUAGES)
-        self.assertIn("ja", WhisperBridge.SUPPORTED_LANGUAGES)
-        self.assertEqual(WhisperBridge.SUPPORTED_LANGUAGES["zh"], "Chinese")
-        self.assertEqual(WhisperBridge.SUPPORTED_LANGUAGES["en"], "English")
-        self.assertEqual(WhisperBridge.SUPPORTED_LANGUAGES["ja"], "Japanese")
+        assert "zh" in WhisperBridge.SUPPORTED_LANGUAGES
+        assert "en" in WhisperBridge.SUPPORTED_LANGUAGES
+        assert "ja" in WhisperBridge.SUPPORTED_LANGUAGES
+        assert WhisperBridge.SUPPORTED_LANGUAGES["zh"] == "Chinese"
+        assert WhisperBridge.SUPPORTED_LANGUAGES["en"] == "English"
+        assert WhisperBridge.SUPPORTED_LANGUAGES["ja"] == "Japanese"
 
 
-class TestWhisperBridgeAutoDetect(unittest.TestCase):
+class TestWhisperBridgeAutoDetect:
     """Test backend auto-detection logic."""
 
     def test_auto_detect_prefers_faster_whisper(self):
@@ -142,7 +142,7 @@ class TestWhisperBridgeAutoDetect(unittest.TestCase):
         with patch.object(WhisperBridge, '_check_faster_whisper', return_value=True), \
              patch.object(WhisperBridge, '_check_whisper_cpp', return_value=False):
             bridge = WhisperBridge(backend=WhisperBackend.AUTO)
-            self.assertEqual(bridge.backend, WhisperBackend.FASTER_WHISPER)
+            assert bridge.backend == WhisperBackend.FASTER_WHISPER
 
     def test_auto_detect_falls_back_to_openai(self):
         """Test that auto-detect falls back to OpenAI API."""
@@ -152,14 +152,14 @@ class TestWhisperBridgeAutoDetect(unittest.TestCase):
                 backend=WhisperBackend.AUTO,
                 openai_api_key="test-key",
             )
-            self.assertEqual(bridge.backend, WhisperBackend.OPENAI_API)
+            assert bridge.backend == WhisperBackend.OPENAI_API
 
     def test_auto_detect_defaults_to_whisper_cpp(self):
         """Test that auto-detect defaults to whisper.cpp when nothing available."""
         with patch.object(WhisperBridge, '_check_faster_whisper', return_value=False), \
              patch.object(WhisperBridge, '_check_whisper_cpp', return_value=False):
             bridge = WhisperBridge(backend=WhisperBackend.AUTO)
-            self.assertEqual(bridge.backend, WhisperBackend.WHISPER_CPP)
+            assert bridge.backend == WhisperBackend.WHISPER_CPP
 
     def test_check_whisper_cpp_with_path(self):
         """Test whisper.cpp detection with explicit path."""
@@ -172,7 +172,7 @@ class TestWhisperBridgeAutoDetect(unittest.TestCase):
                 backend=WhisperBackend.WHISPER_CPP,
                 whisper_cpp_path=tmpdir,
             )
-            self.assertTrue(bridge._check_whisper_cpp())
+            assert bridge._check_whisper_cpp()
 
     def test_check_whisper_cpp_missing_path(self):
         """Test whisper.cpp detection with missing path."""
@@ -181,10 +181,10 @@ class TestWhisperBridgeAutoDetect(unittest.TestCase):
             whisper_cpp_path="/nonexistent/path",
         )
         with patch('shutil.which', return_value=None):
-            self.assertFalse(bridge._check_whisper_cpp())
+            assert not bridge._check_whisper_cpp()
 
 
-class TestWhisperBridgeGetAvailableBackends(unittest.TestCase):
+class TestWhisperBridgeGetAvailableBackends:
     """Test available backends listing."""
 
     def test_no_backends_available(self):
@@ -196,7 +196,7 @@ class TestWhisperBridgeGetAvailableBackends(unittest.TestCase):
                 openai_api_key=None,
             )
             available = bridge.get_available_backends()
-            self.assertEqual(len(available), 0)
+            assert len(available) == 0
 
     def test_only_openai_available(self):
         """Test when only OpenAI API is available."""
@@ -207,8 +207,8 @@ class TestWhisperBridgeGetAvailableBackends(unittest.TestCase):
                 openai_api_key="test-key",
             )
             available = bridge.get_available_backends()
-            self.assertEqual(len(available), 1)
-            self.assertIn(WhisperBackend.OPENAI_API, available)
+            assert len(available) == 1
+            assert WhisperBackend.OPENAI_API in available
 
     def test_all_backends_available(self):
         """Test when all backends are available."""
@@ -219,13 +219,13 @@ class TestWhisperBridgeGetAvailableBackends(unittest.TestCase):
                 openai_api_key="test-key",
             )
             available = bridge.get_available_backends()
-            self.assertEqual(len(available), 3)
-            self.assertIn(WhisperBackend.FASTER_WHISPER, available)
-            self.assertIn(WhisperBackend.WHISPER_CPP, available)
-            self.assertIn(WhisperBackend.OPENAI_API, available)
+            assert len(available) == 3
+            assert WhisperBackend.FASTER_WHISPER in available
+            assert WhisperBackend.WHISPER_CPP in available
+            assert WhisperBackend.OPENAI_API in available
 
 
-class TestWhisperBridgeSegmentParsing(unittest.TestCase):
+class TestWhisperBridgeSegmentParsing:
     """Test whisper.cpp segment parsing."""
 
     def test_parse_segments(self):
@@ -237,24 +237,24 @@ class TestWhisperBridgeSegmentParsing(unittest.TestCase):
             "[00:00:05.100 --> 00:00:08.000] That's great to hear.\n"
         )
         segments = WhisperBridge._parse_whisper_cpp_segments(stderr)
-        self.assertEqual(len(segments), 3)
-        self.assertEqual(segments[0]["start"], "00:00:00.000")
-        self.assertEqual(segments[0]["end"], "00:00:02.500")
-        self.assertEqual(segments[0]["text"], "Hello, how are you?")
+        assert len(segments) == 3
+        assert segments[0]["start"] == "00:00:00.000"
+        assert segments[0]["end"] == "00:00:02.500"
+        assert segments[0]["text"] == "Hello, how are you?"
 
     def test_parse_empty_stderr(self):
         """Test parsing empty stderr."""
         segments = WhisperBridge._parse_whisper_cpp_segments("")
-        self.assertEqual(len(segments), 0)
+        assert len(segments) == 0
 
     def test_parse_no_segments_stderr(self):
         """Test parsing stderr with no segment lines."""
         stderr = "whisper_init_from_file: loading model\nsome other output\n"
         segments = WhisperBridge._parse_whisper_cpp_segments(stderr)
-        self.assertEqual(len(segments), 0)
+        assert len(segments) == 0
 
 
-class TestWhisperBridgeTranscribeOpenAI(unittest.TestCase):
+class TestWhisperBridgeTranscribeOpenAI:
     """Test OpenAI API transcription."""
 
     def test_transcribe_openai_success(self):
@@ -285,10 +285,10 @@ class TestWhisperBridgeTranscribeOpenAI(unittest.TestCase):
             audio = np.random.randn(16000).astype(np.float32) * 0.1
             result = bridge.transcribe(audio, sample_rate=16000)
 
-            self.assertEqual(result.text, "Hello, this is a test.")
-            self.assertEqual(result.language, "en")
-            self.assertEqual(result.backend, WhisperBackend.OPENAI_API)
-            self.assertEqual(len(result.segments), 1)
+            assert result.text == "Hello, this is a test."
+            assert result.language == "en"
+            assert result.backend == WhisperBackend.OPENAI_API
+            assert len(result.segments) == 1
         finally:
             if old_openai is not None:
                 sys.modules['openai'] = old_openai
@@ -310,7 +310,7 @@ class TestWhisperBridgeTranscribeOpenAI(unittest.TestCase):
             bridge.openai_api_key = None
 
             audio = np.random.randn(16000).astype(np.float32) * 0.1
-            with self.assertRaises(ValueError):
+            with pytest.raises(ValueError):
                 bridge.transcribe(audio, sample_rate=16000)
         finally:
             if old_openai is not None:
@@ -319,7 +319,7 @@ class TestWhisperBridgeTranscribeOpenAI(unittest.TestCase):
                 sys.modules.pop('openai', None)
 
 
-class TestWhisperBridgeTranscribeWithFileInput(unittest.TestCase):
+class TestWhisperBridgeTranscribeWithFileInput:
     """Test transcription with file input."""
 
     def _create_temp_wav(self, sample_rate=16000, duration_s=1.0):
@@ -356,14 +356,14 @@ class TestWhisperBridgeTranscribeWithFileInput(unittest.TestCase):
         wav_path = self._create_temp_wav()
         try:
             result = bridge.transcribe(wav_path)
-            self.assertEqual(result.text, "test result")
+            assert result.text == "test result"
             # Verify audio was loaded (mock was called)
             mock_transcribe.assert_called_once()
         finally:
             os.unlink(wav_path)
 
 
-class TestWhisperBridgeTranscribeStream(unittest.TestCase):
+class TestWhisperBridgeTranscribeStream:
     """Test stream transcription."""
 
     @patch.object(WhisperBridge, 'transcribe')
@@ -385,14 +385,14 @@ class TestWhisperBridgeTranscribeStream(unittest.TestCase):
         ]
 
         result = bridge.transcribe_stream(chunks, sample_rate=16000)
-        self.assertEqual(result.text, "stream result")
+        assert result.text == "stream result"
         # Verify transcribe was called with concatenated audio
         call_args = mock_transcribe.call_args
         audio_arg = call_args[0][0]
-        self.assertEqual(len(audio_arg), 16000)
+        assert len(audio_arg) == 16000
 
 
-class TestWhisperBridgeLanguageDetection(unittest.TestCase):
+class TestWhisperBridgeLanguageDetection:
     """Test language detection."""
 
     @patch.object(WhisperBridge, 'transcribe')
@@ -410,7 +410,7 @@ class TestWhisperBridgeLanguageDetection(unittest.TestCase):
 
         audio = np.random.randn(32000).astype(np.float32) * 0.1
         lang = bridge.detect_language(audio, sample_rate=16000)
-        self.assertEqual(lang, "zh")
+        assert lang == "zh"
 
     @patch.object(WhisperBridge, 'transcribe')
     def test_detect_language_truncates_long_audio(self, mock_transcribe):
@@ -432,8 +432,6 @@ class TestWhisperBridgeLanguageDetection(unittest.TestCase):
         # Verify audio was truncated to 30 seconds
         call_args = mock_transcribe.call_args
         audio_arg = call_args[0][0]
-        self.assertLessEqual(len(audio_arg), 30 * 16000)
+        assert len(audio_arg) <= 30 * 16000
 
 
-if __name__ == "__main__":
-    unittest.main()

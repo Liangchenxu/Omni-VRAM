@@ -13,7 +13,7 @@ Covers:
     - Reset functionality
 """
 
-import unittest
+import pytest
 import time
 from unittest.mock import patch, MagicMock
 
@@ -22,16 +22,16 @@ import numpy as np
 from vram_core.wake_word import WakeWordEvent, WakeWordDetector
 
 
-class TestWakeWordEvent(unittest.TestCase):
+class TestWakeWordEvent:
     """Test WakeWordEvent data class."""
 
     def test_default_values(self):
         event = WakeWordEvent()
-        self.assertEqual(event.keyword, "")
-        self.assertEqual(event.confidence, 0.0)
-        self.assertEqual(event.timestamp, 0.0)
-        self.assertEqual(event.audio_start, 0.0)
-        self.assertEqual(event.audio_end, 0.0)
+        assert event.keyword == ""
+        assert event.confidence == 0.0
+        assert event.timestamp == 0.0
+        assert event.audio_start == 0.0
+        assert event.audio_end == 0.0
 
     def test_custom_values(self):
         event = WakeWordEvent(
@@ -41,24 +41,24 @@ class TestWakeWordEvent(unittest.TestCase):
             audio_start=1.0,
             audio_end=3.0,
         )
-        self.assertEqual(event.keyword, "hello")
-        self.assertEqual(event.confidence, 0.95)
+        assert event.keyword == "hello"
+        assert event.confidence == 0.95
 
 
-class TestWakeWordDetectorInit(unittest.TestCase):
+class TestWakeWordDetectorInit:
     """Test WakeWordDetector initialization."""
 
     def test_init_default(self):
         detector = WakeWordDetector()
-        self.assertEqual(detector.mode, "energy")
-        self.assertEqual(detector.keywords, [])
-        self.assertEqual(detector.energy_threshold, 0.05)
-        self.assertEqual(detector.sample_rate, 16000)
-        self.assertEqual(detector.sensitivity, 0.8)
+        assert detector.mode == "energy"
+        assert detector.keywords == []
+        assert detector.energy_threshold == 0.05
+        assert detector.sample_rate == 16000
+        assert detector.sensitivity == 0.8
 
     def test_init_custom_keywords(self):
         detector = WakeWordDetector(keywords=["Hey Computer", "Wake Up"])
-        self.assertEqual(detector.keywords, ["hey computer", "wake up"])
+        assert detector.keywords == ["hey computer", "wake up"]
 
     def test_init_custom_params(self):
         detector = WakeWordDetector(
@@ -69,23 +69,23 @@ class TestWakeWordDetectorInit(unittest.TestCase):
             cooldown=2.0,
             sensitivity=0.9,
         )
-        self.assertEqual(detector.mode, "whisper")
-        self.assertEqual(detector.sample_rate, 44100)
-        self.assertEqual(detector.cooldown, 2.0)
+        assert detector.mode == "whisper"
+        assert detector.sample_rate == 44100
+        assert detector.cooldown == 2.0
 
     def test_init_chunk_samples_calculation(self):
         detector = WakeWordDetector(sample_rate=16000, chunk_duration=2.0)
-        self.assertEqual(detector.chunk_samples, 32000)
+        assert detector.chunk_samples == 32000
 
 
-class TestWakeWordDetectorCallbacks(unittest.TestCase):
+class TestWakeWordDetectorCallbacks:
     """Test callback registration."""
 
     def test_on_detect_registers_callback(self):
         detector = WakeWordDetector()
         cb = MagicMock()
         detector.on_detect(cb)
-        self.assertIn(cb, detector._callbacks)
+        assert cb in detector._callbacks
 
     def test_multiple_callbacks(self):
         detector = WakeWordDetector()
@@ -93,10 +93,10 @@ class TestWakeWordDetectorCallbacks(unittest.TestCase):
         cb2 = MagicMock()
         detector.on_detect(cb1)
         detector.on_detect(cb2)
-        self.assertEqual(len(detector._callbacks), 2)
+        assert len(detector._callbacks) == 2
 
 
-class TestEnergyDetection(unittest.TestCase):
+class TestEnergyDetection:
     """Test energy-based wake word detection."""
 
     def test_detect_loud_signal(self):
@@ -109,9 +109,9 @@ class TestEnergyDetection(unittest.TestCase):
         # Generate loud audio
         audio = np.ones(16000, dtype=np.float32) * 0.5
         event = detector.process_chunk(audio)
-        self.assertIsNotNone(event)
-        self.assertEqual(event.keyword, "[energy_spike]")
-        self.assertGreater(event.confidence, 0)
+        assert event is not None
+        assert event.keyword == "[energy_spike]"
+        assert event.confidence > 0
 
     def test_no_detect_silent_signal(self):
         """Silent audio should not trigger detection."""
@@ -122,7 +122,7 @@ class TestEnergyDetection(unittest.TestCase):
         )
         audio = np.zeros(16000, dtype=np.float32)
         event = detector.process_chunk(audio)
-        self.assertIsNone(event)
+        assert event is None
 
     def test_no_detect_low_signal(self):
         """Low-level noise should not trigger detection."""
@@ -133,7 +133,7 @@ class TestEnergyDetection(unittest.TestCase):
         )
         audio = np.random.randn(16000).astype(np.float32) * 0.001
         event = detector.process_chunk(audio)
-        self.assertIsNone(event)
+        assert event is None
 
     def test_sensitivity_affects_threshold(self):
         """Higher sensitivity lowers effective threshold."""
@@ -150,7 +150,7 @@ class TestEnergyDetection(unittest.TestCase):
         event_low = detector_low.process_chunk(audio.copy())
 
         # High sensitivity should detect, low might not
-        self.assertIsNotNone(event_high)
+        assert event_high is not None
 
     def test_confidence_range(self):
         """Confidence should be between 0 and 1."""
@@ -159,11 +159,11 @@ class TestEnergyDetection(unittest.TestCase):
         )
         audio = np.ones(16000, dtype=np.float32) * 0.5
         event = detector.process_chunk(audio)
-        self.assertGreaterEqual(event.confidence, 0.0)
-        self.assertLessEqual(event.confidence, 1.0)
+        assert event.confidence >= 0.0
+        assert event.confidence <= 1.0
 
 
-class TestCooldown(unittest.TestCase):
+class TestCooldown:
     """Test cooldown mechanism."""
 
     def test_cooldown_prevents_double_detection(self):
@@ -178,11 +178,11 @@ class TestCooldown(unittest.TestCase):
         event1 = detector.process_chunk(audio)
         event2 = detector.process_chunk(audio)
 
-        self.assertIsNotNone(event1)
-        self.assertIsNone(event2)
+        assert event1 is not None
+        assert event2 is None
 
 
-class TestWhisperDetection(unittest.TestCase):
+class TestWhisperDetection:
     """Test Whisper-based wake word detection."""
 
     def test_whisper_no_bridge_returns_none(self):
@@ -194,7 +194,7 @@ class TestWhisperDetection(unittest.TestCase):
         )
         audio = np.ones(16000, dtype=np.float32) * 0.5
         event = detector.process_chunk(audio)
-        self.assertIsNone(event)
+        assert event is None
 
     def test_whisper_no_keywords_returns_none(self):
         """Without keywords, returns None."""
@@ -207,7 +207,7 @@ class TestWhisperDetection(unittest.TestCase):
         )
         audio = np.ones(16000, dtype=np.float32) * 0.5
         event = detector.process_chunk(audio)
-        self.assertIsNone(event)
+        assert event is None
 
     def test_whisper_detects_keyword(self):
         """Whisper detection finds keyword in transcription."""
@@ -229,9 +229,9 @@ class TestWhisperDetection(unittest.TestCase):
         audio = np.ones(int(16000 * 2.0), dtype=np.float32) * 0.1
         event = detector.process_chunk(audio)
 
-        self.assertIsNotNone(event)
-        self.assertEqual(event.keyword, "hey computer")
-        self.assertEqual(event.confidence, 0.92)
+        assert event is not None
+        assert event.keyword == "hey computer"
+        assert event.confidence == 0.92
 
     def test_whisper_no_keyword_match(self):
         """Whisper returns no event when keyword not in text."""
@@ -251,7 +251,7 @@ class TestWhisperDetection(unittest.TestCase):
         )
         audio = np.ones(int(16000 * 2.0), dtype=np.float32) * 0.1
         event = detector.process_chunk(audio)
-        self.assertIsNone(event)
+        assert event is None
 
     def test_whisper_exception_handled(self):
         """Whisper exceptions are caught and return None."""
@@ -268,20 +268,20 @@ class TestWhisperDetection(unittest.TestCase):
         )
         audio = np.ones(int(16000 * 2.0), dtype=np.float32) * 0.1
         event = detector.process_chunk(audio)
-        self.assertIsNone(event)
+        assert event is None
 
 
-class TestUnknownMode(unittest.TestCase):
+class TestUnknownMode:
     """Test unknown mode handling."""
 
     def test_unknown_mode_returns_none(self):
         detector = WakeWordDetector(mode="unknown_mode", cooldown=0.0)
         audio = np.ones(16000, dtype=np.float32)
         event = detector.process_chunk(audio)
-        self.assertIsNone(event)
+        assert event is None
 
 
-class TestCallbackInvocation(unittest.TestCase):
+class TestCallbackInvocation:
     """Test that callbacks are invoked on detection."""
 
     def test_callback_called_on_energy_detect(self):
@@ -294,8 +294,8 @@ class TestCallbackInvocation(unittest.TestCase):
         detector.process_chunk(audio)
         cb.assert_called_once()
         args = cb.call_args[0]
-        self.assertEqual(args[0], "[energy_spike]")
-        self.assertGreater(args[1], 0)
+        assert args[0] == "[energy_spike]"
+        assert args[1] > 0
 
     def test_callback_error_does_not_crash(self):
         """Callback exceptions should be caught."""
@@ -307,10 +307,10 @@ class TestCallbackInvocation(unittest.TestCase):
         audio = np.ones(16000, dtype=np.float32) * 0.5
         # Should not raise
         event = detector.process_chunk(audio)
-        self.assertIsNotNone(event)
+        assert event is not None
 
 
-class TestProcessStream(unittest.TestCase):
+class TestProcessStream:
     """Test process_stream method."""
 
     def test_process_stream_detects_events(self):
@@ -323,21 +323,21 @@ class TestProcessStream(unittest.TestCase):
         stream = np.concatenate([silent, loud, silent, loud, silent])
 
         events = detector.process_stream(stream, chunk_size=4096)
-        self.assertGreaterEqual(len(events), 1)
+        assert len(events) >= 1
 
     def test_process_stream_empty(self):
         detector = WakeWordDetector(mode="energy", cooldown=0.0)
         stream = np.zeros(16000, dtype=np.float32)
         events = detector.process_stream(stream)
-        self.assertEqual(len(events), 0)
+        assert len(events) == 0
 
 
-class TestHistoryAndStats(unittest.TestCase):
+class TestHistoryAndStats:
     """Test history and statistics."""
 
     def test_get_history_empty(self):
         detector = WakeWordDetector()
-        self.assertEqual(detector.get_history(), [])
+        assert detector.get_history() == []
 
     def test_get_history_after_detection(self):
         detector = WakeWordDetector(
@@ -346,8 +346,8 @@ class TestHistoryAndStats(unittest.TestCase):
         audio = np.ones(16000, dtype=np.float32) * 0.5
         detector.process_chunk(audio)
         history = detector.get_history()
-        self.assertEqual(len(history), 1)
-        self.assertEqual(history[0].keyword, "[energy_spike]")
+        assert len(history) == 1
+        assert history[0].keyword == "[energy_spike]"
 
     def test_get_stats(self):
         detector = WakeWordDetector(
@@ -357,16 +357,16 @@ class TestHistoryAndStats(unittest.TestCase):
             sensitivity=0.7,
         )
         stats = detector.get_stats()
-        self.assertEqual(stats["mode"], "energy")
-        self.assertIn("keywords", stats)
-        self.assertEqual(stats["energy_threshold"], 0.05)
-        self.assertEqual(stats["sensitivity"], 0.7)
-        self.assertIn("total_processed_seconds", stats)
-        self.assertIn("total_detections", stats)
-        self.assertIn("cooldown", stats)
+        assert stats["mode"] == "energy"
+        assert "keywords" in stats
+        assert stats["energy_threshold"] == 0.05
+        assert stats["sensitivity"] == 0.7
+        assert "total_processed_seconds" in stats
+        assert "total_detections" in stats
+        assert "cooldown" in stats
 
 
-class TestReset(unittest.TestCase):
+class TestReset:
     """Test reset functionality."""
 
     def test_reset_clears_state(self):
@@ -375,16 +375,16 @@ class TestReset(unittest.TestCase):
         )
         audio = np.ones(16000, dtype=np.float32) * 0.5
         detector.process_chunk(audio)
-        self.assertGreater(len(detector._history), 0)
+        assert len(detector._history) > 0
 
         detector.reset()
-        self.assertEqual(len(detector._history), 0)
-        self.assertEqual(len(detector._buffer), 0)
-        self.assertEqual(detector._last_detect_time, 0.0)
-        self.assertEqual(detector._total_processed, 0.0)
+        assert len(detector._history) == 0
+        assert len(detector._buffer) == 0
+        assert detector._last_detect_time == 0.0
+        assert detector._total_processed == 0.0
 
 
-class TestAudioTypeConversion(unittest.TestCase):
+class TestAudioTypeConversion:
     """Test automatic audio type conversion."""
 
     def test_int16_converted_to_float32(self):
@@ -395,8 +395,6 @@ class TestAudioTypeConversion(unittest.TestCase):
         audio = np.ones(16000, dtype=np.int16) * 16000
         event = detector.process_chunk(audio)
         # Should not crash - converted internally
-        self.assertIsNotNone(event)
+        assert event is not None
 
 
-if __name__ == "__main__":
-    unittest.main()
