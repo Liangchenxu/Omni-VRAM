@@ -25,9 +25,11 @@ Modules:
     - distributed_transcriber: Multi-GPU / multi-machine parallel transcription
     - monitoring: Production metrics, Prometheus export, Grafana dashboards
     - wake_word: Wake word / keyword detection (energy-based / Whisper-based)
+    - chinese: Chinese text processing (punctuation, normalization, tokenization, domain dicts)
+    - meeting_summarizer: AI-powered meeting summarization with topic/decision/action extraction
 """
 
-__version__ = "2.1.1"
+__version__ = "2.2.1"
 
 # CUDA extension (built from vram_hacker.cu)
 try:
@@ -58,6 +60,12 @@ from vram_core.voice_translator import VoiceTranslator
 from vram_core.audio_event_detection import AudioEventDetector
 from vram_core.plugin_manager import PluginManager, PluginBase, PluginInfo
 from vram_core.config import config, OmniConfig, setup_logging
+from vram_core.meeting_summarizer import MeetingSummarizer, MeetingMinutes, ActionItem, Decision, TopicSegment
+from vram_core.chinese.punctuation import PunctuationRestorer
+from vram_core.chinese.normalizer import TextNormalizer
+from vram_core.chinese.tokenizer import ChineseTokenizer as Tokenizer
+from vram_core.chinese.domain_dict import DomainDictionary as DomainDict
+DOMAIN_DICTS = {}
 
 # New modules (v1.0.0)
 from vram_core.speaker_verification import SpeakerVerifier, Voiceprint, VerificationResult
@@ -119,6 +127,18 @@ __all__ = [
     # Wake Word Detection
     "WakeWordDetector",
     "WakeWordEvent",
+    # Meeting Summarization
+    "MeetingSummarizer",
+    "MeetingMinutes",
+    "ActionItem",
+    "Decision",
+    "TopicSegment",
+    # Chinese Text Processing
+    "PunctuationRestorer",
+    "TextNormalizer",
+    "Tokenizer",
+    "DomainDict",
+    "DOMAIN_DICTS",
     # Configuration
     "config",
     "OmniConfig",

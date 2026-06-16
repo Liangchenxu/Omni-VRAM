@@ -7,17 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- **Unified test framework**: Migrated all 14 test files from `unittest` to `pytest` (fixtures, `pytest.raises`, `pytest.mark`)
-- **Unified logging**: Replaced all `print()` in `vram_core/` with `logging` module; no runtime `print()` remains in core library
-- **Async interface**: `WhisperBridge.async_transcribe()` — non-blocking transcription via `run_in_executor`
-- **WebSocket `/ws/stream` endpoint**: Browser-friendly real-time streaming accepting Float32 PCM binary frames (alongside existing `/stream` for Int16 PCM)
-
 ### Planned
 - CUDA 12.x optimized kernels
 - LLM function-calling integration (OpenAI / local models)
 - Real-time voice conversation with LLM (full duplex)
 - Streaming TTS with chunked output
+
+---
+
+## [2.2.0] - 2026-06-16
+
+### Added
+- **Unified test framework**: Migrated all 14+ test files from `unittest` to `pytest` (fixtures, `pytest.raises`, `pytest.mark`)
+- **Unified logging**: Replaced all `print()` in `vram_core/` with `logging` module; no runtime `print()` remains in core library
+- **Async transcription interface**: `WhisperBridge.async_transcribe()` — non-blocking transcription via `run_in_executor`
+- **Async thread-pool transcription**: `WhisperBridge.transcribe_async()` — thread pool based async transcription with optional callback, returns `Future`
+- **Long audio chunked transcription**: `WhisperBridge._transcribe_long_audio()` — auto-splits files >600s into overlapping chunks, merges segments with timestamp adjustment
+- **Async task queue** (`AsyncTaskQueue`): Thread-pool based batch transcription with pending/running/completed/failed lifecycle
+- **REST async endpoints**:
+  - `POST /transcribe/async` — Submit async transcription job, returns `task_id`
+  - `GET /task/{task_id}` — Query task status, progress, and result
+  - `DELETE /task/{task_id}` — Cancel a pending or running task
+- **Enhanced WebSocket `/ws/transcribe` endpoint**:
+  - Explicit `start`/`stop`/`config` action protocol
+  - Runtime config update (language, encoding) without reconnection
+  - Audio validation — rejects audio before `start`, returns clear error messages
+  - Session info and statistics on stop
+  - Configurable encoding: `pcm_s16le` (default) or `pcm_f32le`
+- **WebSocket test suite** (`tests/test_websocket.py`): 17 test cases covering:
+  - `/stream` endpoint (connection, audio transmission, stop command)
+  - `/ws/transcribe` endpoint (start/stop flow, config update, encoding variants, error handling)
+  - Async task queue (submission, cancellation, not-found)
+  - Async REST API (submit, status query, cancel)
+  - Health and root endpoint validation
+
+### Changed
+- Version bumped to 2.2.0 across setup.py, pyproject.toml, and vram_core/__init__.py
+- `/stream` WebSocket now sends `stopped` message with session info on disconnect/stop
+- Root endpoint (`GET /`) now includes all new async and WebSocket endpoints in its listing
 
 ---
 

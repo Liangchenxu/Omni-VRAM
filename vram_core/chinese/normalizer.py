@@ -92,19 +92,34 @@ class TextNormalizer:
         '日元': '日元', '韩元': '韩元',
     }
 
+    # Large amount units (万/亿)
+    _AMOUNT_UNITS = {
+        '万': 10000,
+        '萬': 10000,
+        '亿': 100000000,
+        '億': 100000000,
+    }
+
     def __init__(
         self,
         normalize_numbers: bool = True,
         normalize_dates: bool = True,
         normalize_units: bool = True,
         normalize_currency: bool = True,
+        normalize_phone: bool = True,
+        normalize_id_number: bool = True,
+        normalize_amounts: bool = True,
         fullwidth_to_halfwidth: bool = True,
     ):
         self.normalize_numbers = normalize_numbers
         self.normalize_dates = normalize_dates
         self.normalize_units = normalize_units
         self.normalize_currency = normalize_currency
+        self.normalize_phone = normalize_phone
+        self.normalize_id_number = normalize_id_number
+        self.normalize_amounts = normalize_amounts
         self.fullwidth_to_halfwidth = fullwidth_to_halfwidth
+        self._cache: dict = {}  # Simple LRU-style cache
 
     def normalize(self, text: str) -> str:
         """
@@ -121,6 +136,11 @@ class TextNormalizer:
 
         text = text.strip()
 
+        # Check cache for repeated strings
+        cache_key = text
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
         if self.fullwidth_to_halfwidth:
             text = self._fw_to_hw(text)
 
@@ -136,7 +156,25 @@ class TextNormalizer:
         if self.normalize_units:
             text = self._normalize_units(text)
 
+        if self.normalize_phone:
+            text = self._normalize_phone_numbers(text)
+
+        if self.normalize_id_number:
+            text = self._normalize_id_numbers(text)
+
+        if self.normalize_amounts:
+            text = self._normalize_amounts(text)
+
+        # Cache result (keep cache bounded)
+        if len(self._cache) > 4096:
+            self._cache.clear()
+        self._cache[cache_key] = text
+
         return text
+
+    def clear_cache(self):
+        """Clear normalization cache."""
+        self._cache.clear()
 
     def _fw_to_hw(self, text: str) -> str:
         """Convert full-width characters to half-width."""
@@ -394,6 +432,187 @@ class TextNormalizer:
             return match.group(0)
 
         return pattern.sub(replace_unit, text)
+
+
+    def _normalize_phone_numbers(self, text: str) -> str:
+        """
+        Normalize spoken phone numbers.
+
+        Handles:
+        - Chinese spoken digits → phone number format (一三八零零一二三四五六 → 13800123456)
+        - Common phone number patterns (11-digit mobile, 8-digit landline)
+        - Spoken with 四位 区号 patterns
+
+        Examples:
+            一三八零零一二三四五六 → 13800123456
+            零一零八八八八九九九九 → 010-88889999
+        """
+        # Pattern: sequences of spoken single digits that form phone numbers
+        # First, convert sequences of single Chinese digits (一三八零零一二三四五六)
+        digit_map = {
+            '零': '0', '〇': '0', '一': '1', '壹': '1',
+            '二': '2', '两': '2', '贰': '2',
+            '三': '3', '叁': '3',
+            '四': '4', '肆': '4',
+            '五': '5', '伍': '5',
+            '六': '6', '陆': '6',
+            '七': '7', '柒': '7',
+            '八': '8', '捌': '8',
+            '九': '9', '玖': '9',
+        }
+
+        # Match sequences of single-digit Chinese characters (11 digits = mobile, 7-8 digits = landline)
+        digit_chars = set(digit_map.keys())
+
+        result = []
+        i = 0
+        while i < len(text):
+            if text[i] in digit_chars:
+                # Collect consecutive single-digit characters
+                digit_str = ''
+                j = i
+                while j < len(text) and text[j] in digit_chars:
+                    digit_str += digit_map[text[j]]
+                    j += 1
+
+                # Check if this looks like a phone number
+                if len(digit_str) == 11 and digit_str[0] == '1':
+                    # Mobile number: 1xx-xxxx-xxxx
+                    result.append(f"{digit_str[:3]}-{digit_str[3:7]}-{digit_str[7:]}")
+                    i = j
+                elif 10 <= len(digit_str) <= 12 and digit_str[0] == '0':
+                    # Landline with area code: 0xx-xxxx-xxxx
+                    area_len = 3 if digit_str[1:3] in ('10',) else 4
+                    if area_len == 3 and len(digit_str) >= 10:
+                        result.append(f"{digit_str[:3]}-{digit_str[3:]}")
+                    elif area_len == 4 and len(digit_str) >= 11:
+                        result.append(f"{digit_str[:4]}-{digit_str[4:]}")
+                    else:
+                        result.append(digit_str)
+                    i = j
+                elif 7 <= len(digit_str) <= 8:
+                    # Landline without area code
+                    result.append(digit_str)
+                    i = j
+                else:
+                    # Not a phone number, keep original
+                    result.append(text[i])
+                    i += 1
+            else:
+                result.append(text[i])
+                i += 1
+
+        return ''.join(result)
+
+    def _normalize_id_numbers(self, text: str) -> str:
+        """
+        Normalize spoken ID card numbers (身份证号码).
+
+        Handles 18-digit Chinese ID numbers spoken digit by digit.
+        The spoken form uses single Chinese digits for each position.
+
+        Examples:
+            一二三四五六七八九零一二三四五六七八X → 123456789012345678X
+        """
+        digit_map = {
+            '零': '0', '〇': '0', '一': '1', '壹': '1',
+            '二': '2', '两': '2', '贰': '2',
+            '三': '3', '叁': '3',
+            '四': '4', '肆': '4',
+            '五': '5', '伍': '5',
+            '六': '6', '陆': '6',
+            '七': '7', '柒': '7',
+            '八': '8', '捌': '8',
+            '九': '9', '玖': '9',
+        }
+
+        # Context clues for ID numbers
+        id_contexts = ['身份证', '身份号', '证件号', 'ID', 'id号', '身份证号']
+
+        result = []
+        i = 0
+        while i < len(text):
+            # Check if there's an ID number context
+            found_context = False
+            for ctx in id_contexts:
+                if text[i:i + len(ctx)] == ctx:
+                    found_context = True
+                    result.append(ctx)
+                    i += len(ctx)
+                    # Skip optional 是/为/冒号
+                    while i < len(text) and text[i] in '是为：:号码':
+                        result.append(text[i])
+                        i += 1
+                    # Now collect the ID number digits
+                    id_digits = ''
+                    j = i
+                    while j < len(text) and (text[j] in digit_map or text[j] in 'xX'):
+                        if text[j] in 'xX':
+                            id_digits += 'X'
+                        else:
+                            id_digits += digit_map[text[j]]
+                        j += 1
+
+                    if len(id_digits) == 18:
+                        # Format: 6-8-3-1 (area-birthday-seq-check)
+                        result.append(f"{id_digits[:6]}-{id_digits[6:14]}-{id_digits[14:17]}-{id_digits[17]}")
+                        i = j
+                    else:
+                        result.append(id_digits)
+                        i = j
+                    break
+
+            if not found_context:
+                result.append(text[i])
+                i += 1
+
+        return ''.join(result)
+
+    def _normalize_amounts(self, text: str) -> str:
+        """
+        Normalize spoken large amounts with 万/亿.
+
+        Handles:
+        - 三万五千 → 35000
+        - 两点五亿 → 2.5亿
+        - 一百二十万 → 1200000
+
+        Examples:
+            三点五万 → 3.5万
+            两亿三千万 → 2.3亿
+            一百二十万 → 120万
+        """
+        # Pattern: number + 万/亿
+        amount_units = '|'.join(re.escape(k) for k in self._AMOUNT_UNITS.keys())
+        pattern = re.compile(
+            r'([零〇一二两三四五六七八九十百千万亿壹贰叁肆伍陆柒捌玖拾佰仟萬億点]+)'
+            r'(' + amount_units + r')'
+        )
+
+        def replace_amount(match):
+            num_str = match.group(1)
+            unit = match.group(2)
+            num = self._chinese_to_number(num_str)
+            if num is not None:
+                unit_value = self._AMOUNT_UNITS[unit]
+                # If the number already includes the unit multiplier, divide it out
+                # e.g., "三万五千" → chinese_to_number returns 35000, unit is 万(10000)
+                # We want to display "3.5万"
+                if unit_value <= abs(num) and unit_value > 1:
+                    # The number already includes the unit, format as X万/X亿
+                    actual = num / unit_value
+                    if actual == int(actual):
+                        return f"{int(actual)}{unit}"
+                    return f"{actual:.1f}{unit}".rstrip('0').rstrip('.')
+                else:
+                    # Simple case: number * unit
+                    total = num * unit_value
+                    if total == int(total):
+                        return f"{int(total)}"
+                    return f"{total}"
+            return match.group(0)
+
+        return pattern.sub(replace_amount, text)
 
 
 def normalize_chinese_text(text: str) -> str:

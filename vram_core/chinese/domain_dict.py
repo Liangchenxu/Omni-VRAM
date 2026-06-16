@@ -160,6 +160,59 @@ class DomainDictionary:
         DictEntry("著作权", ["做着权", "著做权"], "知识产权"),
         DictEntry("法人", ["发人"], "主体"),
         DictEntry("有限责任", ["有限责认"], "公司"),
+        DictEntry("刑事责任", ["行是责任"], "刑法"),
+        DictEntry("民事责任", ["民是责任"], "民法"),
+        DictEntry("行政处罚", ["行政出发"], "行政"),
+        DictEntry("强制执行", ["强制执形"], "执行"),
+        DictEntry("不动产", ["不动颤"], "物权"),
+        DictEntry("抵押权", ["低押权"], "担保"),
+    ]
+
+    # Education domain
+    _EDUCATION: List[DictEntry] = [
+        DictEntry("高考", ["高靠"], "考试"),
+        DictEntry("考研", ["考验"], "考试"),
+        DictEntry("研究生", ["研究身"], "学历"),
+        DictEntry("博士", ["搏士"], "学历"),
+        DictEntry("硕士", ["硕是"], "学历"),
+        DictEntry("学士", ["学是"], "学历"),
+        DictEntry("毕业论文", ["毕业轮文"], "学术"),
+        DictEntry("答辩", ["达辩"], "学术"),
+        DictEntry("选课", ["选可"], "教务"),
+        DictEntry("学分", ["雪分"], "教务"),
+        DictEntry("绩点", ["积点", "机点"], "教务"),
+        DictEntry("辅导员", ["辅导元"], "教职"),
+        DictEntry("副教授", ["副叫授"], "教职"),
+        DictEntry("院士", ["院是"], "学术"),
+        DictEntry("实验室", ["实验时"], "科研"),
+        DictEntry("课题", ["棵题"], "科研"),
+        DictEntry("学术论文", ["学术轮文"], "学术"),
+        DictEntry("综合素质", ["综合素治"], "评价"),
+        DictEntry("义务教育", ["义务教欲"], "政策"),
+    ]
+
+    # Government/Politics domain
+    _GOVERNMENT: List[DictEntry] = [
+        DictEntry("国务院", ["国务愿"], "政府"),
+        DictEntry("发改委", ["发改为"], "政府"),
+        DictEntry("财政部", ["财政步"], "政府"),
+        DictEntry("住建部", ["住建步"], "政府"),
+        DictEntry("公安部", ["公安步"], "政府"),
+        DictEntry("监察委", ["监查委"], "政府"),
+        DictEntry("人大", ["认大"], "机关"),
+        DictEntry("政协", ["正协"], "机关"),
+        DictEntry("党纪", ["当纪"], "党建"),
+        DictEntry("巡视", ["寻视"], "纪检"),
+        DictEntry("通报", ["通抱"], "政务"),
+        DictEntry("批示", ["批是"], "政务"),
+        DictEntry("基层治理", ["基层之理"], "治理"),
+        DictEntry("营商环境", ["营业环竟"], "经济"),
+        DictEntry("供给侧改革", ["供给策改革"], "政策"),
+        DictEntry("放管服", ["放管福"], "改革"),
+        DictEntry("乡村振兴", ["乡存振兴"], "政策"),
+        DictEntry("一带一路", ["一戴一路"], "政策"),
+        DictEntry("高质量发展", ["搞质量发展"], "政策"),
+        DictEntry("共同富裕", ["共同付裕"], "政策"),
     ]
 
     # Domain registry
@@ -168,6 +221,8 @@ class DomainDictionary:
         'tech': _TECH,
         'finance': _FINANCE,
         'legal': _LEGAL,
+        'education': _EDUCATION,
+        'government': _GOVERNMENT,
     }
 
     def __init__(
@@ -303,12 +358,28 @@ class DomainDictionary:
         """
         Load a custom dictionary from a file.
 
-        File format (one entry per line):
+        Supported formats:
+        - .txt: One entry per line:
             standard_term|alias1,alias2|category|weight
+        - .json: JSON array of objects:
+            [{"term": "...", "aliases": [...], "category": "...", "weight": 1.0}, ...]
+        - .csv: CSV with header (term,aliases,category,weight)
 
         Args:
             filepath: Path to dictionary file.
         """
+        import os
+        ext = os.path.splitext(filepath)[1].lower()
+
+        if ext == '.json':
+            self._load_json_dict(filepath)
+        elif ext == '.csv':
+            self._load_csv_dict(filepath)
+        else:
+            self._load_txt_dict(filepath)
+
+    def _load_txt_dict(self, filepath: str):
+        """Load pipe-delimited text dictionary."""
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 for line in f:
@@ -331,9 +402,130 @@ class DomainDictionary:
                             except ValueError:
                                 pass
                         self.add_term(term, aliases, category, weight)
-            logger.info("Loaded custom dictionary from %s", filepath)
+            logger.info("Loaded custom text dictionary from %s", filepath)
         except Exception as e:
-            logger.error("Failed to load custom dictionary: %s", e)
+            logger.error("Failed to load custom text dictionary: %s", e)
+
+    def _load_json_dict(self, filepath: str):
+        """Load JSON format dictionary."""
+        import json
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                for entry in data:
+                    if isinstance(entry, dict) and 'term' in entry:
+                        self.add_term(
+                            term=entry['term'],
+                            aliases=entry.get('aliases', []),
+                            category=entry.get('category', 'custom'),
+                            boost_weight=entry.get('weight', 1.0),
+                        )
+            logger.info("Loaded custom JSON dictionary from %s (%d entries)", filepath, len(data))
+        except Exception as e:
+            logger.error("Failed to load custom JSON dictionary: %s", e)
+
+    def _load_csv_dict(self, filepath: str):
+        """Load CSV format dictionary."""
+        import csv
+        try:
+            with open(filepath, 'r', encoding='utf-8', newline='') as f:
+                reader = csv.DictReader(f)
+                count = 0
+                for row in reader:
+                    if 'term' in row and row['term'].strip():
+                        aliases = []
+                        if row.get('aliases', '').strip():
+                            aliases = [a.strip() for a in row['aliases'].split(',')]
+                        self.add_term(
+                            term=row['term'].strip(),
+                            aliases=aliases,
+                            category=row.get('category', 'custom').strip() or 'custom',
+                            boost_weight=float(row.get('weight', 1.0) or 1.0),
+                        )
+                        count += 1
+            logger.info("Loaded custom CSV dictionary from %s (%d entries)", filepath, count)
+        except Exception as e:
+            logger.error("Failed to load custom CSV dictionary: %s", e)
+
+    def load_dicts_from_directory(self, directory: str):
+        """
+        Load all dictionary files from a directory.
+
+        Supports .txt, .json, .csv files.
+
+        Args:
+            directory: Path to directory containing dictionary files.
+        """
+        import os
+        if not os.path.isdir(directory):
+            logger.warning("Dictionary directory not found: %s", directory)
+            return
+
+        count = 0
+        for filename in sorted(os.listdir(directory)):
+            filepath = os.path.join(directory, filename)
+            if os.path.isfile(filepath):
+                ext = os.path.splitext(filename)[1].lower()
+                if ext in ('.txt', '.json', '.csv'):
+                    self.load_custom_dict(filepath)
+                    count += 1
+
+        logger.info("Loaded %d dictionary files from %s", count, directory)
+
+    def save_custom_dict(self, filepath: str):
+        """
+        Save current dictionary entries to a file.
+
+        Supports .json and .txt formats.
+
+        Args:
+            filepath: Path to save file.
+        """
+        import json
+        import os
+        ext = os.path.splitext(filepath)[1].lower()
+
+        try:
+            if ext == '.json':
+                data = [
+                    {
+                        'term': e.term,
+                        'aliases': e.aliases,
+                        'category': e.category,
+                        'weight': e.boost_weight,
+                    }
+                    for e in self._entries
+                ]
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+            else:
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write("# term|aliases|category|weight\n")
+                    for e in self._entries:
+                        aliases_str = ','.join(e.aliases)
+                        f.write(f"{e.term}|{aliases_str}|{e.category}|{e.boost_weight}\n")
+            logger.info("Saved dictionary to %s (%d entries)", filepath, len(self._entries))
+        except Exception as e:
+            logger.error("Failed to save dictionary: %s", e)
+
+    def get_stats(self) -> dict:
+        """
+        Get dictionary statistics.
+
+        Returns:
+            Dict with entry count, category count, etc.
+        """
+        categories: Dict[str, int] = {}
+        for entry in self._entries:
+            categories[entry.category] = categories.get(entry.category, 0) + 1
+
+        return {
+            'domain': self.domain,
+            'total_entries': len(self._entries),
+            'total_aliases': len(self._alias_map),
+            'categories': categories,
+        }
 
     def get_whisper_kwargs(self) -> dict:
         """

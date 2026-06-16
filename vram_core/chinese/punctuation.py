@@ -7,17 +7,26 @@ and optional model-based approaches.
 
 Handles: 。，！？、；：""''（）《》——…… etc.
 
+Supports:
+- Pause-based comma/period detection (using segment timestamps)
+- Tone-based question/exclamation marks
+- Long sentence auto-breaking
+- Clause boundary detection
+
 Usage:
     from vram_core.chinese.punctuation import PunctuationRestorer
 
     restorer = PunctuationRestorer()
     result = restorer.restore("你好 今天天气怎么样 我们去公园吧")
     # => "你好，今天天气怎么样？我们去公园吧。"
+
+    # With timing info for better punctuation
+    result = restorer.restore_with_timing(segments)
 """
 
 import re
 import logging
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +37,17 @@ class PunctuationRestorer:
 
     Uses a hybrid approach:
     1. Rule-based heuristics (fast, zero dependency)
-    2. Optional model-based restoration (higher accuracy)
+    2. Timing-based punctuation (comma/period from pause duration)
+    3. Tone-based punctuation (question/exclamation from intonation)
+    4. Long sentence auto-breaking
+    5. Optional model-based restoration (higher accuracy)
 
     Args:
         use_model: Whether to use a punctuation model (requires transformers).
         model_name: HuggingFace model name for punctuation restoration.
+        pause_comma_ms: Pause duration (ms) to insert a comma (default: 300ms).
+        pause_period_ms: Pause duration (ms) to insert a period (default: 800ms).
+        max_sentence_chars: Maximum characters before auto-breaking a sentence.
     """
 
     # Common sentence-ending patterns
@@ -53,6 +68,19 @@ class PunctuationRestorer:
         (r'谁$', '？'),
     ]
 
+    # Exclamation patterns
+    _EXCLAMATION_PATTERNS = [
+        r'[太真好厉害]$',        # 太好了！真棒！
+        r'太[棒好厉害漂亮]',
+        r'真[棒厉害不错]',
+        r'好[棒厉害啊]',
+        r'厉害',
+        r'漂亮',
+        r'精彩',
+        r'完美',
+        r'加油',
+    ]
+
     # Common clause boundary words (often preceded by a comma or period)
     _CLAUSE_BOUNDARIES = [
         '但是', '但', '可是', '然而', '不过',  # adversative
@@ -65,21 +93,43 @@ class PunctuationRestorer:
         '总之', '总的来说', '综上所述',          # summary
         '比如', '例如', '譬如',                  # example
         '首先', '其次', '最后',                  # enumeration
+        '同时', '与此同时',                      # simultaneous
+        '也就是说', '换句话说',                  # clarification
+        '不仅', '不但',                          # progressive
+        '除了', '除非',                          # exception
+        '不管', '无论',                          # unconditional
+        '既然',                                  # causal
+        '只要',                                  # condition
     ]
 
     # Words that typically start a new sentence
     _SENTENCE_STARTERS = [
         '你好', '请问', '谢谢', '对不起', '没关系',
         '欢迎', '恭喜', '再见',
+        '好的', '行', '没问题', '可以',
+    ]
+
+    # Question words that indicate interrogative sentences
+    _QUESTION_WORDS = [
+        '什么', '怎么', '为什么', '哪里', '哪儿', '谁',
+        '多少', '几', '哪个', '哪些', '如何', '是否',
+        '能否', '能不能', '会不会', '是不是', '有没有',
+        '对不对', '好不好', '行不行', '可以不可以',
     ]
 
     def __init__(
         self,
         use_model: bool = False,
         model_name: str = "oliverguhr/spacy-chinese-punctuation",
+        pause_comma_ms: float = 300,
+        pause_period_ms: float = 800,
+        max_sentence_chars: int = 80,
     ):
         self.use_model = use_model
         self.model_name = model_name
+        self.pause_comma_ms = pause_comma_ms
+        self.pause_period_ms = pause_period_ms
+        self.max_sentence_chars = max_sentence_chars
         self._model = None
         self._model_lock = None
 
@@ -112,6 +162,96 @@ class PunctuationRestorer:
                 logger.warning("Model punctuation failed, using rules: %s", e)
 
         return self._restore_rules(text)
+
+    def restore_with_timing(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Restore punctuation using timing information from ASR segments.
+
+        Uses pause duration between segments to determine comma vs period,
+        and segment duration to detect sentence boundaries.
+
+        Args:
+            segments: List of segment dicts with 'text', 'start', 'end' keys
+                      (times in seconds).
+
+        Returns:
+            Updated segments with punctuated text.
+        """
+        if not segments:
+            return segments
+
+        result = []
+        for i, seg in enumerate(segments):
+            new_seg = dict(seg)
+            text = seg.get('text', '').strip()
+            if not text:
+                result.append(new_seg)
+                continue
+
+            text = self._clean_input(text)
+
+            # Calculate pause before this segment
+            if i > 0:
+                prev_end = segments[i - 1].get('end', 0)
+                curr_start = seg.get('start', 0)
+                pause_ms = (curr_start - prev_end) * 1000
+            else:
+                pause_ms = 0
+
+            # Get segment duration
+            duration_s = seg.get('end', 0) - seg.get('start', 0)
+
+            # Determine punctuation based on timing
+            punct = self._determine_punctuation(text, pause_ms, duration_s)
+
+            # Clean text and apply punctuation
+            new_seg['text'] = text + punct
+            result.append(new_seg)
+
+        # Post-process: merge consecutive short segments, break long sentences
+        result = self._post_process_segments(result)
+
+        return result
+
+    def _determine_punctuation(self, text: str, pause_ms: float, duration_s: float) -> str:
+        """
+        Determine appropriate punctuation based on timing and content.
+
+        Args:
+            text: Segment text.
+            pause_ms: Pause duration before this segment (milliseconds).
+            duration_s: Duration of this segment (seconds).
+
+        Returns:
+            Punctuation character.
+        """
+        # Check question patterns first
+        for pattern, p in self._SENTENCE_END_PATTERNS:
+            if re.search(pattern, text):
+                return p
+
+        # Check question words
+        for qw in self._QUESTION_WORDS:
+            if qw in text:
+                return '？'
+
+        # Check exclamation patterns
+        for pattern in self._EXCLAMATION_PATTERNS:
+            if re.search(pattern, text):
+                return '！'
+
+        # Use timing to determine punctuation
+        if pause_ms >= self.pause_period_ms:
+            return '。'
+        elif pause_ms >= self.pause_comma_ms:
+            return '，'
+
+        # If segment is long (speech without pause), likely a period
+        if duration_s > 3.0:
+            return '。'
+
+        # Default: comma for continuation
+        return '，'
 
     def _clean_input(self, text: str) -> str:
         """Clean input text: remove existing punctuation, normalize spaces."""
@@ -159,6 +299,11 @@ class PunctuationRestorer:
                     split_punct = '，'
                     break
 
+            # Auto-break long sentences
+            if len(clause_text) >= self.max_sentence_chars:
+                should_split = True
+                split_punct = '。'
+
             if should_split and current_clause:
                 result_parts.append(''.join(current_clause))
                 current_clause = []
@@ -182,9 +327,21 @@ class PunctuationRestorer:
                     punct = p
                     break
 
-            # First person statements typically end with period
-            # Questions typically end with question mark
-            if '？' in punct:
+            # Check exclamation patterns
+            if punct == '。':
+                for pattern in self._EXCLAMATION_PATTERNS:
+                    if re.search(pattern, part):
+                        punct = '！'
+                        break
+
+            # Check question words
+            if punct == '。':
+                for qw in self._QUESTION_WORDS:
+                    if qw in part:
+                        punct = '？'
+                        break
+
+            if '？' in punct or '！' in punct:
                 final_parts.append(part + punct)
             elif i < len(result_parts) - 1:
                 final_parts.append(part + '，')
@@ -196,8 +353,70 @@ class PunctuationRestorer:
         # Clean up double punctuation
         result = re.sub(r'[，。]{2,}', '。', result)
         result = re.sub(r'[？]{2,}', '？', result)
+        result = re.sub(r'[！]{2,}', '！', result)
 
         return result
+
+    def _post_process_segments(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Post-process segments: merge short consecutive segments,
+        break long sentences.
+
+        Args:
+            segments: List of segment dicts.
+
+        Returns:
+            Processed segments.
+        """
+        if len(segments) <= 1:
+            return segments
+
+        result = []
+        for seg in segments:
+            text = seg.get('text', '')
+            # If text is very long, try to break it
+            if len(text) > self.max_sentence_chars:
+                # Split at clause boundaries
+                broken = self._break_long_sentence(text)
+                if len(broken) > 1:
+                    for part in broken:
+                        new_seg = dict(seg)
+                        new_seg['text'] = part
+                        result.append(new_seg)
+                    continue
+
+            result.append(seg)
+
+        return result
+
+    def _break_long_sentence(self, text: str) -> List[str]:
+        """
+        Break a long sentence into shorter ones at clause boundaries.
+
+        Args:
+            text: Long sentence text.
+
+        Returns:
+            List of shorter sentences.
+        """
+        # Try to split at clause boundary words
+        parts = [text]
+        for boundary in self._CLAUSE_BOUNDARIES:
+            new_parts = []
+            for part in parts:
+                if len(part) > self.max_sentence_chars and boundary in part:
+                    # Split at the first occurrence of the boundary
+                    idx = part.index(boundary)
+                    if idx > 10:  # Don't create tiny fragments
+                        new_parts.append(part[:idx])
+                        new_parts.append(part[idx:])
+                    else:
+                        new_parts.append(part)
+                else:
+                    new_parts.append(part)
+            parts = new_parts
+
+        return parts
 
     def _restore_model(self, text: str) -> str:
         """Model-based punctuation restoration."""

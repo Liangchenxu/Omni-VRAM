@@ -7,7 +7,7 @@
 ![Python: 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue.svg)
 [![Tests](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml/badge.svg)](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml)
 [![PyPI](https://img.shields.io/pypi/v/omni-vram.svg)](https://pypi.org/project/omni-vram/)
-[![Version](https://img.shields.io/badge/Version-2.1.0-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
+[![Version](https://img.shields.io/badge/Version-2.2.1-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
 
 [**English**](#english-documentation) | [**中文文档**](#chinese-documentation) | [**Docs**](docs/)
 
@@ -16,13 +16,13 @@
 <a id="english-documentation"></a>
 ## 📖 Overview
 
-**Omni-VRAM** is a production-ready **LLM voice interaction framework** that lets large language models hear and speak. Built on CUDA zero-copy technology, it provides **22 core modules** covering the entire audio AI pipeline — from speech recognition to synthesis, from single GPU to distributed clusters.
+**Omni-VRAM** is a production-ready **LLM voice interaction framework** that lets large language models hear and speak. Built on CUDA zero-copy technology, it provides **24 core modules** covering the entire audio AI pipeline — from speech recognition to synthesis, from single GPU to distributed clusters.
 
-> **v2.1.0**: Major release with 22 modules, Chinese NLP pipeline (normalizer/tokenizer/punctuation/dialect/domain dict), Whisper optimization (CUDA graph, INT8/FP16 quantization), real-time optimizer, and comprehensive integration tests.
+> **v2.2.1**: Major release with 24 modules, Chinese meeting transcription & summarization (punctuation/normalization/tokenization/domain dicts/speaker diarization), meeting summarizer with topic/decision/action extraction, real-time optimizer, Docker support, and 69+ integration tests.
 
 Traditional Python audio pipelines and PyTorch operations (e.g., `torch.cat` for KV-Cache) introduce significant overhead. Omni-VRAM implements **Operator Fusion** and **Zero-Copy Memory Injection** at the hardware level, enabling consumer-grade GPUs (RTX 30/40 series) to achieve sub-millisecond latency for real-time voice agents.
 
-### ✅ Core Features (22 Modules)
+### ✅ Core Features (24 Modules)
 
 | # | Module | Description |
 |---|--------|-------------|
@@ -48,6 +48,8 @@ Traditional Python audio pipelines and PyTorch operations (e.g., `torch.cat` for
 | 20 | **Whisper Bridge** | Modular Whisper integration with model management, CUDA bridge, and preprocessing |
 | 21 | **Audio Utilities** | Audio format detection, conversion, resampling, spectral computation |
 | 22 | **Configuration System** | YAML/JSON config files, environment variable overrides, hot-reload |
+| 23 | **Chinese Meeting Transcription** | Punctuation restoration, text normalization (numbers/currency/dates), Chinese tokenization, domain dictionaries (medical/tech/finance/legal/education/government), dialect support |
+| 24 | **Meeting Summarizer** | AI-powered meeting summarization with topic segmentation, decision detection, action item extraction, speaker contribution analysis, multi-format export (Markdown/JSON/Dict) |
 
 ### 📁 Project Structure
 
@@ -61,9 +63,12 @@ Omni-VRAM/
 ├── test_run.py                 # Quick integration test
 ├── run_tests.py                # Unified test runner
 ├── .env.example                # Configuration template
+├── Dockerfile                  # GPU Docker image (CUDA + audio libs)
+├── Dockerfile.cpu              # CPU-only Docker image
+├── docker-compose.yml          # One-click Docker deployment
 │
-├── vram_core/                  # Python core library (22 modules)
-│   ├── __init__.py             # Package exports (v2.0.0)
+├── vram_core/                  # Python core library (24 modules)
+│   ├── __init__.py             # Package exports (v2.2.1)
 │   ├── config.py               # Configuration management
 │   ├── utils.py                # General utility functions
 │   ├── audio_utils.py          # Audio format detection & conversion
@@ -71,10 +76,12 @@ Omni-VRAM/
 │   ├── whisper/                # Whisper sub-module (v2.0)
 │   │   ├── bridge.py           # CUDA Whisper bridge
 │   │   ├── models.py           # Model management
+│   │   ├── optimizer.py        # Whisper CUDA Graph & quantization optimizer
 │   │   ├── preprocessor.py     # Audio preprocessor
 │   │   └── result.py           # Transcription result dataclass
 │   ├── stream_processor.py     # Real-time stream processor + VAD
 │   ├── streaming_asr.py        # Real-time streaming ASR engine
+│   ├── realtime_optimizer.py   # Real-time latency optimizer (auto-tune chunk size)
 │   ├── api_server.py           # FastAPI REST + WebSocket API
 │   ├── noise_reduction.py      # STFT spectral subtraction noise reduction
 │   ├── emotion_recognition.py  # Acoustic feature-based emotion recognition
@@ -89,20 +96,29 @@ Omni-VRAM/
 │   ├── distributed_transcriber.py # Multi-GPU/machine parallel transcription
 │   ├── monitoring.py           # GPU monitoring & Prometheus metrics
 │   ├── grpc_server.py          # gRPC + HTTP REST dual-protocol server
-│   └── plugin_manager.py       # Plugin discovery, loading & lifecycle
+│   ├── plugin_manager.py       # Plugin discovery, loading & lifecycle
+│   ├── meeting_summarizer.py   # AI meeting summarization (topics/decisions/actions)
+│   └── chinese/                # Chinese NLP pipeline
+│       ├── punctuation.py      # Chinese punctuation restoration
+│       ├── normalizer.py       # Text normalization (numbers/currency/dates)
+│       ├── tokenizer.py        # Chinese word segmentation
+│       ├── domain_dict.py      # Domain dictionaries (medical/tech/finance/legal)
+│       └── dialect.py          # Cantonese dialect normalization
 │
 ├── examples/                   # Example applications
 │   ├── realtime_voice_assistant.py  # Real-time voice assistant
 │   ├── meeting_transcriber.py       # Meeting transcription & summary
 │   ├── voice_chat_bot.py            # Multi-turn voice chat bot
 │   ├── benchmark_suite.py           # Performance benchmark suite
+│   ├── benchmark_v3.py              # v2.1.0 benchmark comparison
 │   ├── api_demo.py                  # API server demo client
 │   ├── test_whisper_local.py        # Whisper local test script
 │   └── test_emotion.py              # Emotion recognition test
 │
-├── tests/                      # Unit tests (13 test files)
+├── tests/                      # Unit & integration tests (19 test files, 69+ test cases)
 │   ├── test_audio_utils.py
 │   ├── test_emotion_recognition.py
+│   ├── test_meeting_transcription.py # Meeting transcription & summarization tests
 │   ├── test_monitoring.py
 │   ├── test_multi_gpu.py
 │   ├── test_noise_reduction.py
@@ -113,7 +129,12 @@ Omni-VRAM/
 │   ├── test_tts_engine.py
 │   ├── test_vram_optimizer.py
 │   ├── test_wake_word.py
-│   └── test_whisper_bridge.py
+│   ├── test_whisper_bridge.py
+│   ├── test_whisper_optimizer.py    # Whisper optimization tests
+│   ├── test_integration.py          # Full pipeline integration tests
+│   ├── test_websocket.py            # WebSocket API tests
+│   ├── test_realtime_latency.py     # Real-time latency tests
+│   └── benchmark_comparison.py      # Benchmark comparison
 │
 └── docs/                       # Documentation
     ├── installation.md
@@ -122,6 +143,28 @@ Omni-VRAM/
     ├── examples.md
     ├── faq.md
     └── blog_omni_vram.md
+```
+
+### 🐳 Docker Deployment
+
+```bash
+# GPU version (with CUDA support)
+docker build -t omni-vram:gpu .
+docker run --gpus all -p 8000:8000 omni-vram:gpu
+
+# CPU-only version (no CUDA required)
+docker build -f Dockerfile.cpu -t omni-vram:cpu .
+docker run -p 8000:8000 omni-vram:cpu
+
+# One-click with docker-compose
+docker-compose up -d
+
+# Run with environment variables
+docker run --gpus all \
+  -e WHISPER_MODEL=base \
+  -e DEFAULT_LANGUAGE=zh \
+  -p 8000:8000 \
+  omni-vram:gpu
 ```
 
 ### 🧪 Examples
@@ -293,6 +336,41 @@ asr.on_final_result = lambda result: print(f"[Final] {result.text}")
 asr.start()
 audio_chunk = np.random.randn(3200).astype(np.float32)  # from microphone
 asr.feed(audio_chunk)
+```
+
+### Chinese Meeting Transcription
+
+```python
+from vram_core.chinese.punctuation import PunctuationRestorer
+from vram_core.chinese.normalizer import TextNormalizer
+from vram_core.chinese.tokenizer import ChineseTokenizer
+from vram_core.meeting_summarizer import MeetingSummarizer
+
+# Restore punctuation to raw ASR text
+restorer = PunctuationRestorer()
+text = restorer.restore("今天下午三点开会讨论项目进度请各位准时参加")
+# → "今天下午三点开会讨论项目进度，请各位准时参加。"
+
+# Normalize numbers, currency, dates
+normalizer = TextNormalizer()
+text = normalizer.normalize("一共花了3500元购买了50台设备")
+# → "一共花了三千五百元购买了五十台设备"
+
+# Chinese word segmentation
+tokenizer = ChineseTokenizer()
+tokens = tokenizer.tokenize("语音识别技术发展迅速")
+# → ["语音识别", "技术", "发展", "迅速"]
+
+# Meeting summarization
+summarizer = MeetingSummarizer()
+minutes = summarizer.summarize(transcript_text, speaker_segments=segments)
+print(minutes.summary)
+for topic in minutes.topics:
+    print(f"Topic: {topic.title}")
+for decision in minutes.decisions:
+    print(f"Decision: {decision.content}")
+for action in minutes.action_items:
+    print(f"Action: {action.description} → {action.assignee}")
 ```
 
 ### Speaker Diarization
@@ -553,6 +631,7 @@ vram_core/
 ├── speaker_*.py         # Speaker diarization & verification
 ├── wake_word.py         # Wake word detection
 ├── streaming_asr.py     # Real-time ASR engine
+├── meeting_summarizer.py # Meeting summarization
 ├── whisper/             # Whisper integration subpackage
 ├── chinese/             # Chinese NLP pipeline subpackage
 ├── plugin_manager.py    # Plugin system with hooks
@@ -575,13 +654,13 @@ You are free to use, modify, and distribute this software in both commercial and
 <a id="chinese-documentation"></a>
 ## 📖 简介 (Overview)
 
-**Omni-VRAM** 是一个生产级的 **LLM 语音交互框架**，让大模型长出耳朵和嘴巴。基于 CUDA 零拷贝技术构建，提供 **22 个核心模块**，覆盖完整的语音 AI 管线——从语音识别到语音合成，从单 GPU 到分布式集群。
+**Omni-VRAM** 是一个生产级的 **LLM 语音交互框架**，让大模型长出耳朵和嘴巴。基于 CUDA 零拷贝技术构建，提供 **24 个核心模块**，覆盖完整的语音 AI 管线——从语音识别到语音合成，从单 GPU 到分布式集群。
 
-> **v2.1.0**：重大版本更新，新增中文 NLP 管线（分词/标点/方言/领域词典）、Whisper 优化（CUDA Graph、INT8/FP16 量化）、实时优化器、完整集成测试等。
+> **v2.2.1**：重大版本更新，新增中文会议转写与摘要（标点恢复/文本规范化/分词/领域词典/说话人分离）、会议摘要生成（议题/决策/行动项提取）、实时优化器、Docker 部署、69+ 集成测试等。
 
 传统的 Python 音频处理管线和 PyTorch 操作（如 `torch.cat` 更新 KV-Cache）会引入严重的性能开销。Omni-VRAM 在硬件层面实现**算子融合**和**零拷贝内存注入**，使消费级显卡（RTX 30/40 系列）能够为实时语音助手提供亚毫秒级延迟。
 
-### ✅ 核心功能（22 个模块）
+### ✅ 核心功能（24 个模块）
 
 | # | 模块 | 说明 |
 |---|------|------|
@@ -607,6 +686,8 @@ You are free to use, modify, and distribute this software in both commercial and
 | 20 | **Whisper 桥接** | 模块化 Whisper 集成，含模型管理、CUDA 桥接和预处理 |
 | 21 | **音频工具集** | 音频格式检测、转换、重采样、频谱计算 |
 | 22 | **配置系统** | YAML/JSON 配置文件，环境变量覆盖，热重载 |
+| 23 | **中文会议转写** | 标点恢复、文本规范化（数字/货币/日期）、中文分词、领域词典（医疗/科技/金融/法律/教育/政府）、方言支持 |
+| 24 | **会议摘要生成** | AI 会议摘要：议题分段、决策检测、行动项提取、说话人贡献分析、多格式导出（Markdown/JSON/Dict） |
 
 ### 📁 目录结构
 
@@ -620,9 +701,12 @@ Omni-VRAM/
 ├── test_run.py                 # 快速集成测试
 ├── run_tests.py                # 统一测试运行器
 ├── .env.example                # 配置模板
+├── Dockerfile                  # GPU Docker 镜像（CUDA + 音频库）
+├── Dockerfile.cpu              # 纯 CPU Docker 镜像
+├── docker-compose.yml          # 一键 Docker 部署
 │
-├── vram_core/                  # Python 核心库（22 个模块）
-│   ├── __init__.py             # 包导出（v2.1.0）
+├── vram_core/                  # Python 核心库（24 个模块）
+│   ├── __init__.py             # 包导出（v2.2.1）
 │   ├── config.py               # 配置管理
 │   ├── utils.py                # 通用工具函数
 │   ├── audio_utils.py          # 音频格式检测与转换
@@ -630,10 +714,12 @@ Omni-VRAM/
 │   ├── whisper/                # Whisper 子模块（v2.0）
 │   │   ├── bridge.py           # CUDA Whisper 桥接
 │   │   ├── models.py           # 模型管理
+│   │   ├── optimizer.py        # Whisper CUDA Graph & 量化优化器
 │   │   ├── preprocessor.py     # 音频预处理器
 │   │   └── result.py           # 转录结果数据结构
 │   ├── stream_processor.py     # 实时流处理器 + VAD
 │   ├── streaming_asr.py        # 实时流式语音识别引擎
+│   ├── realtime_optimizer.py   # 实时延迟优化器（自动调整分块大小）
 │   ├── api_server.py           # FastAPI REST + WebSocket API
 │   ├── noise_reduction.py      # STFT 谱减法噪声消除
 │   ├── emotion_recognition.py  # 声学特征情绪识别
@@ -648,20 +734,29 @@ Omni-VRAM/
 │   ├── distributed_transcriber.py # 多GPU/多机并行转写
 │   ├── monitoring.py           # GPU 监控与 Prometheus 指标
 │   ├── grpc_server.py          # gRPC + HTTP REST 双协议服务器
-│   └── plugin_manager.py       # 插件发现、加载与生命周期管理
+│   ├── plugin_manager.py       # 插件发现、加载与生命周期管理
+│   ├── meeting_summarizer.py   # AI 会议摘要（议题/决策/行动项）
+│   └── chinese/                # 中文 NLP 管线
+│       ├── punctuation.py      # 中文标点恢复
+│       ├── normalizer.py       # 文本规范化（数字/货币/日期）
+│       ├── tokenizer.py        # 中文分词
+│       ├── domain_dict.py      # 领域词典（医疗/科技/金融/法律）
+│       └── dialect.py          # 粤语方言规范化
 │
 ├── examples/                   # 示例应用
 │   ├── realtime_voice_assistant.py  # 实时语音助手
 │   ├── meeting_transcriber.py       # 会议录音转写与摘要
 │   ├── voice_chat_bot.py            # 多轮语音对话机器人
 │   ├── benchmark_suite.py           # 性能基准测试套件
+│   ├── benchmark_v3.py              # v2.1.0 基准对比
 │   ├── api_demo.py                  # API 服务端示例客户端
 │   ├── test_whisper_local.py        # Whisper 本地测试
 │   └── test_emotion.py              # 情绪识别测试
 │
-├── tests/                      # 单元测试（13 个测试文件）
+├── tests/                      # 单元 & 集成测试（19 个测试文件，69+ 测试用例）
 │   ├── test_audio_utils.py
 │   ├── test_emotion_recognition.py
+│   ├── test_meeting_transcription.py # 会议转写与摘要测试
 │   ├── test_monitoring.py
 │   ├── test_multi_gpu.py
 │   ├── test_noise_reduction.py
@@ -672,7 +767,12 @@ Omni-VRAM/
 │   ├── test_tts_engine.py
 │   ├── test_vram_optimizer.py
 │   ├── test_wake_word.py
-│   └── test_whisper_bridge.py
+│   ├── test_whisper_bridge.py
+│   ├── test_whisper_optimizer.py    # Whisper 优化测试
+│   ├── test_integration.py          # 全管线集成测试
+│   ├── test_websocket.py            # WebSocket API 测试
+│   ├── test_realtime_latency.py     # 实时延迟测试
+│   └── benchmark_comparison.py      # 基准对比
 │
 └── docs/                       # 文档
     ├── installation.md
@@ -681,6 +781,28 @@ Omni-VRAM/
     ├── examples.md
     ├── faq.md
     └── blog_omni_vram.md
+```
+
+### 🐳 Docker 部署
+
+```bash
+# GPU 版本（含 CUDA 支持）
+docker build -t omni-vram:gpu .
+docker run --gpus all -p 8000:8000 omni-vram:gpu
+
+# 纯 CPU 版本（无需 CUDA）
+docker build -f Dockerfile.cpu -t omni-vram:cpu .
+docker run -p 8000:8000 omni-vram:cpu
+
+# 一键 docker-compose 部署
+docker-compose up -d
+
+# 带环境变量运行
+docker run --gpus all \
+  -e WHISPER_MODEL=base \
+  -e DEFAULT_LANGUAGE=zh \
+  -p 8000:8000 \
+  omni-vram:gpu
 ```
 
 ### 🧪 示例目录
@@ -823,6 +945,41 @@ processor.on_transcription = lambda result: print(f"转写结果: {result.text}"
 # 喂入音频分块（如来自麦克风）
 audio_chunk = np.random.randn(1600).astype(np.float32)
 processor.feed(audio_chunk)
+```
+
+### 中文会议转写
+
+```python
+from vram_core.chinese.punctuation import PunctuationRestorer
+from vram_core.chinese.normalizer import TextNormalizer
+from vram_core.chinese.tokenizer import ChineseTokenizer
+from vram_core.meeting_summarizer import MeetingSummarizer
+
+# 为 ASR 原始文本恢复标点
+restorer = PunctuationRestorer()
+text = restorer.restore("今天下午三点开会讨论项目进度请各位准时参加")
+# → "今天下午三点开会讨论项目进度，请各位准时参加。"
+
+# 规范化数字、货币、日期
+normalizer = TextNormalizer()
+text = normalizer.normalize("一共花了3500元购买了50台设备")
+# → "一共花了三千五百元购买了五十台设备"
+
+# 中文分词
+tokenizer = ChineseTokenizer()
+tokens = tokenizer.tokenize("语音识别技术发展迅速")
+# → ["语音识别", "技术", "发展", "迅速"]
+
+# 会议摘要生成
+summarizer = MeetingSummarizer()
+minutes = summarizer.summarize(transcript_text, speaker_segments=segments)
+print(minutes.summary)
+for topic in minutes.topics:
+    print(f"议题: {topic.title}")
+for decision in minutes.decisions:
+    print(f"决策: {decision.content}")
+for action in minutes.action_items:
+    print(f"行动: {action.description} → {action.assignee}")
 ```
 
 ### 说话人分离

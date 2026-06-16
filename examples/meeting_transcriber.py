@@ -7,7 +7,7 @@ Real-time meeting transcription with automatic speaker segmentation,
 live display, and export to SRT + plain text transcript.
 
 Pipeline:
-    Microphone 锟?VAD 锟?Whisper Transcription 锟?Speaker Segmentation 锟?Export
+    Microphone -> VAD -> Whisper Transcription -> Speaker Segmentation -> Export
 
 Features:
     - Real-time transcription with live display
@@ -15,6 +15,8 @@ Features:
     - Automatic paragraph grouping by speaker turns
     - Export SRT subtitle file with speaker labels
     - Export plain text transcript with timestamps
+    - Chinese text post-processing (punctuation restoration, normalization)
+    - AI-powered meeting summarization with action items & decisions
 
 Usage:
     # Basic usage (Chinese, 60 seconds)
@@ -26,12 +28,20 @@ Usage:
     # Custom output prefix and model
     python examples/meeting_transcriber.py --output-prefix weekly_standup --model medium
 
+    # Disable Chinese post-processing
+    python examples/meeting_transcriber.py --no-postprocess
+
+    # Disable meeting summarization
+    python examples/meeting_transcriber.py --no-summary
+
     # Verbose debug mode
     python examples/meeting_transcriber.py --verbose
 
 Output files:
-    {prefix}.srt  锟?SRT subtitle file with speaker labels and timestamps
-    {prefix}.txt  锟?Plain text transcript with timestamps and speaker labels
+    {prefix}.srt         SRT subtitle file with speaker labels and timestamps
+    {prefix}.txt         Plain text transcript with timestamps and speaker labels
+    {prefix}_minutes.md  Meeting minutes in Markdown format
+    {prefix}_minutes.json Meeting data in JSON format
 
 Requirements:
     pip install pyaudio numpy pydub python-dotenv
@@ -54,6 +64,7 @@ import argparse
 import sys
 import time
 import signal
+import json
 import logging
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -68,9 +79,12 @@ import numpy as np
 from vram_core.whisper_bridge import WhisperBridge, WhisperBackend, WhisperResult
 from vram_core.stream_processor import StreamProcessor, StreamConfig, StreamState
 from vram_core.config import setup_logging
+from vram_core.meeting_summarizer import MeetingSummarizer
+from vram_core.chinese.normalizer import TextNormalizer
+from vram_core.chinese.punctuation import PunctuationRestorer
 
 
-# 鈹€鈹€ Data Structures 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# ── Data Structures ──────────────────────────────────────────────
 
 @dataclass
 class Utterance:
@@ -169,7 +183,7 @@ class MeetingRecord:
         return f"{secs}s"
 
 
-# 鈹€鈹€ Speaker Diarization 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# ── Speaker Diarization ─────────────────────────────────────────
 
 class SimpleSpeakerDiarizer:
     """
@@ -235,7 +249,7 @@ class SimpleSpeakerDiarizer:
         return self._speaker_map[idx]
 
 
-# 鈹€鈹€ Command Line Arguments 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# ── Command Line Arguments ──────────────────────────────────────
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
@@ -307,6 +321,18 @@ def parse_args() -> argparse.Namespace:
         help="Use CPU for whisper instead of CUDA",
     )
     parser.add_argument(
+        "--no-postprocess",
+        action="store_true",
+        default=False,
+        help="Disable Chinese text post-processing (punctuation, normalization)",
+    )
+    parser.add_argument(
+        "--no-summary",
+        action="store_true",
+        default=False,
+        help="Disable meeting summarization",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         default=False,
@@ -316,7 +342,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-# 鈹€鈹€ Audio Device Helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# ── Audio Device Helpers ────────────────────────────────────────
 
 def list_audio_devices():
     """List all available audio input devices."""
@@ -344,7 +370,7 @@ def list_audio_devices():
     pa.terminate()
 
 
-# 鈹€鈹€ Main 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# ── Main ────────────────────────────────────────────────────────
 
 def main():
     """Main entry point for meeting transcriber."""
@@ -381,12 +407,14 @@ def main():
     # Output file paths
     srt_path = f"{args.output_prefix}.srt"
     txt_path = f"{args.output_prefix}.txt"
+    md_path = f"{args.output_prefix}_minutes.md"
+    json_path = f"{args.output_prefix}_minutes.json"
 
     # Print header
     print()
-    print("锟? + "锟? * 58 + "锟?)
-    print("锟? + "  vram_core: Meeting Transcriber".center(58) + "锟?)
-    print("锟? + "锟? * 58 + "锟?)
+    print("=" * 60)
+    print("  vram_core: Meeting Transcriber".center(58))
+    print("=" * 60)
     print()
     print(f"  Duration:          {args.duration}s")
     print(f"  Language:          {args.language}")
@@ -394,11 +422,27 @@ def main():
     print(f"  Device:            {'CPU' if args.device_cpu else 'CUDA'}")
     print(f"  VAD Threshold:     {args.vad_threshold}")
     print(f"  Silence Threshold: {args.silence_threshold}s")
+    print(f"  Post-processing:   {'disabled' if args.no_postprocess else 'enabled'}")
+    print(f"  Summarization:     {'disabled' if args.no_summary else 'enabled'}")
     print(f"  Output SRT:        {srt_path}")
     print(f"  Output TXT:        {txt_path}")
+    if not args.no_summary:
+        print(f"  Output Minutes:    {md_path}")
+        print(f"  Output JSON:       {json_path}")
     print()
 
-    # 鈹€鈹€ Step 1: Initialize Whisper 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # Initialize Chinese text post-processors
+    punctuation_restorer = None
+    text_normalizer = None
+    if not args.no_postprocess and args.language == 'zh':
+        try:
+            punctuation_restorer = PunctuationRestorer()
+            text_normalizer = TextNormalizer()
+            logger.info("Chinese text post-processors initialized")
+        except Exception as e:
+            logger.warning(f"Failed to initialize post-processors: {e}")
+
+    # ── Step 1: Initialize Whisper ──────────────────────────────
     print("  [1/4] Initializing Whisper...")
     try:
         whisper = WhisperBridge(
@@ -408,13 +452,13 @@ def main():
             device="cpu" if args.device_cpu else "cuda",
         )
         status = whisper.get_status()
-        print(f"  锟?Whisper ready (backend: {status['backend']})")
+        print(f"  ✓ Whisper ready (backend: {status['backend']})")
     except Exception as e:
-        print(f"  锟?Failed to initialize Whisper: {e}")
+        print(f"  ✗ Failed to initialize Whisper: {e}")
         print("  See README.md for whisper.cpp setup instructions.")
         sys.exit(1)
 
-    # 鈹€鈹€ Step 2: Initialize Stream Processor 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # ── Step 2: Initialize Stream Processor ─────────────────────
     print("  [2/4] Initializing stream processor...")
     stream_config = StreamConfig(
         sample_rate=16000,
@@ -425,9 +469,9 @@ def main():
         config=stream_config,
         whisper_bridge=whisper,
     )
-    print(f"  锟?Stream processor ready")
+    print(f"  ✓ Stream processor ready")
 
-    # 鈹€鈹€ Step 3: Initialize Speaker Diarizer 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # ── Step 3: Initialize Speaker Diarizer ─────────────────────
     print("  [3/4] Initializing speaker diarizer...")
     diarizer = SimpleSpeakerDiarizer(
         silence_threshold_s=args.silence_threshold,
@@ -435,9 +479,9 @@ def main():
         speaker_prefix="Speaker",
     )
     meeting = MeetingRecord(language=args.language)
-    print(f"  锟?Speaker diarizer ready (silence gap: {args.silence_threshold}s)")
+    print(f"  ✓ Speaker diarizer ready (silence gap: {args.silence_threshold}s)")
 
-    # 鈹€鈹€ Step 4: Initialize Microphone 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # ── Step 4: Initialize Microphone ───────────────────────────
     print("  [4/4] Initializing microphone...")
     pa = pyaudio.PyAudio()
 
@@ -453,25 +497,25 @@ def main():
         device_name = "default"
         if args.device is not None:
             device_name = pa.get_device_info_by_index(args.device)["name"]
-        print(f"  锟?Microphone ready ({device_name})")
+        print(f"  ✓ Microphone ready ({device_name})")
     except Exception as e:
-        print(f"  锟?Failed to open microphone: {e}")
+        print(f"  ✗ Failed to open microphone: {e}")
         pa.terminate()
         sys.exit(1)
 
-    # 鈹€鈹€ Meeting Start Time 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # ── Meeting Start Time ──────────────────────────────────────
     meeting_start = time.time()
     meeting.start_time = meeting_start
     utterance_count = 0
 
-    # 鈹€鈹€ Callbacks 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # ── Callbacks ───────────────────────────────────────────────
 
     def on_speech_start():
         """Called when VAD detects speech start."""
         elapsed = time.time() - meeting_start
         minutes = int(elapsed // 60)
         seconds = int(elapsed % 60)
-        print(f"\r  馃帳 [{minutes:02d}:{seconds:02d}] Speech detected...", end="", flush=True)
+        print(f"\r  🎤 [{minutes:02d}:{seconds:02d}] Speech detected...", end="", flush=True)
 
     def on_transcription(result: WhisperResult):
         """Called when transcription completes for a speech segment."""
@@ -484,13 +528,22 @@ def main():
         speech_start = max(0, elapsed - speech_duration)
         speech_end = elapsed
 
+        # Post-process Chinese text
+        text = result.text.strip()
+        if punctuation_restorer is not None and text_normalizer is not None:
+            try:
+                text = punctuation_restorer.restore(text)
+                text = text_normalizer.normalize(text)
+            except Exception as e:
+                logger.debug(f"Post-processing failed: {e}")
+
         # Assign speaker
         speaker = diarizer.assign_speaker(speech_start, speech_end)
 
         # Create utterance record
         utterance = Utterance(
             speaker=speaker,
-            text=result.text.strip(),
+            text=text,
             start_time=speech_start,
             end_time=speech_end,
             confidence=result.confidence,
@@ -505,26 +558,26 @@ def main():
         timestamp = f"{minutes:02d}:{seconds:02d}"
 
         print()
-        print(f"  鈹屸攢 {speaker} [{timestamp}] 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€")
-        print(f"  锟?{result.text.strip()}")
-        print(f"  鈹斺攢 confidence: {result.confidence:.2f} 鈹€鈹€")
+        print(f"  ┌─ {speaker} [{timestamp}] ────────────────────────")
+        print(f"  │ {text}")
+        print(f"  └─ confidence: {result.confidence:.2f} ────────")
 
     def on_event(event):
         """Handle stream events."""
         if event.event_type == "error":
-            print(f"\n  锟?Error: {event.data}")
+            print(f"\n  ✗ Error: {event.data}")
 
     # Wire up callbacks
     processor.on_speech_start = on_speech_start
     processor.on_transcription = on_transcription
     processor.on_event = on_event
 
-    # 鈹€鈹€ Main Recording Loop 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # ── Main Recording Loop ─────────────────────────────────────
     print()
-    print("  鈺斺晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲锟?)
-    print("  锟? 馃帣锟? Meeting in progress... Speak normally.           锟?)
-    print("  锟? Press Ctrl+C to end the meeting.                     锟?)
-    print("  鈺氣晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲锟?)
+    print("  ┌──────────────────────────────────────────────────────┐")
+    print("  │ 🎙️  Meeting in progress... Speak normally.           │")
+    print("  │ Press Ctrl+C to end the meeting.                     │")
+    print("  └──────────────────────────────────────────────────────┘")
     print()
 
     running = True
@@ -532,7 +585,7 @@ def main():
     def signal_handler(sig, frame):
         nonlocal running
         running = False
-        print("\n\n  鈿狅笍  Ending meeting...")
+        print("\n\n  ⚠️  Ending meeting...")
 
     signal.signal(signal.SIGINT, signal_handler)
 
@@ -540,7 +593,7 @@ def main():
         while running:
             elapsed = time.time() - meeting_start
             if elapsed >= args.duration:
-                print(f"\n  鈴憋笍  Duration limit reached ({args.duration}s)")
+                print(f"\n  ⏱️  Duration limit reached ({args.duration}s)")
                 break
 
             try:
@@ -559,60 +612,111 @@ def main():
             time.sleep(0.001)
 
     except Exception as e:
-        print(f"\n  锟?Unexpected error: {e}")
+        print(f"\n  ✗ Unexpected error: {e}")
         logger.exception("Unexpected error in main loop")
 
     finally:
-        # 鈹€鈹€ Cleanup 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+        # ── Cleanup ─────────────────────────────────────────────
         mic_stream.stop_stream()
         mic_stream.close()
         pa.terminate()
 
         meeting.end_time = time.time() - meeting_start
 
-    # 鈹€鈹€ Export Results 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # ── Export Results ──────────────────────────────────────────
     print()
     print("  Exporting results...")
 
     if not meeting.utterances:
-        print("  鈿狅笍  No speech detected during the meeting.")
+        print("  ⚠️  No speech detected during the meeting.")
         print("  Try lowering --vad-threshold or speaking closer to the microphone.")
     else:
         # Export SRT
         try:
             meeting.export_srt(srt_path)
-            print(f"  锟?SRT exported: {srt_path}")
+            print(f"  ✓ SRT exported: {srt_path}")
         except Exception as e:
-            print(f"  锟?SRT export failed: {e}")
+            print(f"  ✗ SRT export failed: {e}")
             logger.exception("SRT export error")
 
         # Export TXT
         try:
             meeting.export_txt(txt_path)
-            print(f"  锟?TXT exported: {txt_path}")
+            print(f"  ✓ TXT exported: {txt_path}")
         except Exception as e:
-            print(f"  锟?TXT export failed: {e}")
+            print(f"  ✗ TXT export failed: {e}")
             logger.exception("TXT export error")
 
-    # 鈹€鈹€ Meeting Summary 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+        # Generate meeting summary (unless disabled)
+        if not args.no_summary:
+            try:
+                summarizer = MeetingSummarizer(language=args.language)
+                # Convert Utterances to segment dicts for summarizer
+                seg_dicts = [
+                    {
+                        'text': u.text,
+                        'start_time': u.start_time,
+                        'end_time': u.end_time,
+                        'speaker': u.speaker,
+                    }
+                    for u in meeting.utterances
+                ]
+                minutes = summarizer.summarize(
+                    seg_dicts,
+                    title=f"Meeting - {args.output_prefix}",
+                )
+
+                # Export meeting minutes as markdown
+                with open(md_path, "w", encoding="utf-8") as f:
+                    f.write(minutes.to_markdown())
+                print(f"  ✓ Meeting minutes: {md_path}")
+
+                # Export meeting minutes as JSON
+                with open(json_path, "w", encoding="utf-8") as f:
+                    json.dump(minutes.to_dict(), f, ensure_ascii=False, indent=2)
+                print(f"  ✓ Meeting JSON:    {json_path}")
+
+                # Print summary to console
+                print()
+                print("  Meeting Summary:")
+                print(f"    Topics:     {len(minutes.topics)}")
+                print(f"    Decisions:  {len(minutes.decisions)}")
+                print(f"    Actions:    {len(minutes.action_items)}")
+                print(f"    Speakers:   {minutes.participant_count}")
+                if minutes.action_items:
+                    print()
+                    print("    Action Items:")
+                    for i, item in enumerate(minutes.action_items[:5], 1):
+                        assignee = item.assignee or "TBD"
+                        content_preview = item.content[:50] + "..." if len(item.content) > 50 else item.content
+                        print(f"      {i}. [{assignee}] {content_preview}")
+
+            except Exception as e:
+                print(f"  ✗ Summary generation failed: {e}")
+                logger.exception("Meeting summary error")
+
+    # ── Meeting Summary Stats ───────────────────────────────────
     stats = processor.stats
     total_time = time.time() - meeting_start
 
     print()
-    print("锟? + "锟? * 58 + "锟?)
-    print("锟? + "  Meeting Summary".center(58) + "锟?)
-    print("锟? + "锟? * 58 + "锟?)
-    print(f"锟? Duration:           {MeetingRecord._format_duration(total_time):<36}锟?)
-    print(f"锟? Utterances:         {utterance_count:<36}锟?)
-    print(f"锟? Speakers detected:  {meeting.speaker_count:<36}锟?)
-    print(f"锟? Speech time:        {MeetingRecord._format_duration(stats['total_speech_duration_s']):<36}锟?)
-    print(f"锟? Chunks processed:   {stats['chunks_processed']:<36}锟?)
+    print("=" * 60)
+    print("  Meeting Summary".center(58))
+    print("=" * 60)
+    print(f"  Duration:           {MeetingRecord._format_duration(total_time)}")
+    print(f"  Utterances:         {utterance_count}")
+    print(f"  Speakers detected:  {meeting.speaker_count}")
+    print(f"  Speech time:        {MeetingRecord._format_duration(stats['total_speech_duration_s'])}")
+    print(f"  Chunks processed:   {stats['chunks_processed']}")
     if stats['speech_segments'] > 0:
-        print(f"锟? Avg latency:        {stats['avg_latency_ms']:.0f}ms{' ' * 31}锟?)
-    print("锟? + "锟? * 58 + "锟?)
-    print(f"锟? SRT: {srt_path:<51}锟?)
-    print(f"锟? TXT: {txt_path:<51}锟?)
-    print("锟? + "锟? * 58 + "锟?)
+        print(f"  Avg latency:        {stats['avg_latency_ms']:.0f}ms")
+    print("-" * 60)
+    print(f"  SRT: {srt_path}")
+    print(f"  TXT: {txt_path}")
+    if not args.no_summary and meeting.utterances:
+        print(f"  Minutes: {md_path}")
+        print(f"  JSON:    {json_path}")
+    print("=" * 60)
     print()
 
 

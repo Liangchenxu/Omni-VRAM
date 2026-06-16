@@ -72,14 +72,43 @@ class ChineseTokenizer:
     # POS patterns for keyword importance
     _IMPORTANT_POS = {'n', 'nr', 'ns', 'nt', 'nz', 'v', 'vn', 'eng', 'j'}
 
+    # Proper noun patterns (common company/org names, brand names)
+    _PROPER_NOUNS = {
+        'OpenAI', 'Google', 'Microsoft', 'Apple', 'Meta', 'Amazon',
+        'NVIDIA', 'Intel', 'AMD', 'Tesla', 'Baidu', 'Alibaba', 'Tencent',
+        'ByteDance', 'Huawei', 'Xiaomi', 'JD', 'Meituan', 'Didi',
+        'ChatGPT', 'GPT-4', 'GPT-3', 'Claude', 'Gemini', 'Llama',
+        'PyTorch', 'TensorFlow', 'Kubernetes', 'Docker', 'Linux',
+        'Python', 'JavaScript', 'TypeScript', 'Rust', 'Go', 'Java',
+        'React', 'Vue', 'Angular', 'Node.js', 'Redis', 'MongoDB',
+        'PostgreSQL', 'MySQL', 'Elasticsearch', 'Kafka', 'Spark',
+        'GitHub', 'GitLab', 'Slack', 'Zoom', 'Teams',
+    }
+
+    # Number unit patterns for proper tokenization
+    _NUMBER_UNITS = {
+        '年', '月', '日', '号', '时', '分', '秒',
+        '元', '美元', '欧元', '英镑', '日元',
+        '米', '公里', '千米', '厘米', '毫米',
+        '公斤', '千克', '克', '吨',
+        '升', '毫升',
+        '度', '摄氏度', '华氏度',
+        '倍', '次', '个', '只', '条', '张', '本', '台', '套',
+        '万', '亿', '%',
+    }
+
     def __init__(
         self,
         use_jieba: bool = True,
         domain_dicts: Optional[List[str]] = None,
+        custom_proper_nouns: Optional[Set[str]] = None,
     ):
         self._use_jieba = use_jieba
         self._jieba = None
         self._jieba_loaded = False
+        self._proper_nouns: Set[str] = set(self._PROPER_NOUNS)
+        if custom_proper_nouns:
+            self._proper_nouns.update(custom_proper_nouns)
 
         if use_jieba:
             self._try_load_jieba()
@@ -187,33 +216,131 @@ class ChineseTokenizer:
 
         Splits on:
         - Chinese character sequences (grouped)
-        - Non-Chinese word sequences (grouped)
+        - English/number sequences (grouped, with special handling)
         - Punctuation (individual)
+        - Proper nouns (kept as single tokens)
         """
         tokens = []
+        # First pass: find proper nouns and mark them
+        remaining = text
+        offset = 0
+
+        # Sort proper nouns by length (longest first)
+        sorted_nouns = sorted(self._proper_nouns, key=len, reverse=True)
+
+        # Build pattern for proper nouns
+        if sorted_nouns:
+            noun_pattern = '|'.join(re.escape(n) for n in sorted_nouns)
+            noun_regex = re.compile(f'({noun_pattern})', re.IGNORECASE)
+        else:
+            noun_regex = None
+
+        # Main tokenization pattern
         pattern = re.compile(
-            r'([\u4e00-\u9fff]+)'    # Chinese characters
-            r'|([a-zA-Z0-9]+)'       # English/number words
-            r'|(\s+)'                 # Whitespace
-            r'|(.)'                   # Other (punctuation etc.)
+            r'([\u4e00-\u9fff]+)'           # Chinese characters
+            r'|([a-zA-Z][a-zA-Z0-9.+-]*)'   # English words (may contain digits, dots, etc.)
+            r'|([0-9]+(?:\.[0-9]+)?)'        # Numbers (including decimals)
+            r'|(\s+)'                         # Whitespace
+            r'|(.)'                           # Other (punctuation etc.)
         )
 
-        offset = 0
+        # First, try to identify proper nouns in the text
+        proper_noun_spans = []
+        if noun_regex:
+            for m in noun_regex.finditer(text):
+                proper_noun_spans.append((m.start(), m.end(), m.group(0)))
+
+        # Tokenize with proper noun awareness
+        used_spans: Set[Tuple[int, int]] = set()
+
+        for pn_start, pn_end, pn_text in proper_noun_spans:
+            if (pn_start, pn_end) not in used_spans:
+                is_chinese = bool(re.search(r'[\u4e00-\u9fff]', pn_text))
+                tokens.append(Token(
+                    word=pn_text,
+                    start=pn_start,
+                    end=pn_end,
+                    pos='nz',  # proper noun POS
+                    is_chinese=is_chinese,
+                ))
+                used_spans.add((pn_start, pn_end))
+
         for match in pattern.finditer(text):
-            word = match.group(0)
             start = match.start()
             end = match.end()
+
+            # Skip if this span is part of a proper noun
+            if any(s <= start < e for s, e, _ in proper_noun_spans):
+                continue
+
+            word = match.group(0)
             is_chinese = bool(match.group(1))
+            is_number = bool(match.group(3))
+
+            pos = 'm' if is_number else 'x'  # 'm' = numeral in Chinese POS
 
             tokens.append(Token(
                 word=word,
                 start=start,
                 end=end,
-                pos='x',
+                pos=pos,
                 is_chinese=is_chinese,
             ))
 
+        # Sort tokens by position
+        tokens.sort(key=lambda t: t.start)
         return tokens
+
+    def tokenize_numbers_with_units(self, text: str) -> List[str]:
+        """
+        Tokenize text keeping number+unit combinations as single tokens.
+
+        Examples:
+            "35000元" → ["35000元"]
+            "2024年1月" → ["2024年", "1月"]
+            "100公里" → ["100公里"]
+
+        Args:
+            text: Input text.
+
+        Returns:
+            List of token strings.
+        """
+        unit_pattern = '|'.join(re.escape(u) for u in self._NUMBER_UNITS)
+        pattern = re.compile(
+            r'(\d+(?:\.\d+)?(?:' + unit_pattern + r'))'  # number+unit
+            r'|(\d+(?:\.\d+)?)'                           # standalone number
+            r'|([\u4e00-\u9fff]+)'                        # Chinese text
+            r'|([a-zA-Z][a-zA-Z0-9.+-]*)'                # English words
+            r'|(.)'                                       # other
+        )
+
+        result = []
+        for match in pattern.finditer(text):
+            result.append(match.group(0))
+        return result
+
+    def add_proper_noun(self, noun: str):
+        """
+        Add a proper noun to the recognition set.
+
+        Args:
+            noun: Proper noun to add (e.g., company name, person name).
+        """
+        self._proper_nouns.add(noun)
+        # Also add to jieba if available
+        if self._jieba_loaded:
+            self._jieba.add_word(noun, freq=10000, pos='nz')
+
+    def add_proper_nouns(self, nouns: List[str]):
+        """
+        Add multiple proper nouns.
+
+        Args:
+            nouns: List of proper nouns.
+        """
+        for noun in nouns:
+            self.add_proper_noun(noun)
 
     def extract_keywords(self, text: str, top_k: int = 10) -> List[str]:
         """

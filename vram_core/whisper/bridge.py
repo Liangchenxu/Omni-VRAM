@@ -54,7 +54,6 @@ class TranscriptionJob:
             return self.end_time - self.start_time
         return None
 
-
 class WhisperBridge:
     """
     Main Whisper transcription bridge supporting multiple backends.
@@ -124,6 +123,7 @@ class WhisperBridge:
         self._fw_model_compute_type: Optional[str] = None
         self._jobs: Dict[str, TranscriptionJob] = {}
         self._cache_dir = Path.home() / ".cache" / "vram_core" / "models"
+        self._thread_pool = __import__("concurrent.futures").futures.ThreadPoolExecutor(max_workers=4)
 
         self._validate_language()
 
@@ -1141,3 +1141,112 @@ class WhisperBridge:
             info["name"] = model_name
             return info
         return None
+
+    def _transcribe_long_audio(
+        self,
+        file_path: str,
+        language: Optional[str] = None,
+        task: str = "transcribe",
+        chunk_duration: int = 30,
+        overlap: float = 2.0,
+        **kwargs,
+    ) -> WhisperResult:
+        """
+        Transcribe long audio files by splitting into chunks.
+
+        Args:
+            file_path:       Path to audio file.
+            language:        Override language.
+            task:            'transcribe' or 'translate'.
+            chunk_duration:  Duration of each chunk in seconds.
+            overlap:         Overlap between chunks in seconds.
+            **kwargs:        Backend-specific options.
+
+        Returns:
+            WhisperResult with combined transcription.
+        """
+        audio_array = self.audio_preprocessor.load_audio_pydub(file_path)
+        sample_rate = 16000
+        chunk_samples = chunk_duration * sample_rate
+        overlap_samples = int(overlap * sample_rate)
+
+        total_samples = len(audio_array)
+        segments = []
+        full_text_parts = []
+        offset = 0.0
+
+        pos = 0
+        while pos < total_samples:
+            end = min(pos + chunk_samples, total_samples)
+            chunk = audio_array[pos:end]
+
+            if len(chunk) < sample_rate:
+                break
+
+            chunk_result = self.transcribe(
+                chunk, sample_rate=sample_rate,
+                language=language, task=task, **kwargs,
+            )
+
+            for seg in chunk_result.segments:
+                adj_seg = seg.copy()
+                adj_seg["start"] = round(seg["start"] + offset, 3)
+                adj_seg["end"] = round(seg["end"] + offset, 3)
+                segments.append(adj_seg)
+
+            full_text_parts.append(chunk_result.text)
+
+            chunk_len = len(chunk) / sample_rate
+            offset += chunk_len - overlap
+            pos += chunk_samples - overlap_samples
+
+        full_text = " ".join(full_text_parts)
+        confidences = [s["confidence"] for s in segments if s.get("confidence") is not None]
+        confidence = sum(confidences) / len(confidences) if confidences else 0.0
+
+        return WhisperResult(
+            text=full_text,
+            language=language or self.language or "unknown",
+            confidence=confidence,
+            segments=segments,
+            audio_duration=total_samples / sample_rate,
+        )
+
+    def transcribe_async(
+        self,
+        audio: Union[str, Path, np.ndarray, bytes],
+        sample_rate: int = 16000,
+        language: Optional[str] = None,
+        callback: Optional[Callable] = None,
+        **kwargs,
+    ) -> Any:
+        """
+        Submit an async transcription task to a thread pool.
+
+        Args:
+            audio:      File path, numpy array, or bytes.
+            sample_rate: Sample rate.
+            language:   Override language.
+            callback:   Optional callback(WhisperResult) called on completion.
+            **kwargs:   Additional arguments passed to transcribe().
+
+        Returns:
+            concurrent.futures.Future that resolves to WhisperResult.
+        """
+        import concurrent.futures
+
+        future = self._thread_pool.submit(
+            self.transcribe, audio, sample_rate=sample_rate,
+            language=language, **kwargs
+        )
+
+        if callback:
+            def _on_done(fut):
+                try:
+                    result = fut.result()
+                    callback(result)
+                except Exception as e:
+                    logger.error(f"Async transcribe callback error: {e}")
+            future.add_done_callback(_on_done)
+
+        return future

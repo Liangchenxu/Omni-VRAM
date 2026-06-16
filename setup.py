@@ -99,12 +99,16 @@ else:
     ext_modules = []
     cmdclass = {}
 
+# Read README
+with open('README.MD', encoding='utf-8') as _f:
+    _long_description = _f.read()
+
 # Package Setup
 setup(
     name='vram_core',
-    version='2.1.1',
+    version='2.2.1',
     description='vram_core - LLM Voice Interaction Framework',
-    long_description=open('README.MD', encoding='utf-8').read(),
+    long_description=_long_description,
     long_description_content_type='text/markdown',
     author='Liangchenxu',
     url='https://github.com/Liangchenxu/vram_core',
