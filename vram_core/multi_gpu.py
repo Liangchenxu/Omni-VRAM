@@ -51,7 +51,7 @@ try:
     import pynvml
     pynvml.nvmlInit()
     _NVML_AVAILABLE = True
-except Exception:
+except (ImportError, OSError, RuntimeError):
     _NVML_AVAILABLE = False
 
 
@@ -143,7 +143,7 @@ class MultiGPUManager:
         if _NVML_AVAILABLE:
             try:
                 return pynvml.nvmlDeviceGetCount()
-            except Exception:
+            except (pynvml.NVMLError, RuntimeError):
                 pass
         return 0
 
@@ -189,7 +189,7 @@ class MultiGPUManager:
                 free_memory_mb=free_mem,
                 used_memory_mb=used_mem,
             )
-        except Exception as e:
+        except (RuntimeError, OSError) as e:
             logger.warning("Failed to get GPU %d info via torch: %s", device_id, e)
             return GPUInfo(
                 device_id=device_id, name="Error",
@@ -212,13 +212,13 @@ class MultiGPUManager:
             try:
                 util_info = pynvml.nvmlDeviceGetUtilizationRates(handle)
                 util = float(util_info.gpu)
-            except Exception:
+            except (pynvml.NVMLError, RuntimeError):
                 pass
 
             temp = 0
             try:
                 temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
-            except Exception:
+            except (pynvml.NVMLError, RuntimeError):
                 pass
 
             return GPUInfo(
@@ -227,7 +227,7 @@ class MultiGPUManager:
                 used_memory_mb=used_mb, utilization_pct=util,
                 temperature_c=temp,
             )
-        except Exception as e:
+        except (pynvml.NVMLError, RuntimeError, OSError) as e:
             logger.warning("Failed to get GPU %d info via NVML: %s", device_id, e)
             return GPUInfo(
                 device_id=device_id, name="Error",
@@ -355,7 +355,7 @@ class MultiGPUManager:
                 try:
                     result = future.result()
                     results.append(result)
-                except Exception as e:
+                except (RuntimeError, OSError, ValueError) as e:
                     logger.error("Transcription failed for %s: %s", filename, e)
                     errors.append({"filename": filename, "error": str(e)})
 
@@ -369,7 +369,7 @@ class MultiGPUManager:
         transcribe_fn, device_id: int, filename: str,
         audio: np.ndarray, sample_rate: int,
     ) -> Dict:
-        """Run a single transcription task."""
+        """Run a single transcription task with OOM fallback."""
         start_time = time.time()
         try:
             result = transcribe_fn(device_id, audio, sample_rate)
@@ -381,7 +381,28 @@ class MultiGPUManager:
                 "elapsed_seconds": elapsed,
                 "status": "success",
             }
-        except Exception as e:
+        except torch.cuda.OutOfMemoryError:
+            logger.warning("GPU %d OOM for %s, clearing cache and retrying on CPU", device_id, filename)
+            if _TORCH_AVAILABLE:
+                torch.cuda.empty_cache()
+            try:
+                result = transcribe_fn(-1, audio, sample_rate)
+                return {
+                    "filename": filename,
+                    "device_id": -1,
+                    "result": result,
+                    "elapsed_seconds": time.time() - start_time,
+                    "status": "fallback_cpu",
+                }
+            except (RuntimeError, OSError) as cpu_err:
+                return {
+                    "filename": filename,
+                    "device_id": device_id,
+                    "error": f"OOM then CPU fallback failed: {cpu_err}",
+                    "elapsed_seconds": time.time() - start_time,
+                    "status": "error",
+                }
+        except (RuntimeError, OSError, ValueError) as e:
             return {
                 "filename": filename,
                 "device_id": device_id,
@@ -392,13 +413,20 @@ class MultiGPUManager:
 
     @staticmethod
     def _default_transcribe(device_id: int, audio: np.ndarray, sample_rate: int) -> str:
-        """Default transcription using WhisperBridge."""
+        """Default transcription using WhisperBridge with OOM fallback."""
         try:
-            from vram_core.whisper_bridge import WhisperBridge
+            from vram_core.whisper import WhisperBridge
             bridge = WhisperBridge(device_id=device_id if device_id >= 0 else None)
             result = bridge.transcribe(audio, sample_rate=sample_rate)
             return result.text if hasattr(result, 'text') else str(result)
-        except Exception as e:
+        except torch.cuda.OutOfMemoryError:
+            logger.warning("GPU %d OOM in default transcription, falling back to CPU", device_id)
+            if _TORCH_AVAILABLE:
+                torch.cuda.empty_cache()
+            bridge = WhisperBridge(device="cpu")
+            result = bridge.transcribe(audio, sample_rate=sample_rate)
+            return result.text if hasattr(result, 'text') else str(result)
+        except (RuntimeError, OSError) as e:
             logger.error("Default transcription failed on GPU %d: %s", device_id, e)
             raise
 

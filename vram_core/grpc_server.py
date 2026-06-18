@@ -64,7 +64,7 @@ class OmniVRAMServicer:
 
     def _ensure_whisper(self):
         if self._whisper is None:
-            from vram_core.whisper_bridge import WhisperBridge
+            from vram_core.whisper import WhisperBridge
             self._whisper = WhisperBridge()
             logger.info("Whisper loaded for gRPC")
 

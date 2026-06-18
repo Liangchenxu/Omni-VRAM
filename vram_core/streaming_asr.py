@@ -33,7 +33,7 @@ import numpy as np
 from typing import Optional, Callable, Any
 from dataclasses import dataclass, field
 
-from vram_core.whisper_bridge import WhisperBridge, WhisperBackend, WhisperResult
+from vram_core.whisper import WhisperBridge, WhisperBackend, WhisperResult
 
 logger = logging.getLogger(__name__)
 
@@ -175,11 +175,11 @@ class StreamASR:
         self._stop_event = threading.Event()
 
         logger.info(
-            f"StreamASR initialized: "
-            f"window={self.config.window_duration}s, "
-            f"step={self.config.step_duration}s, "
-            f"model={self.config.whisper_model}, "
-            f"language={self.config.language}"
+            "StreamASR initialized: window=%ss, step=%ss, model=%s, language=%s",
+            self.config.window_duration,
+            self.config.step_duration,
+            self.config.whisper_model,
+            self.config.language,
         )
 
     @property
@@ -270,6 +270,12 @@ class StreamASR:
         with self._buffer_lock:
             self._buffer = np.concatenate([self._buffer, audio_chunk])
 
+            # Cap buffer to max 2x window to prevent unbounded growth
+            max_samples = self._window_samples * 2
+            if len(self._buffer) > max_samples:
+                # Keep only the most recent max_samples
+                self._buffer = self._buffer[-max_samples:]
+
         self._last_feed_time = time.time()
 
     def _processing_loop(self):
@@ -294,8 +300,8 @@ class StreamASR:
                 # Run recognition on sliding window
                 self._recognize_step()
 
-            except Exception as e:
-                logger.error(f"Error in processing loop: {e}", exc_info=True)
+            except (RuntimeError, OSError, ValueError) as e:
+                logger.error("Error in processing loop: %s", e, exc_info=True)
                 # Continue processing despite errors
                 continue
 
@@ -323,8 +329,8 @@ class StreamASR:
                 audio_window,
                 sample_rate=self.config.sample_rate,
             )
-        except Exception as e:
-            logger.warning(f"Recognition failed: {e}")
+        except (RuntimeError, OSError, ValueError) as e:
+            logger.warning("Recognition failed: %s", e)
             return
 
         if not result.text.strip():
@@ -345,10 +351,10 @@ class StreamASR:
             if self.on_partial_result:
                 try:
                     self.on_partial_result(new_text)
-                except Exception as e:
-                    logger.error(f"Error in on_partial_result callback: {e}")
+                except (RuntimeError, ValueError) as e:
+                    logger.error("Error in on_partial_result callback: %s", e)
 
-            logger.debug(f"Partial: {new_text}")
+            logger.debug("Partial: %s", new_text)
 
         # Check if we should finalize (long enough segment)
         with self._buffer_lock:
@@ -400,8 +406,8 @@ class StreamASR:
                 audio_data,
                 sample_rate=self.config.sample_rate,
             )
-        except Exception as e:
-            logger.warning(f"Final recognition failed: {e}")
+        except (RuntimeError, OSError, ValueError) as e:
+            logger.warning("Final recognition failed: %s", e)
             return None
 
         if not result.text.strip():
@@ -423,12 +429,12 @@ class StreamASR:
         if self.on_final_result:
             try:
                 self.on_final_result(asr_result)
-            except Exception as e:
-                logger.error(f"Error in on_final_result callback: {e}")
+            except (RuntimeError, ValueError) as e:
+                logger.error("Error in on_final_result callback: %s", e)
 
         logger.info(
-            f"Final segment [{segment_start:.1f}s - {self._total_audio_time:.1f}s]: "
-            f"{asr_result.text[:80]}..."
+            "Final segment [%.1fs - %.1fs]: %s...",
+            segment_start, self._total_audio_time, asr_result.text[:80],
         )
 
         return asr_result

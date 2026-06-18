@@ -352,15 +352,18 @@ class StreamProcessor:
         return self._stats.copy()
 
     def _set_state(self, new_state: StreamState) -> None:
-        """Update state and notify callback."""
-        if self._state != new_state:
-            self._state = new_state
-            logger.debug("State -> %s", new_state.value)
-            if self.on_state_change:
-                try:
-                    self.on_state_change(new_state)
-                except Exception as e:
-                    logger.warning("State change callback error: %s", e)
+        """Update state and notify callback. Thread-safe."""
+        with self._lock:
+            if self._state != new_state:
+                self._state = new_state
+                logger.debug("State -> %s", new_state.value)
+                callback = self.on_state_change
+        # Invoke callback outside lock to avoid deadlocks
+        if callback:
+            try:
+                callback(new_state)
+            except Exception as e:
+                logger.warning("State change callback error: %s", e)
 
     def _emit_event(self, event: StreamEvent) -> None:
         """Emit event to callback."""
@@ -534,14 +537,16 @@ class StreamProcessor:
             )
 
             processing_time = time.time() - start_time
-            self._stats["total_processing_time_s"] += processing_time
 
-            # Update average latency
-            n = self._stats["speech_segments"]
-            avg = self._stats["avg_latency_ms"]
-            self._stats["avg_latency_ms"] = (
-                (avg * (n - 1) + processing_time * 1000) / n
-            )
+            with self._lock:
+                self._stats["total_processing_time_s"] += processing_time
+
+                # Update average latency
+                n = self._stats["speech_segments"]
+                avg = self._stats["avg_latency_ms"]
+                self._stats["avg_latency_ms"] = (
+                    (avg * (n - 1) + processing_time * 1000) / n
+                )
 
             logger.info(
                 "Transcription: '%s' (%.2fs processing)",
@@ -569,10 +574,11 @@ class StreamProcessor:
             self._reset_speech_state()
 
     def _reset_speech_state(self) -> None:
-        """Reset speech accumulation state."""
-        self._speech_chunks = []
-        self._total_speech_samples = 0
-        self._silence_counter = 0
+        """Reset speech accumulation state. Thread-safe."""
+        with self._lock:
+            self._speech_chunks = []
+            self._total_speech_samples = 0
+            self._silence_counter = 0
         self._set_state(StreamState.IDLE)
 
     # ------------------------------------------------------------------

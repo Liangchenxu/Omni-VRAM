@@ -1,17 +1,19 @@
-# Omni-VRAM v1.0.0 - Dependencies
+# Omni-VRAM v2.5.0 - Dependencies
 # ================================
 #
 # Install core dependencies:
 #   pip install -r requirements.txt
 #
-# Install with optional dependencies:
-#   pip install -r requirements.txt -r requirements-optional.txt
+# Install with optional feature groups:
+#   pip install -e ".[audio,realtime,tts,translation,grpc]"
 
 # ---- Core Dependencies ----
 numpy>=1.20.0
 pydub>=0.25.1
 python-dotenv>=1.0.0
 soundfile>=0.10.0
+requests>=2.28.0
+scipy>=1.7.0
 
 # ---- Audio Processing ----
 sounddevice>=0.4.6
@@ -26,6 +28,7 @@ faster-whisper>=0.10.0
 # whisper-cpp-python>=0.1.0
 
 # ---- CUDA / PyTorch (required for CUDA extension) ----
+# Install separately: pip install torch --index-url https://download.pytorch.org/whl/cu121
 torch>=1.9.0
 
 # ---- Web API Server (optional) ----
@@ -36,5 +39,8 @@ torch>=1.9.0
 # ---- Gradio Web Demo (optional) ----
 # gradio>=4.0.0
 
-# ---- Scientific Computing ----
-scipy>=1.7.0
+# ---- Monitoring (optional) ----
+# psutil>=5.9.0
+
+# ---- Development ----
+# pytest>=7.0.0

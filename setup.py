@@ -10,7 +10,7 @@ import os
 import sys
 from setuptools import setup, find_packages
 
-# CUDA Extension (optional) 鈥?skip if CUDA unavailable or version mismatch
+# CUDA Extension (optional) — skip if CUDA unavailable or version mismatch
 ext_modules = []
 cmdclass = {}
 
@@ -59,12 +59,22 @@ def _check_cuda_available():
                     parts = line.split("release")
                     if len(parts) >= 2:
                         nvcc_version = parts[1].strip().split(",")[0].strip().split(" ")[0]
-                        torch_major_minor = ".".join(torch_cuda.split(".")[:2])
-                        nvcc_major_minor = ".".join(nvcc_version.split(".")[:2])
+                        torch_parts = torch_cuda.split(".")
+                        nvcc_parts = nvcc_version.split(".")
+                        torch_major_minor = ".".join(torch_parts[:2])
+                        nvcc_major_minor = ".".join(nvcc_parts[:2])
                         if torch_major_minor != nvcc_major_minor:
                             return False, (
                                 f"CUDA version mismatch: system nvcc={nvcc_version}, "
-                                f"PyTorch CUDA={torch_cuda}. They must match."
+                                f"PyTorch CUDA={torch_cuda}. They must match (major.minor)."
+                            )
+                        # Also check patch version — warn if different (ABI may break)
+                        torch_patch = int(torch_parts[2]) if len(torch_parts) > 2 else 0
+                        nvcc_patch = int(nvcc_parts[2]) if len(nvcc_parts) > 2 else 0
+                        if abs(torch_patch - nvcc_patch) > 2:
+                            return False, (
+                                f"CUDA patch version mismatch: system nvcc={nvcc_version}, "
+                                f"PyTorch CUDA={torch_cuda}. Patch difference > 2 may cause ABI issues."
                             )
         except Exception as e:
             return False, f"Failed to check nvcc version: {e}"
@@ -100,13 +110,13 @@ else:
     cmdclass = {}
 
 # Read README
-with open('README.MD', encoding='utf-8') as _f:
+with open('README.md', encoding='utf-8') as _f:
     _long_description = _f.read()
 
 # Package Setup
 setup(
     name='vram_core',
-    version='2.2.1',
+    version='2.5.0',
     description='vram_core - LLM Voice Interaction Framework',
     long_description=_long_description,
     long_description_content_type='text/markdown',
@@ -115,7 +125,7 @@ setup(
     license='MIT',
 
     # Python packages
-    packages=['vram_core', 'vram_core.whisper', 'vram_core.chinese'],
+    packages=['vram_core', 'vram_core.whisper', 'vram_core.chinese', 'vram_core.backends'],
     python_requires='>=3.8',
 
     # Dependencies
@@ -123,6 +133,7 @@ setup(
         'numpy>=1.20.0',
         'pydub>=0.25.1',
         'python-dotenv>=1.0.0',
+        'requests>=2.28.0',
     ],
     extras_require={
         'audio': [

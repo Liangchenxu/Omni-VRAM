@@ -22,7 +22,6 @@ Dependencies:
     pip install fastapi uvicorn python-multipart
 """
 
-import io
 import os
 import sys
 import time
@@ -40,6 +39,56 @@ from typing import Optional, Dict, Any, Callable
 from enum import Enum
 
 logger = logging.getLogger(__name__)
+
+# ─── Constants ──────────────────────────────────────────────────────────────
+MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024  # 100 MB
+SUPPORTED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".webm", ".aac", ".wma"}
+VALID_LANGUAGE_CODES = {
+    "zh", "en", "ja", "ko", "fr", "de", "es", "ru", "pt", "it",
+    "ar", "hi", "th", "vi", "nl", "pl", "sv", "tr", "uk", "cs",
+    "ro", "hu", "el", "he", "id", "ms", "tl", "fi", "da", "nb",
+    "auto", None,
+}
+
+
+# ─── Rate Limiter ───────────────────────────────────────────────────────────
+
+class RateLimiter:
+    """Simple in-memory sliding-window rate limiter per IP address."""
+
+    def __init__(self, max_requests: int = 60, window_seconds: float = 60.0):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self._requests: Dict[str, list] = {}
+        self._lock = threading.Lock()
+
+    def is_allowed(self, client_ip: str) -> bool:
+        """Check if a request from client_ip is allowed."""
+        now = time.time()
+        cutoff = now - self.window_seconds
+
+        with self._lock:
+            if client_ip not in self._requests:
+                self._requests[client_ip] = []
+
+            # Prune old entries
+            timestamps = self._requests[client_ip]
+            self._requests[client_ip] = [t for t in timestamps if t > cutoff]
+
+            if len(self._requests[client_ip]) >= self.max_requests:
+                return False
+
+            self._requests[client_ip].append(now)
+            return True
+
+    def get_retry_after(self, client_ip: str) -> float:
+        """Get seconds until the client can make another request."""
+        with self._lock:
+            timestamps = self._requests.get(client_ip, [])
+            if not timestamps:
+                return 0.0
+            oldest = min(timestamps)
+            return max(0.0, self.window_seconds - (time.time() - oldest))
 
 # ─── Lazy imports for optional dependencies ─────────────────────────────────
 
@@ -119,7 +168,7 @@ class AsyncTaskQueue:
             t = threading.Thread(target=self._worker, daemon=True, name=f"async-task-worker-{i}")
             t.start()
             self._workers.append(t)
-        logger.info(f"AsyncTaskQueue started (max_workers={max_workers}, max_queue_size={max_queue_size})")
+        logger.info("AsyncTaskQueue started (max_workers=%s, max_queue_size=%s)", max_workers, max_queue_size)
 
     def submit(self, audio_bytes: bytes, filename: str,
                language: Optional[str] = None,
@@ -136,7 +185,7 @@ class AsyncTaskQueue:
             self._tasks[task_id] = task
 
         self._queue.put(task_id)
-        logger.info(f"Task {task_id} submitted (queue size: {self._queue.qsize()})")
+        logger.info("Task %s submitted (queue size: %s)", task_id, self._queue.qsize())
         return task_id
 
     def get_task(self, task_id: str) -> Optional[AsyncTask]:
@@ -170,7 +219,7 @@ class AsyncTaskQueue:
             for tid in to_remove:
                 del self._tasks[tid]
         if to_remove:
-            logger.info(f"Cleaned up {len(to_remove)} old tasks")
+            logger.info("Cleaned up %s old tasks", len(to_remove))
 
     def shutdown(self):
         """Shutdown the task queue."""
@@ -229,8 +278,8 @@ class AsyncTaskQueue:
                 }
                 task.completed_at = time.time()
                 logger.info(
-                    f"Task {task_id} completed in "
-                    f"{task.completed_at - task.started_at:.2f}s"
+                    "Task %s completed in %.2fs",
+                    task_id, task.completed_at - task.started_at,
                 )
 
                 # Fire callback
@@ -238,13 +287,13 @@ class AsyncTaskQueue:
                     try:
                         task._callback(task)
                     except Exception as cb_err:
-                        logger.error(f"Task callback error: {cb_err}")
+                        logger.error("Task callback error: %s", cb_err)
 
             except Exception as e:
                 task.status = TaskStatus.FAILED
                 task.error = str(e)
                 task.completed_at = time.time()
-                logger.error(f"Task {task_id} failed: {e}")
+                logger.error("Task %s failed: %s", task_id, e)
             finally:
                 with self._lock:
                     self._active_count -= 1
@@ -272,7 +321,7 @@ def create_app(
     from fastapi.responses import JSONResponse
     from pydantic import BaseModel
 
-    from vram_core.whisper_bridge import WhisperBridge, WhisperBackend
+    from vram_core.whisper import WhisperBridge, WhisperBackend
     from vram_core.streaming_asr import StreamASR, StreamASRConfig
     from vram_core.config import config
 
@@ -282,7 +331,7 @@ def create_app(
         try:
             whisper_backend = WhisperBackend(backend)
         except ValueError:
-            logger.warning(f"Invalid backend '{backend}', using AUTO")
+            logger.warning("Invalid backend '%s', using AUTO", backend)
 
     # Initialize whisper bridge (singleton for the app)
     whisper = WhisperBridge(
@@ -299,6 +348,56 @@ def create_app(
         description="High-performance speech-to-text API powered by vram_core",
         version="2.2.1",
     )
+
+    # ─── API Key Authentication ───────────────────────────────────────────────
+    API_KEY = os.environ.get("API_KEY", "")
+
+    @app.middleware("http")
+    async def auth_middleware(request, call_next):
+        """Require X-API-Key header if API_KEY env var is set."""
+        # Skip auth for health check and docs
+        if request.url.path in ("/health", "/docs", "/openapi.json", "/redoc", "/"):
+            return await call_next(request)
+
+        # If API_KEY is not set, allow all requests (dev mode)
+        if not API_KEY:
+            return await call_next(request)
+
+        # Check header
+        provided_key = request.headers.get("X-API-Key", "")
+        if provided_key != API_KEY:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=401,
+                content={"error": "Unauthorized. Provide a valid X-API-Key header."},
+            )
+
+        return await call_next(request)
+
+    # ─── Rate Limiting ───────────────────────────────────────────────────────
+    rate_limiter = RateLimiter(max_requests=60, window_seconds=60.0)
+
+    @app.middleware("http")
+    async def rate_limit_middleware(request, call_next):
+        """Rate limit: 60 requests per minute per IP."""
+        # Skip rate limiting for health check and docs
+        if request.url.path in ("/health", "/docs", "/openapi.json", "/redoc", "/"):
+            return await call_next(request)
+
+        client_ip = request.client.host if request.client else "unknown"
+        if not rate_limiter.is_allowed(client_ip):
+            retry_after = rate_limiter.get_retry_after(client_ip)
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": "Rate limit exceeded. Try again later.",
+                    "retry_after_seconds": round(retry_after, 1),
+                },
+                headers={"Retry-After": str(int(retry_after) + 1)},
+            )
+
+        return await call_next(request)
 
     # ─── Request/Response Models ─────────────────────────────────────────────
 
@@ -378,18 +477,39 @@ def create_app(
         """
         start = time.time()
 
-        # Read file bytes
+        # Read file bytes with size limit
         audio_bytes = await file.read()
         if not audio_bytes:
             return JSONResponse(
                 status_code=400,
                 content={"error": "Empty audio file"},
             )
+        if len(audio_bytes) > MAX_UPLOAD_SIZE_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={"error": f"File too large. Maximum size is {MAX_UPLOAD_SIZE_BYTES // (1024*1024)} MB"},
+            )
+
+        # Validate file format
+        filename = file.filename or "audio.wav"
+        ext = os.path.splitext(filename)[1].lower()
+        if ext and ext not in SUPPORTED_AUDIO_EXTENSIONS:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Unsupported audio format '{ext}'. Supported: {', '.join(sorted(SUPPORTED_AUDIO_EXTENSIONS))}"},
+            )
+
+        # Validate language
+        if language and language not in VALID_LANGUAGE_CODES:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Unsupported language code '{language}'"},
+            )
 
         # Decode audio
         try:
             audio_data, sr = _decode_audio_bytes(
-                audio_bytes, file.filename or "audio.wav"
+                audio_bytes, filename
             )
         except Exception as e:
             return JSONResponse(
@@ -445,6 +565,18 @@ def create_app(
                 status_code=400,
                 content={"error": "Empty audio data"},
             )
+        if len(audio_bytes) > MAX_UPLOAD_SIZE_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={"error": f"Audio data too large. Maximum size is {MAX_UPLOAD_SIZE_BYTES // (1024*1024)} MB"},
+            )
+
+        # Validate language
+        if request.language and request.language not in VALID_LANGUAGE_CODES:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Unsupported language code '{request.language}'"},
+            )
 
         # Decode audio
         try:
@@ -492,10 +624,31 @@ def create_app(
                 status_code=400,
                 content={"error": "Empty audio file"},
             )
+        if len(audio_bytes) > MAX_UPLOAD_SIZE_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={"error": f"File too large. Maximum size is {MAX_UPLOAD_SIZE_BYTES // (1024*1024)} MB"},
+            )
+
+        # Validate file format
+        filename = file.filename or "audio.wav"
+        ext = os.path.splitext(filename)[1].lower()
+        if ext and ext not in SUPPORTED_AUDIO_EXTENSIONS:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Unsupported audio format '{ext}'. Supported: {', '.join(sorted(SUPPORTED_AUDIO_EXTENSIONS))}"},
+            )
+
+        # Validate language
+        if language and language not in VALID_LANGUAGE_CODES:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Unsupported language code '{language}'"},
+            )
 
         task_id = task_queue.submit(
             audio_bytes=audio_bytes,
-            filename=file.filename or "audio.wav",
+            filename=filename,
             language=language,
         )
 
@@ -668,7 +821,7 @@ def create_app(
         except WebSocketDisconnect:
             logger.info("WebSocket client disconnected")
         except Exception as e:
-            logger.error(f"WebSocket error: {e}", exc_info=True)
+            logger.error("WebSocket error: %s", e, exc_info=True)
             try:
                 await send_json({"type": "error", "message": str(e)})
             except Exception:
@@ -798,7 +951,7 @@ def create_app(
         except WebSocketDisconnect:
             logger.info("WebSocket /ws/stream client disconnected")
         except Exception as e:
-            logger.error(f"WebSocket /ws/stream error: {e}", exc_info=True)
+            logger.error("WebSocket /ws/stream error: %s", e, exc_info=True)
             try:
                 await send_json({"type": "error", "message": str(e)})
             except Exception:
@@ -937,8 +1090,8 @@ def create_app(
                                     },
                                 })
                                 logger.info(
-                                    f"WS transcribe started: lang={conn_language}, "
-                                    f"sr={conn_sample_rate}, enc={conn_encoding}"
+                                    "WS transcribe started: lang=%s, sr=%s, enc=%s",
+                                    conn_language, conn_sample_rate, conn_encoding,
                                 )
 
                             elif action == "stop":
@@ -999,7 +1152,7 @@ def create_app(
         except WebSocketDisconnect:
             logger.info("WebSocket /ws/transcribe client disconnected")
         except Exception as e:
-            logger.error(f"WebSocket /ws/transcribe error: {e}", exc_info=True)
+            logger.error("WebSocket /ws/transcribe error: %s", e, exc_info=True)
             try:
                 await send_json({"type": "error", "message": str(e)})
             except Exception:
@@ -1113,12 +1266,12 @@ Examples:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    logger.info(f"Starting vram_core API server...")
-    logger.info(f"  Host: {args.host}:{args.port}")
-    logger.info(f"  Model: {args.model}")
-    logger.info(f"  Language: {args.language or 'auto-detect'}")
-    logger.info(f"  Backend: {args.backend or 'auto'}")
-    logger.info(f"  Workers: {args.workers}")
+    logger.info("Starting vram_core API server...")
+    logger.info("  Host: %s:%s", args.host, args.port)
+    logger.info("  Model: %s", args.model)
+    logger.info("  Language: %s", args.language or 'auto-detect')
+    logger.info("  Backend: %s", args.backend or 'auto')
+    logger.info("  Workers: %s", args.workers)
 
     # Create app
     app = create_app(

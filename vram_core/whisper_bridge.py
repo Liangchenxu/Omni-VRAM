@@ -1,57 +1,38 @@
 ﻿"""
-Whisper Bridge - Backward Compatibility Shim (DEPRECATED)
+Backward-compatibility shim for vram_core.whisper_bridge.
 =========================================================
 
-.. deprecated:: 2.1.0
-    This module is a compatibility shim. Use ``vram_core.whisper`` instead.
-    Will be removed in v3.0.0.
+.. deprecated::
+    This module is deprecated. Use ``vram_core.whisper`` instead.
 
-This module re-exports everything from ``vram_core.whisper`` so that
-existing imports like::
+    All classes have been moved to the ``vram_core.whisper`` subpackage:
+    - WhisperBridge -> vram_core.whisper.bridge
+    - WhisperBackend, WhisperResult, TranscriptionResult -> vram_core.whisper.models / result
+    - AudioPreprocessor -> vram_core.whisper.preprocessor
 
-    from vram_core.whisper_bridge import WhisperBridge
-
-continue to work unchanged.
-
-For new code, prefer importing from the package directly::
-
-    from vram_core.whisper import WhisperBridge, WhisperResult
+This shim re-exports everything so existing code continues to work.
 """
 
 import warnings
+
 warnings.warn(
-    "vram_core.whisper_bridge is deprecated since v2.1.0. "
-    "Use 'from vram_core.whisper import ...' instead. "
-    "This shim will be removed in v3.0.0.",
+    "vram_core.whisper_bridge is deprecated. Use vram_core.whisper instead.",
     DeprecationWarning,
     stacklevel=2,
 )
 
-# Re-export all public symbols from the whisper package
-from vram_core.whisper import (
-    AudioPreprocessor,
-    COMPUTE_TYPES,
-    DISTIL_WHISPER_MODELS,
-    SUPPORTED_AUDIO_FORMATS,
-    WHISPER_MODELS,
-    WhisperBackend,
+from vram_core.whisper import (  # noqa: F401
     WhisperBridge,
+    WhisperBackend,
     WhisperResult,
     TranscriptionResult,
+    AudioPreprocessor,
 )
 
-# Also re-export TranscriptionJob which lived in the old bridge module
-from vram_core.whisper.bridge import TranscriptionJob
-
 __all__ = [
-    "AudioPreprocessor",
-    "COMPUTE_TYPES",
-    "DISTIL_WHISPER_MODELS",
-    "SUPPORTED_AUDIO_FORMATS",
-    "WHISPER_MODELS",
-    "WhisperBackend",
     "WhisperBridge",
+    "WhisperBackend",
     "WhisperResult",
     "TranscriptionResult",
-    "TranscriptionJob",
+    "AudioPreprocessor",
 ]

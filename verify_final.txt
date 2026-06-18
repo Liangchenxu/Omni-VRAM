@@ -1,0 +1,16 @@
+﻿python : Invalid whisper_backend 'local', falling back to 'auto'
+所在位置 行:1 字符: 1
++ python -c "
++ ~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Invalid whisper... back to 'aut 
+   o':String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[PASS] MAX_SEGMENTS = 1000
+[PASS] max_segments param works
+[PASS] threading lock present
+[PASS] RateLimiter blocks after limit
+[PASS] Different IP not affected
+[PASS] retry_after returns positive value
+
+ALL 6 TESTS PASSED

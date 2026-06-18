@@ -7,7 +7,7 @@
 ![Python: 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue.svg)
 [![Tests](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml/badge.svg)](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml)
 [![PyPI](https://img.shields.io/pypi/v/omni-vram.svg)](https://pypi.org/project/omni-vram/)
-[![Version](https://img.shields.io/badge/Version-2.2.1-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
+[![Version](https://img.shields.io/badge/Version-2.5.0-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
 
 [**English**](#english-documentation) | [**中文文档**](#chinese-documentation) | [**Docs**](docs/)
 
@@ -16,13 +16,13 @@
 <a id="english-documentation"></a>
 ## 📖 Overview
 
-**Omni-VRAM** is a production-ready **LLM voice interaction framework** that lets large language models hear and speak. Built on CUDA zero-copy technology, it provides **24 core modules** covering the entire audio AI pipeline — from speech recognition to synthesis, from single GPU to distributed clusters.
+**Omni-VRAM** is a production-ready **LLM voice interaction framework** that lets large language models hear and speak. Built on CUDA zero-copy technology, it provides **28 core modules** covering the entire audio AI pipeline — from speech recognition to synthesis, from single GPU to distributed clusters.
 
-> **v2.2.1**: Major release with 24 modules, Chinese meeting transcription & summarization (punctuation/normalization/tokenization/domain dicts/speaker diarization), meeting summarizer with topic/decision/action extraction, real-time optimizer, Docker support, and 69+ integration tests.
+> **v2.5.0**: Major release with 28 modules, new Audio Enhancer (7-stage pipeline), Speech Quality Assessment (SNR/PESQ-lite), LLM Meeting Assistant (multi-provider AI analysis), Edge Deployment Backends (ONNX/TensorRT/Lite), and 85+ integration tests.
 
 Traditional Python audio pipelines and PyTorch operations (e.g., `torch.cat` for KV-Cache) introduce significant overhead. Omni-VRAM implements **Operator Fusion** and **Zero-Copy Memory Injection** at the hardware level, enabling consumer-grade GPUs (RTX 30/40 series) to achieve sub-millisecond latency for real-time voice agents.
 
-### ✅ Core Features (24 Modules)
+### ✅ Core Features (28 Modules)
 
 | # | Module | Description |
 |---|--------|-------------|
@@ -50,6 +50,10 @@ Traditional Python audio pipelines and PyTorch operations (e.g., `torch.cat` for
 | 22 | **Configuration System** | YAML/JSON config files, environment variable overrides, hot-reload |
 | 23 | **Chinese Meeting Transcription** | Punctuation restoration, text normalization (numbers/currency/dates), Chinese tokenization, domain dictionaries (medical/tech/finance/legal/education/government), dialect support |
 | 24 | **Meeting Summarizer** | AI-powered meeting summarization with topic segmentation, decision detection, action item extraction, speaker contribution analysis, multi-format export (Markdown/JSON/Dict) |
+| 25 | **Audio Enhancer** | 7-stage enhancement pipeline (noise reduction → dereverb → normalization → AGC → high-pass → speech EQ → noise gate), quality presets (fast/broadcast/studio) |
+| 26 | **Speech Quality Assessment** | SNR estimation, spectral clarity, PESQ-lite estimate, clipping detection, quality grading (excellent/good/fair/poor) |
+| 27 | **LLM Meeting Assistant** | Multi-provider LLM client (OpenAI/Claude/Ollama/custom), AI meeting analysis with topic/decision/action extraction, sentiment analysis, structured JSON output |
+| 28 | **Edge Deployment Backends** | ONNX Runtime (CPU/GPU, INT8/INT4), TensorRT (FP16/INT8), Lite backend for mobile/embedded (Raspberry Pi, Jetson Nano) |
 
 ### 📁 Project Structure
 
@@ -68,7 +72,7 @@ Omni-VRAM/
 ├── docker-compose.yml          # One-click Docker deployment
 │
 ├── vram_core/                  # Python core library (24 modules)
-│   ├── __init__.py             # Package exports (v2.2.1)
+│   ├── __init__.py             # Package exports (v2.5.0)
 │   ├── config.py               # Configuration management
 │   ├── utils.py                # General utility functions
 │   ├── audio_utils.py          # Audio format detection & conversion
@@ -98,6 +102,14 @@ Omni-VRAM/
 │   ├── grpc_server.py          # gRPC + HTTP REST dual-protocol server
 │   ├── plugin_manager.py       # Plugin discovery, loading & lifecycle
 │   ├── meeting_summarizer.py   # AI meeting summarization (topics/decisions/actions)
+│   ├── audio_enhancer.py       # 7-stage audio enhancement pipeline
+│   ├── speech_quality.py       # Speech quality assessment (SNR/PESQ-lite)
+│   ├── llm_client.py           # Multi-provider LLM client
+│   ├── meeting_analyzer.py     # AI meeting analysis with structured output
+│   ├── backends/               # Edge deployment backends
+│   │   ├── onnx_backend.py     # ONNX Runtime inference
+│   │   ├── tensorrt_backend.py # TensorRT optimized inference
+│   │   └── lite_backend.py     # Lightweight mobile/embedded inference
 │   └── chinese/                # Chinese NLP pipeline
 │       ├── punctuation.py      # Chinese punctuation restoration
 │       ├── normalizer.py       # Text normalization (numbers/currency/dates)
@@ -115,7 +127,7 @@ Omni-VRAM/
 │   ├── test_whisper_local.py        # Whisper local test script
 │   └── test_emotion.py              # Emotion recognition test
 │
-├── tests/                      # Unit & integration tests (19 test files, 69+ test cases)
+├── tests/                      # Unit & integration tests (28 test files, 85+ test cases)
 │   ├── test_audio_utils.py
 │   ├── test_emotion_recognition.py
 │   ├── test_meeting_transcription.py # Meeting transcription & summarization tests
@@ -134,6 +146,7 @@ Omni-VRAM/
 │   ├── test_integration.py          # Full pipeline integration tests
 │   ├── test_websocket.py            # WebSocket API tests
 │   ├── test_realtime_latency.py     # Real-time latency tests
+│   ├── test_v250.py                 # v2.5.0 feature tests (16 cases)
 │   └── benchmark_comparison.py      # Benchmark comparison
 │
 └── docs/                       # Documentation
@@ -654,13 +667,13 @@ You are free to use, modify, and distribute this software in both commercial and
 <a id="chinese-documentation"></a>
 ## 📖 简介 (Overview)
 
-**Omni-VRAM** 是一个生产级的 **LLM 语音交互框架**，让大模型长出耳朵和嘴巴。基于 CUDA 零拷贝技术构建，提供 **24 个核心模块**，覆盖完整的语音 AI 管线——从语音识别到语音合成，从单 GPU 到分布式集群。
+**Omni-VRAM** 是一个生产级的 **LLM 语音交互框架**，让大模型长出耳朵和嘴巴。基于 CUDA 零拷贝技术构建，提供 **28 个核心模块**，覆盖完整的语音 AI 管线——从语音识别到语音合成，从单 GPU 到分布式集群。
 
-> **v2.2.1**：重大版本更新，新增中文会议转写与摘要（标点恢复/文本规范化/分词/领域词典/说话人分离）、会议摘要生成（议题/决策/行动项提取）、实时优化器、Docker 部署、69+ 集成测试等。
+> **v2.5.0**：重大版本更新，新增音频增强器（7 级处理管线）、语音质量评估（SNR/PESQ-lite）、LLM 会议助手（多供应商 AI 分析）、边缘部署后端（ONNX/TensorRT/Lite）、85+ 集成测试等。
 
 传统的 Python 音频处理管线和 PyTorch 操作（如 `torch.cat` 更新 KV-Cache）会引入严重的性能开销。Omni-VRAM 在硬件层面实现**算子融合**和**零拷贝内存注入**，使消费级显卡（RTX 30/40 系列）能够为实时语音助手提供亚毫秒级延迟。
 
-### ✅ 核心功能（24 个模块）
+### ✅ 核心功能（28 个模块）
 
 | # | 模块 | 说明 |
 |---|------|------|
@@ -688,6 +701,10 @@ You are free to use, modify, and distribute this software in both commercial and
 | 22 | **配置系统** | YAML/JSON 配置文件，环境变量覆盖，热重载 |
 | 23 | **中文会议转写** | 标点恢复、文本规范化（数字/货币/日期）、中文分词、领域词典（医疗/科技/金融/法律/教育/政府）、方言支持 |
 | 24 | **会议摘要生成** | AI 会议摘要：议题分段、决策检测、行动项提取、说话人贡献分析、多格式导出（Markdown/JSON/Dict） |
+| 25 | **音频增强器** | 7 级增强管线（降噪→去混响→归一化→AGC→高通滤波→语音 EQ→噪声门），质量预设（快速/广播/录音室） |
+| 26 | **语音质量评估** | SNR 估计、频谱清晰度、PESQ-lite 估计、削波检测、质量分级（优秀/良好/一般/较差） |
+| 27 | **LLM 会议助手** | 多供应商 LLM 客户端（OpenAI/Claude/Ollama/自定义），AI 会议分析含议题/决策/行动项提取、情感分析、结构化 JSON 输出 |
+| 28 | **边缘部署后端** | ONNX Runtime（CPU/GPU，INT8/INT4）、TensorRT（FP16/INT8）、Lite 后端（树莓派/Jetson Nano/移动端） |
 
 ### 📁 目录结构
 
@@ -706,7 +723,7 @@ Omni-VRAM/
 ├── docker-compose.yml          # 一键 Docker 部署
 │
 ├── vram_core/                  # Python 核心库（24 个模块）
-│   ├── __init__.py             # 包导出（v2.2.1）
+│   ├── __init__.py             # 包导出（v2.5.0）
 │   ├── config.py               # 配置管理
 │   ├── utils.py                # 通用工具函数
 │   ├── audio_utils.py          # 音频格式检测与转换
@@ -736,6 +753,14 @@ Omni-VRAM/
 │   ├── grpc_server.py          # gRPC + HTTP REST 双协议服务器
 │   ├── plugin_manager.py       # 插件发现、加载与生命周期管理
 │   ├── meeting_summarizer.py   # AI 会议摘要（议题/决策/行动项）
+│   ├── audio_enhancer.py       # 7 级音频增强管线
+│   ├── speech_quality.py       # 语音质量评估（SNR/PESQ-lite）
+│   ├── llm_client.py           # 多供应商 LLM 客户端
+│   ├── meeting_analyzer.py     # AI 会议分析（结构化输出）
+│   ├── backends/               # 边缘部署后端
+│   │   ├── onnx_backend.py     # ONNX Runtime 推理
+│   │   ├── tensorrt_backend.py # TensorRT 优化推理
+│   │   └── lite_backend.py     # 轻量级移动端/嵌入式推理
 │   └── chinese/                # 中文 NLP 管线
 │       ├── punctuation.py      # 中文标点恢复
 │       ├── normalizer.py       # 文本规范化（数字/货币/日期）
@@ -753,7 +778,7 @@ Omni-VRAM/
 │   ├── test_whisper_local.py        # Whisper 本地测试
 │   └── test_emotion.py              # 情绪识别测试
 │
-├── tests/                      # 单元 & 集成测试（19 个测试文件，69+ 测试用例）
+├── tests/                      # 单元 & 集成测试（28 个测试文件，85+ 测试用例）
 │   ├── test_audio_utils.py
 │   ├── test_emotion_recognition.py
 │   ├── test_meeting_transcription.py # 会议转写与摘要测试
@@ -772,6 +797,7 @@ Omni-VRAM/
 │   ├── test_integration.py          # 全管线集成测试
 │   ├── test_websocket.py            # WebSocket API 测试
 │   ├── test_realtime_latency.py     # 实时延迟测试
+│   ├── test_v250.py                 # v2.5.0 功能测试（16 个用例）
 │   └── benchmark_comparison.py      # 基准对比
 │
 └── docs/                       # 文档

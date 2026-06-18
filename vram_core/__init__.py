@@ -29,7 +29,7 @@ Modules:
     - meeting_summarizer: AI-powered meeting summarization with topic/decision/action extraction
 """
 
-__version__ = "2.2.1"
+__version__ = "2.5.0"
 
 # CUDA extension (built from vram_hacker.cu)
 try:
@@ -44,7 +44,7 @@ except (ImportError, AttributeError):
     CUDA_AVAILABLE = False
 
 from vram_core.audio_utils import AudioProcessor
-from vram_core.whisper_bridge import (
+from vram_core.whisper import (
     WhisperBridge, WhisperBackend, WhisperResult,
     TranscriptionResult, AudioPreprocessor,
 )
@@ -66,6 +66,14 @@ from vram_core.chinese.normalizer import TextNormalizer
 from vram_core.chinese.tokenizer import ChineseTokenizer as Tokenizer
 from vram_core.chinese.domain_dict import DomainDictionary as DomainDict
 DOMAIN_DICTS = {}
+
+# v2.5.0: Audio Enhancement & Quality
+from vram_core.audio_enhancer import AudioEnhancer
+from vram_core.speech_quality import SpeechQualityAssessor, QualityReport
+
+# v2.5.0: LLM Meeting Assistant
+from vram_core.llm_client import LLMClient, LLMConfig
+from vram_core.meeting_analyzer import MeetingAnalyzer, MeetingAnalysis, ActionItem as MeetingActionItem
 
 # New modules (v1.0.0)
 from vram_core.speaker_verification import SpeakerVerifier, Voiceprint, VerificationResult
@@ -139,6 +147,16 @@ __all__ = [
     "Tokenizer",
     "DomainDict",
     "DOMAIN_DICTS",
+    # v2.5.0: Audio Enhancement & Quality
+    "AudioEnhancer",
+    "SpeechQualityAssessor",
+    "QualityReport",
+    # v2.5.0: LLM Meeting Assistant
+    "LLMClient",
+    "LLMConfig",
+    "MeetingAnalyzer",
+    "MeetingAnalysis",
+    "MeetingActionItem",
     # Configuration
     "config",
     "OmniConfig",

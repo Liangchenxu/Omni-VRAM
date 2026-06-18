@@ -116,7 +116,7 @@ class VoiceTranslator:
     def _init_asr(self, device: Optional[int] = None):
         """Initialize Whisper ASR."""
         try:
-            from vram_core.whisper_bridge import WhisperBridge
+            from vram_core.whisper import WhisperBridge
             self._whisper = WhisperBridge(model_size=self.asr_model_size, device_id=device)
             logger.info("ASR initialized: whisper-%s", self.asr_model_size)
         except Exception as e:

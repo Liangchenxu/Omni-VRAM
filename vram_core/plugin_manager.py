@@ -28,6 +28,7 @@ import inspect
 import logging
 import os
 import sys
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -117,6 +118,7 @@ class PluginManager:
         self._hooks: Dict[str, List[Callable]] = {}
         self._plugin_dirs = plugin_dirs or []
         self._search_paths: List[str] = []
+        self._lock = threading.Lock()
 
         # Add default plugin dirs
         default_dir = os.path.join(os.path.dirname(__file__), "..", "plugins")
@@ -249,17 +251,19 @@ class PluginManager:
 
     def _register_hook(self, hook_name: str, callback: Callable):
         """Register a hook callback."""
-        if hook_name not in self._hooks:
-            self._hooks[hook_name] = []
-        self._hooks[hook_name].append(callback)
+        with self._lock:
+            if hook_name not in self._hooks:
+                self._hooks[hook_name] = []
+            self._hooks[hook_name].append(callback)
 
     def _remove_hook(self, hook_name: str, plugin_name: str):
         """Remove hooks from a specific plugin."""
-        if hook_name in self._hooks:
-            self._hooks[hook_name] = [
-                h for h in self._hooks[hook_name]
-                if not hasattr(h, '__self__') or getattr(h.__self__.info, 'name', '') != plugin_name
-            ]
+        with self._lock:
+            if hook_name in self._hooks:
+                self._hooks[hook_name] = [
+                    h for h in self._hooks[hook_name]
+                    if not hasattr(h, '__self__') or getattr(h.__self__.info, 'name', '') != plugin_name
+                ]
 
     def register_hook(self, hook_name: str, callback: Callable):
         """Manually register a hook callback (external use)."""
@@ -278,7 +282,9 @@ class PluginManager:
             List of return values from callbacks.
         """
         results = []
-        for callback in self._hooks.get(hook_name, []):
+        with self._lock:
+            callbacks = list(self._hooks.get(hook_name, []))
+        for callback in callbacks:
             try:
                 result = callback(**kwargs)
                 results.append(result)

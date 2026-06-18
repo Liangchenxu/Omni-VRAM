@@ -39,6 +39,12 @@ from vram_core.whisper.result import WhisperResult
 
 logger = logging.getLogger("vram_core.whisper.optimizer")
 
+# ── Named Constants ──────────────────────────────────────────────
+_DEFAULT_SAMPLE_RATE: int = 16000
+_INT16_MAX: float = 32768.0
+_INT16_CLIP_LOW: int = -32768
+_INT16_CLIP_HIGH: int = 32767
+
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -149,7 +155,7 @@ class TranscriptionCache:
         with self._lock:
             if key in self._cache:
                 self._stats.hit_count += 1
-                logger.debug(f"Cache hit: {key[:16]}...")
+                logger.debug("Cache hit: %s...", key[:16])
                 return self._cache[key]
 
         # Try disk cache
@@ -235,8 +241,8 @@ class TranscriptionCache:
                 "model": result.model,
             }
             self._disk_path(key).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-        except Exception as e:
-            logger.warning(f"Disk cache save failed: {e}")
+        except (OSError, TypeError, ValueError) as e:
+            logger.warning("Disk cache save failed: %s", e)
 
     def _load_from_disk(self, key: str) -> Optional[WhisperResult]:
         import json
@@ -253,8 +259,8 @@ class TranscriptionCache:
                 backend=data.get("backend"),
                 model=data.get("model"),
             )
-        except Exception as e:
-            logger.warning(f"Disk cache load failed: {e}")
+        except (OSError, TypeError, ValueError, KeyError) as e:
+            logger.warning("Disk cache load failed: %s", e)
             return None
 
 
@@ -332,10 +338,12 @@ class WhisperOptimizer:
         self._total_audio_duration = 0.0
         self._total_processing_time = 0.0
 
+        _cache_state = 'on' if enable_cache else 'off'
         logger.info(
-            f"WhisperOptimizer initialized "
-            f"(model={model_name}, device={device}, compute_type={compute_type}, "
-            f"beam_size={beam_size}, vad={vad_filter}, cache={'on' if enable_cache else 'off'})"
+            "WhisperOptimizer initialized "
+            "(model=%s, device=%s, compute_type=%s, "
+            "beam_size=%s, vad=%s, cache=%s)",
+            model_name, device, compute_type, beam_size, vad_filter, _cache_state,
         )
 
     # ------------------------------------------------------------------
@@ -347,11 +355,11 @@ class WhisperOptimizer:
         Preload the model into memory. Call at startup to eliminate
         first-request latency.
         """
-        logger.info(f"Preloading model '{self.model_name}'...")
+        logger.info("Preloading model '%s'...", self.model_name)
         t0 = time.perf_counter()
         self._ensure_model()
         elapsed = time.perf_counter() - t0
-        logger.info(f"Model preloaded in {elapsed:.2f}s")
+        logger.info("Model preloaded in %.2fs", elapsed)
 
     def warmup(self, duration_s: float = 3.0) -> float:
         """
@@ -364,7 +372,7 @@ class WhisperOptimizer:
         Returns:
             Time taken for warmup in seconds.
         """
-        logger.info(f"Warming up model with {duration_s}s dummy audio...")
+        logger.info("Warming up model with %ss dummy audio...", duration_s)
         t0 = time.perf_counter()
 
         self._ensure_model()
@@ -378,7 +386,7 @@ class WhisperOptimizer:
 
         elapsed = time.perf_counter() - t0
         self._warmup_done = True
-        logger.info(f"Warmup completed in {elapsed:.2f}s")
+        logger.info("Warmup completed in %.2fs", elapsed)
         return elapsed
 
     @property
@@ -426,7 +434,7 @@ class WhisperOptimizer:
             )
             if cached is not None:
                 elapsed = time.perf_counter() - t0
-                logger.info(f"Cache hit! Transcription served in {elapsed*1000:.1f}ms")
+                logger.info("Cache hit! Transcription served in %.1fms", elapsed * 1000)
                 return cached
 
         result = self._transcribe_internal(
@@ -450,8 +458,9 @@ class WhisperOptimizer:
         self._total_processing_time += elapsed
 
         logger.info(
-            f"Transcribed {audio_dur:.1f}s audio in {elapsed:.2f}s "
-            f"(RTF={rtf:.3f}, lang={result.language}, conf={result.confidence:.2f})"
+            "Transcribed %.1fs audio in %.2fs "
+            "(RTF=%.3f, lang=%s, conf=%.2f)",
+            audio_dur, elapsed, rtf, result.language, result.confidence,
         )
 
         return result
@@ -523,8 +532,9 @@ class WhisperOptimizer:
         # Process merged short files
         if short_files:
             logger.info(
-                f"Merging {len(short_files)} short audio files "
-                f"(threshold={merge_threshold_s}s)..."
+                "Merging %d short audio files "
+                "(threshold=%ss)...",
+                len(short_files), merge_threshold_s,
             )
             # Group into chunks that won't exceed a reasonable total length
             max_merge_duration = 60.0  # 1 minute per merged batch
@@ -568,8 +578,10 @@ class WhisperOptimizer:
 
         batch.total_processing_time = time.perf_counter() - t0
         logger.info(
-            f"Batch complete: {batch.successful}/{batch.total_files} succeeded "
-            f"({batch.total_processing_time:.2f}s, avg RTF={batch.avg_rtf:.3f})"
+            "Batch complete: %d/%d succeeded "
+            "(%.2fs, avg RTF=%.3f)",
+            batch.successful, batch.total_files,
+            batch.total_processing_time, batch.avg_rtf,
         )
         return batch
 
@@ -746,9 +758,11 @@ class WhisperOptimizer:
         effective_language = language or self.language
         chunk_index = 0
 
+        _total_s = total_samples / sample_rate
         logger.info(
-            f"Streaming transcription: {total_samples/sample_rate:.1f}s audio, "
-            f"chunk={chunk_duration_s}s, overlap={overlap_s}s"
+            "Streaming transcription: %.1fs audio, "
+            "chunk=%ss, overlap=%ss",
+            _total_s, chunk_duration_s, overlap_s,
         )
 
         pos = 0
@@ -826,7 +840,7 @@ class WhisperOptimizer:
             new_compute_type = "int8"
 
         if new_compute_type != self.compute_type:
-            logger.info(f"Quantization: {self.compute_type} -> {new_compute_type}")
+            logger.info("Quantization: %s -> %s", self.compute_type, new_compute_type)
             self.compute_type = new_compute_type
             self._unload_model()
 
@@ -858,7 +872,7 @@ class WhisperOptimizer:
             pass
 
         freed = stats["before_mb"] - stats["after_mb"]
-        logger.info(f"VRAM released: {freed:.1f}MB ({stats['before_mb']:.1f} -> {stats['after_mb']:.1f}MB)")
+        logger.info("VRAM released: %.1fMB (%.1f -> %.1fMB)", freed, stats['before_mb'], stats['after_mb'])
         return stats
 
     def get_vram_usage(self) -> Dict[str, float]:
@@ -906,8 +920,9 @@ class WhisperOptimizer:
                 logger.info("CPU detected, forcing compute_type=int8")
 
             logger.info(
-                f"Loading model '{self.model_name}' "
-                f"(device={device}, compute_type={compute_type})..."
+                "Loading model '%s' "
+                "(device=%s, compute_type=%s)...",
+                self.model_name, device, compute_type,
             )
 
             t0 = time.perf_counter()
@@ -934,6 +949,9 @@ class WhisperOptimizer:
             logger.info(f"Model loaded in {elapsed:.2f}s")
 
             self._model = model
+            # Sync back actual device/compute_type used (may differ from requested)
+            self.device = device
+            self.compute_type = compute_type
             return model
 
     def _unload_model(self) -> None:
@@ -1057,9 +1075,9 @@ class WhisperOptimizer:
         from pydub import AudioSegment
 
         audio = AudioSegment.from_file(file_path)
-        audio = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
+        audio = audio.set_frame_rate(_DEFAULT_SAMPLE_RATE).set_channels(1).set_sample_width(2)
         samples = np.frombuffer(audio.raw_data, dtype=np.int16)
-        return samples.astype(np.float32) / 32768.0
+        return samples.astype(np.float32) / _INT16_MAX
 
     @staticmethod
     def _load_audio_from_bytes(data: bytes) -> np.ndarray:
@@ -1067,16 +1085,16 @@ class WhisperOptimizer:
         from pydub import AudioSegment
 
         audio = AudioSegment.from_file(io.BytesIO(data))
-        audio = audio.set_frame_rate(16000).set_channels(1).set_sample_width(2)
+        audio = audio.set_frame_rate(_DEFAULT_SAMPLE_RATE).set_channels(1).set_sample_width(2)
         samples = np.frombuffer(audio.raw_data, dtype=np.int16)
-        return samples.astype(np.float32) / 32768.0
+        return samples.astype(np.float32) / _INT16_MAX
 
     @staticmethod
     def _audio_to_wav_bytes(audio: np.ndarray, sample_rate: int = 16000) -> bytes:
         """Convert float32 numpy array to WAV bytes."""
         import struct
 
-        audio_int16 = (audio * 32767).clip(-32768, 32767).astype(np.int16)
+        audio_int16 = (audio * _INT16_CLIP_HIGH).clip(_INT16_CLIP_LOW, _INT16_CLIP_HIGH).astype(np.int16)
         data_bytes = audio_int16.tobytes()
 
         num_channels = 1

@@ -17,6 +17,7 @@ Usage:
     result = dt.transcribe("long_audio.wav")
 """
 
+import gc
 import logging
 import time
 import math
@@ -28,6 +29,9 @@ from dataclasses import dataclass, field
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+# Maximum number of segments allowed to prevent OOM on very large files
+MAX_SEGMENTS = 1000
 
 
 @dataclass
@@ -90,12 +94,15 @@ class DistributedTranscriber:
         segment_duration: float = 60.0,
         overlap_duration: float = 2.0,
         on_progress: Optional[Callable] = None,
+        max_segments: int = MAX_SEGMENTS,
     ):
         self.whisper_bridge = whisper_bridge
         self.num_workers = num_workers
         self.segment_duration = segment_duration
         self.overlap_duration = overlap_duration
         self.on_progress = on_progress
+        self.max_segments = max_segments
+        self._lock = threading.Lock()
 
         # Auto-detect GPU count
         try:
@@ -103,13 +110,13 @@ class DistributedTranscriber:
             gpu_count = torch.cuda.device_count()
             if gpu_count > 0:
                 self.num_workers = min(num_workers, gpu_count)
-                logger.info(f"Detected {gpu_count} GPUs, using {self.num_workers} workers")
+            logger.info("Detected %d GPUs, using %d workers", gpu_count, self.num_workers)
         except ImportError:
             pass
 
         logger.info(
-            f"DistributedTranscriber: workers={self.num_workers}, "
-            f"segment={segment_duration}s, overlap={overlap_duration}s"
+            "DistributedTranscriber: workers=%d, segment=%ss, overlap=%ss",
+            self.num_workers, segment_duration, overlap_duration,
         )
 
     def transcribe(
@@ -135,18 +142,25 @@ class DistributedTranscriber:
 
         # Load audio
         if isinstance(audio_input, str):
-            from vram_core.whisper_bridge import AudioPreprocessor
+            from vram_core.whisper import AudioPreprocessor
             audio, sr = AudioPreprocessor.load_and_convert(audio_input, sample_rate)
         else:
             audio = audio_input
             sr = sample_rate
 
         audio_duration = len(audio) / sr
-        logger.info(f"Audio duration: {audio_duration:.1f}s")
+        logger.info("Audio duration: %.1fs", audio_duration)
 
         # Split into segments
         segments = self._split_audio(audio, sr)
-        logger.info(f"Split into {len(segments)} segments")
+        logger.info("Split into %d segments", len(segments))
+
+        # Enforce max segments limit
+        if len(segments) > self.max_segments:
+            raise ValueError(
+                f"Audio too long: {len(segments)} segments exceeds limit of {self.max_segments}. "
+                f"Increase segment_duration or max_segments."
+            )
 
         # Transcribe in parallel
         completed = self._transcribe_parallel(segments, sr, language, **kwargs)
@@ -163,8 +177,8 @@ class DistributedTranscriber:
 
         speedup = audio_duration / elapsed if elapsed > 0 else 0
         logger.info(
-            f"Distributed transcription done: {elapsed:.2f}s "
-            f"(speedup: {speedup:.1f}x vs real-time)"
+            "Distributed transcription done: %.2fs (speedup: %.1fx vs real-time)",
+            elapsed, speedup,
         )
 
         return merged
@@ -206,7 +220,7 @@ class DistributedTranscriber:
         if not self.whisper_bridge:
             raise RuntimeError("No WhisperBridge configured")
 
-        completed = []
+        completed: List[SegmentTask] = []
 
         def _transcribe_segment(task: SegmentTask) -> SegmentTask:
             task.status = "running"
@@ -217,10 +231,14 @@ class DistributedTranscriber:
                 )
                 task.result_text = result.text
                 task.status = "done"
-            except Exception as e:
-                logger.error(f"Segment {task.segment_id} failed: {e}")
+            except (RuntimeError, OSError, ValueError) as e:
+                logger.error("Segment %d failed: %s", task.segment_id, e)
                 task.result_text = ""
                 task.status = "error"
+            finally:
+                # Release audio data immediately after transcription to prevent
+                # memory accumulation for large files with many segments
+                task.audio = None
             task.processing_time = time.time() - t0
             return task
 
@@ -230,16 +248,23 @@ class DistributedTranscriber:
                 for seg in segments
             }
 
+            done_count = 0
             for future in as_completed(futures):
                 task = future.result()
-                completed.append(task)
-                pct = len(completed) / len(segments) * 100
+                with self._lock:
+                    completed.append(task)
+                    done_count += 1
+                pct = done_count / len(segments) * 100
                 if self.on_progress:
                     self.on_progress(task.segment_id, task.status, pct)
                 logger.debug(
-                    f"Segment {task.segment_id}: {task.status} "
-                    f"({task.processing_time:.2f}s) [{pct:.0f}%]"
+                    "Segment %d: %s (%.2fs) [%.0f%%]",
+                    task.segment_id, task.status, task.processing_time, pct,
                 )
+
+        # Release reference to original audio segments and trigger GC
+        del futures
+        gc.collect()
 
         # Sort by segment_id
         completed.sort(key=lambda s: s.segment_id)
@@ -294,11 +319,11 @@ class RedisDistributedTranscriber(DistributedTranscriber):
                 import redis
                 self._redis = redis.from_url(self.redis_url)
                 self._redis.ping()
-                logger.info(f"Connected to Redis: {self.redis_url}")
+                logger.info("Connected to Redis: %s", self.redis_url)
             except ImportError:
                 raise ImportError("pip install redis")
-            except Exception as e:
-                raise RuntimeError(f"Redis connection failed: {e}")
+            except (ConnectionError, TimeoutError, OSError) as e:
+                raise RuntimeError("Redis connection failed: %s" % e) from e
         return self._redis
 
     def publish_task(self, task_id: str, audio_bytes: bytes) -> None:
@@ -309,7 +334,7 @@ class RedisDistributedTranscriber(DistributedTranscriber):
         r.set(f"omnivram:task:{task_id}:meta", task_data)
         r.set(f"omnivram:task:{task_id}:audio", audio_bytes)
         r.lpush("omnivram:task_queue", task_id)
-        logger.info(f"Published task {task_id} ({len(audio_bytes)} bytes)")
+        logger.info("Published task %s (%d bytes)", task_id, len(audio_bytes))
 
     def consume_tasks(self, whisper_bridge=None, timeout: int = 10) -> None:
         """Worker: consume tasks from Redis queue."""
@@ -322,13 +347,13 @@ class RedisDistributedTranscriber(DistributedTranscriber):
             if result is None:
                 continue
             task_id = result[1].decode()
-            logger.info(f"Processing task: {task_id}")
+            logger.info("Processing task: %s", task_id)
 
             try:
                 audio_bytes = r.get(f"omnivram:task:{task_id}:audio")
                 if audio_bytes and bridge:
                     import io
-                    from vram_core.whisper_bridge import AudioPreprocessor
+                    from vram_core.whisper import AudioPreprocessor
                     audio, sr = AudioPreprocessor.load_and_convert(
                         io.BytesIO(audio_bytes)
                     )
@@ -337,6 +362,6 @@ class RedisDistributedTranscriber(DistributedTranscriber):
                         f"omnivram:task:{task_id}:result",
                         transcription.to_dict().__str__(),
                     )
-                    logger.info(f"Task {task_id} done: {transcription.text[:50]}")
-            except Exception as e:
-                logger.error(f"Task {task_id} failed: {e}")
+                    logger.info("Task %s done: %s", task_id, transcription.text[:50])
+            except (RuntimeError, OSError, ValueError) as e:
+                logger.error("Task %s failed: %s", task_id, e)

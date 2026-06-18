@@ -148,7 +148,7 @@ class TTSEngine:
                 self._pyttsx3_engine.setProperty('volume', 1.0)
                 self._active_backend = "pyttsx3"
                 logger.info("Using pyttsx3 backend")
-            except Exception as e:
+            except (RuntimeError, OSError) as e:
                 logger.warning("pyttsx3 init failed: %s", e)
                 self._active_backend = "none"
         else:
@@ -232,7 +232,7 @@ class TTSEngine:
                 text=text,
                 file_path=output_path,
             )
-        except Exception as e:
+        except (RuntimeError, OSError, ConnectionError) as e:
             logger.error("edge-tts synthesis failed: %s", e)
             raise
 
@@ -263,7 +263,7 @@ class TTSEngine:
                 text=text,
                 file_path=wav_path,
             )
-        except Exception as e:
+        except (RuntimeError, OSError) as e:
             logger.error("pyttsx3 synthesis failed: %s", e)
             raise
 

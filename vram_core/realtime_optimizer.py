@@ -119,11 +119,11 @@ class SileroVAD:
                 self._model = model
                 self._utils = utils
                 logger.info("Silero VAD model loaded successfully")
-            except Exception as e:
+            except (ImportError, RuntimeError, OSError) as e:
                 logger.error("Failed to load Silero VAD model: %s", e)
                 raise RuntimeError(
-                    f"Silero VAD model load failed: {e}. "
-                    "Install with: pip install torch"
+                    "Silero VAD model load failed: %s. "
+                    "Install with: pip install torch" % e
                 ) from e
 
     def reset(self):
@@ -137,7 +137,7 @@ class SileroVAD:
         if self._model is not None:
             try:
                 self._model.reset_states()
-            except Exception:
+            except (RuntimeError, AttributeError):
                 pass
 
     def is_speech(self, audio_chunk: np.ndarray) -> bool:
@@ -175,7 +175,7 @@ class SileroVAD:
                 prob = self._model(tensor, self.sample_rate).item()
                 self._last_silero_result = prob >= self.threshold
                 self._silero_fail_count = 0
-            except Exception as e:
+            except (RuntimeError, OSError, ValueError) as e:
                 if self._silero_fail_count == 0:
                     logger.warning("Silero VAD inference failed: %s, falling back", e)
                 self._silero_fail_count += 1
@@ -227,7 +227,7 @@ class SileroVAD:
                 audio_chunk = audio_chunk.astype(np.float32)
             tensor = torch.from_numpy(audio_chunk)
             return float(self._model(tensor, self.sample_rate).item())
-        except Exception:
+        except (RuntimeError, OSError, ValueError):
             return self._fallback_energy(audio_chunk)
 
     @staticmethod
@@ -550,12 +550,12 @@ class StreamingTranscriber:
             if self.on_chunk_result:
                 try:
                     self.on_chunk_result(chunk)
-                except Exception as e:
+                except (RuntimeError, ValueError, TypeError) as e:
                     logger.warning("Chunk result callback error: %s", e)
 
             return chunk
 
-        except Exception as e:
+        except (RuntimeError, OSError, ValueError) as e:
             logger.warning("Streaming transcription failed: %s", e)
             return None
 
@@ -871,7 +871,7 @@ class RealtimePipeline:
         for f in self._pending_futures:
             try:
                 f.result(timeout=5.0)
-            except Exception:
+            except (RuntimeError, TimeoutError):
                 pass
         self._pending_futures.clear()
 
@@ -966,7 +966,7 @@ class RealtimePipeline:
             if self.on_speech_start:
                 try:
                     self.on_speech_start()
-                except Exception as e:
+                except (RuntimeError, ValueError, TypeError) as e:
                     logger.warning("on_speech_start callback error: %s", e)
 
         # Accumulate
@@ -986,7 +986,7 @@ class RealtimePipeline:
                 if self.on_partial_transcription:
                     try:
                         self.on_partial_transcription(chunk_result)
-                    except Exception as e:
+                    except (RuntimeError, ValueError, TypeError) as e:
                         logger.warning("on_partial_transcription callback error: %s", e)
             else:
                 # No result yet (accumulating), don't end ASR timer
@@ -1022,7 +1022,7 @@ class RealtimePipeline:
         if self.on_speech_end:
             try:
                 self.on_speech_end(full_speech)
-            except Exception as e:
+            except (RuntimeError, ValueError, TypeError) as e:
                 logger.warning("on_speech_end callback error: %s", e)
 
         # Finalize streaming transcription
@@ -1038,7 +1038,7 @@ class RealtimePipeline:
                 if self.on_transcription:
                     try:
                         self.on_transcription(final_chunk)
-                    except Exception as e:
+                    except (RuntimeError, ValueError, TypeError) as e:
                         logger.warning("on_transcription callback error: %s", e)
 
             self._transcriber.reset()
@@ -1086,10 +1086,10 @@ class RealtimePipeline:
             if self.on_transcription:
                 try:
                     self.on_transcription(chunk)
-                except Exception as e:
+                except (RuntimeError, ValueError, TypeError) as e:
                     logger.warning("on_transcription callback error: %s", e)
 
-        except Exception as e:
+        except (RuntimeError, OSError, ValueError) as e:
             logger.error("Background transcription failed: %s", e)
 
     def _reset_speech(self):

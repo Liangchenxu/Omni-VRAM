@@ -9,9 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Planned
 - CUDA 12.x optimized kernels
-- LLM function-calling integration (OpenAI / local models)
 - Real-time voice conversation with LLM (full duplex)
 - Streaming TTS with chunked output
+- Streaming speech-to-speech translation
+
+---
+
+## [2.5.0] - 2026-06-16
+
+### Added
+- **Audio Enhancer** (`vram_core/audio_enhancer.py`): Professional audio enhancement pipeline
+  - 7-stage processing: noise reduction → dereverb → normalization → AGC → high-pass filter → speech EQ → noise gate
+  - Configurable quality presets (fast/broadcast/studio)
+  - NumPy-only implementation, no external audio DSP dependencies
+- **Speech Quality Assessment** (`vram_core/speech_quality.py`): Audio quality metrics
+  - SNR estimation via frame-based energy analysis
+  - Spectral clarity scoring (speech band ratio)
+  - PESQ-lite estimate (heuristic-based 1.0–4.5)
+  - Clipping detection, noise floor estimation, dynamic range analysis
+  - Quality grading: excellent / good / fair / poor
+- **LLM Meeting Assistant** (`vram_core/llm_client.py`, `vram_core/meeting_analyzer.py`)
+  - `LLMClient`: Multi-provider LLM client (OpenAI, Claude, Ollama, custom HTTP)
+  - Automatic Chinese/English prompt selection based on content language
+  - `MeetingAnalyzer`: AI-powered meeting analysis with structured JSON output
+  - Topic extraction, decision detection, action item extraction
+  - Sentiment analysis, priority detection, deadline parsing
+  - Meeting minutes export (Markdown/JSON)
+  - Action item tracking with assignee and deadline
+- **Edge Deployment Backends** (`vram_core/backends/`)
+  - `onnx_backend.py`: ONNX Runtime inference (CPU/GPU), INT8/INT4 quantization, Whisper model export
+  - `tensorrt_backend.py`: TensorRT optimized inference, FP16/INT8, ONNX→TRT engine conversion
+  - `lite_backend.py`: Lightweight inference for mobile/embedded (Raspberry Pi, Jetson Nano, mobile)
+  - Model caching, benchmark tools, mobile model preparation
+- **Comprehensive Test Suite** (`tests/test_v250.py`): 16 test cases covering all new v2.5.0 features
+
+### Changed
+- Version bumped to 2.5.0 across setup.py, pyproject.toml, and vram_core/__init__.py
+- Added `vram_core.backends` package to setup.py and pyproject.toml
+- Added `requests>=2.28.0` as base dependency
+- Added `onnx`, `tensorrt`, `llm` optional dependency groups in pyproject.toml
 
 ---
 

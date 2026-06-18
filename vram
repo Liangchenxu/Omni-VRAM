@@ -1,0 +1,168 @@
+"""
+Speech Quality Assessment: PESQ-lite, SNR estimation, clarity evaluation.
+"""
+
+import logging
+import numpy as np
+from typing import Optional, Dict
+from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class QualityReport:
+    """Audio quality assessment report."""
+    snr_db: float = 0.0
+    clarity_score: float = 0.0  # 0-1
+    pesq_estimate: float = 0.0  # 1-5
+    rms_level_db: float = 0.0
+    peak_level_db: float = 0.0
+    dynamic_range_db: float = 0.0
+    clipping_ratio: float = 0.0
+    noise_floor_db: float = -60.0
+    quality_grade: str = "unknown"  # excellent/good/fair/poor
+    issues: list = field(default_factory=list)
+
+
+class SpeechQualityAssessor:
+    """Assess speech audio quality metrics."""
+    
+    def __init__(self, sample_rate: int = 16000):
+        self.sample_rate = sample_rate
+    
+    def assess(self, audio: np.ndarray, reference: Optional[np.ndarray] = None) -> QualityReport:
+        """Full quality assessment."""
+        report = QualityReport()
+        
+        if len(audio) == 0:
+            report.quality_grade = "poor"
+            report.issues.append("Empty audio")
+            return report
+        
+        # Level metrics
+        report.rms_level_db = self._rms_level(audio)
+        report.peak_level_db = self._peak_level(audio)
+        report.dynamic_range_db = report.peak_level_db - report.rms_level_db
+        
+        # SNR estimation
+        report.snr_db = self._estimate_snr(audio)
+        
+        # Clarity
+        report.clarity_score = self._estimate_clarity(audio)
+        
+        # PESQ estimate
+        report.pesq_estimate = self._estimate_pesq(audio, reference)
+        
+        # Clipping
+        report.clipping_ratio = self._detect_clipping(audio)
+        
+        # Noise floor
+        report.noise_floor_db = self._estimate_noise_floor(audio)
+        
+        # Grade
+        report.quality_grade = self._grade(report)
+        
+        # Issues
+        report.issues = self._detect_issues(report)
+        
+        return report
+    
+    def _rms_level(self, audio: np.ndarray) -> float:
+        rms = np.sqrt(np.mean(audio ** 2) + 1e-10)
+        return 20 * np.log10(rms + 1e-10)
+    
+    def _peak_level(self, audio: np.ndarray) -> float:
+        peak = np.max(np.abs(audio))
+        return 20 * np.log10(peak + 1e-10)
+    
+    def _estimate_snr(self, audio: np.ndarray) -> float:
+        """Estimate SNR using frame-based energy analysis."""
+        frame_size = int(0.025 * self.sample_rate)
+        hop = int(0.010 * self.sample_rate)
+        energies = []
+        for i in range(0, len(audio) - frame_size, hop):
+            frame = audio[i:i + frame_size]
+            energies.append(np.mean(frame ** 2))
+        
+        if not energies:
+            return 0.0
+        
+        energies = np.array(energies)
+        # Assume bottom 20% frames are noise
+        noise_threshold = np.percentile(energies, 20)
+        noise_frames = energies[energies <= noise_threshold]
+        speech_frames = energies[energies > noise_threshold]
+        
+        if len(noise_frames) == 0 or len(speech_frames) == 0:
+            return 20.0
+        
+        noise_power = np.mean(noise_frames) + 1e-10
+        speech_power = np.mean(speech_frames) + 1e-10
+        return 10 * np.log10(speech_power / noise_power)
+    
+    def _estimate_clarity(self, audio: np.ndarray) -> float:
+        """Estimate spectral clarity (0-1)."""
+        fft = np.fft.rfft(audio)
+        magnitude = np.abs(fft)
+        freqs = np.fft.rfftfreq(len(audio), 1.0 / self.sample_rate)
+        
+        # Speech band energy (300-3400 Hz)
+        speech_mask = (freqs >= 300) & (freqs <= 3400)
+        speech_energy = np.sum(magnitude[speech_mask] ** 2)
+        total_energy = np.sum(magnitude ** 2) + 1e-10
+        
+        return min(speech_energy / total_energy, 1.0)
+    
+    def _estimate_pesq(self, audio: np.ndarray, reference: Optional[np.ndarray] = None) -> float:
+        """Rough PESQ estimate (1.0-4.5)."""
+        snr = self._estimate_snr(audio)
+        clarity = self._estimate_clarity(audio)
+        clipping = self._detect_clipping(audio)
+        
+        # Heuristic mapping
+        score = 1.0
+        score += min(snr / 30.0, 1.5)  # SNR contribution
+        score += clarity * 1.5  # Clarity contribution
+        score -= clipping * 2.0  # Clipping penalty
+        return np.clip(score, 1.0, 4.5)
+    
+    def _detect_clipping(self, audio: np.ndarray, threshold: float = 0.99) -> float:
+        clipped = np.sum(np.abs(audio) >= threshold)
+        return clipped / max(len(audio), 1)
+    
+    def _estimate_noise_floor(self, audio: np.ndarray) -> float:
+        frame_size = int(0.025 * self.sample_rate)
+        energies = []
+        for i in range(0, len(audio) - frame_size, frame_size):
+            frame = audio[i:i + frame_size]
+            energies.append(np.mean(frame ** 2))
+        
+        if not energies:
+            return -60.0
+        
+        noise_floor = np.percentile(energies, 10)
+        return 10 * np.log10(noise_floor + 1e-10)
+    
+    def _grade(self, report: QualityReport) -> str:
+        if report.pesq_estimate >= 4.0 and report.snr_db >= 20:
+            return "excellent"
+        elif report.pesq_estimate >= 3.0 and report.snr_db >= 10:
+            return "good"
+        elif report.pesq_estimate >= 2.0 and report.snr_db >= 5:
+            return "fair"
+        return "poor"
+    
+    def _detect_issues(self, report: QualityReport) -> list:
+        issues = []
+        if report.clipping_ratio > 0.01:
+            issues.append(f"Clipping detected ({report.clipping_ratio*100:.1f}%)")
+        if report.snr_db < 10:
+            issues.append(f"Low SNR ({report.snr_db:.1f} dB)")
+        if report.rms_level_db < -40:
+            issues.append("Audio too quiet")
+        if report.rms_level_db > -5:
+            issues.append("Audio too loud")
+        if report.clarity_score < 0.5:
+            issues.append("Low speech clarity")
+        return issues

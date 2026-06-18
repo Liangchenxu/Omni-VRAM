@@ -48,8 +48,8 @@ _PYANNOTE_AVAILABLE = False
 try:
     from pyannote.audio import Pipeline as PyannotePipeline
     _PYANNOTE_AVAILABLE = True
-    logger.info("pyannote-audio detected 锟?neural diarization backend available")
-except ImportError:
+    logger.info("pyannote-audio detected — neural diarization backend available")
+except (ImportError, OSError):
     logger.info(
         "pyannote-audio not available, using MFCC fallback. "
         "Install with: pip install pyannote-audio"
@@ -82,7 +82,7 @@ class SpeakerSegment:
 class SpeakerProfile:
     """Stored profile for an identified speaker."""
     speaker_id: str
-    embedding: np.ndarray = field(default_factory=lambda: np.zeros(26, dtype=np.float32))
+    embedding: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.float32))
     total_duration: float = 0.0
     segment_count: int = 0
 
@@ -151,13 +151,13 @@ class PyannoteDiarizer:
                     import torch
                     self._pipeline.to(torch.device("cuda"))
                     logger.info("pyannote pipeline moved to GPU")
-                except Exception:
+                except (RuntimeError, OSError):
                     logger.info("Could not move pipeline to GPU, using CPU")
 
             logger.info("pyannote diarization pipeline loaded successfully")
-        except Exception as e:
+        except (RuntimeError, OSError, ValueError) as e:
             logger.error("Failed to load pyannote pipeline: %s", e)
-            raise RuntimeError(f"pyannote pipeline load failed: {e}")
+            raise RuntimeError(f"pyannote pipeline load failed: {e}") from e
 
     @staticmethod
     def _has_cuda() -> bool:
@@ -226,7 +226,7 @@ class PyannoteDiarizer:
 
             return segments
 
-        except Exception as e:
+        except (RuntimeError, OSError, ValueError, TypeError) as e:
             logger.error("pyannote diarization failed: %s", e)
             raise
 
@@ -407,7 +407,11 @@ class MFCCDiarizer:
         return self._merge_consecutive(segments)
 
     def _merge_consecutive(self, segments: List[SpeakerSegment]) -> List[SpeakerSegment]:
-        """Merge consecutive segments from the same speaker."""
+        """Merge consecutive segments from the same speaker.
+
+        Audio data is dropped during merge to reduce memory usage.
+        If raw audio per segment is needed, use segments before merging.
+        """
         if not segments:
             return []
         merged = [segments[0]]
@@ -418,7 +422,7 @@ class MFCCDiarizer:
                     start_time=prev.start_time,
                     end_time=seg.end_time,
                     speaker_id=prev.speaker_id,
-                    audio=np.concatenate([prev.audio, seg.audio]) if prev.audio is not None and seg.audio is not None else None,
+                    audio=None,  # Drop audio to save memory during merge
                     confidence=min(prev.confidence, seg.confidence),
                 )
             else:
@@ -480,7 +484,7 @@ class SpeakerDiarizer:
                 )
                 self._active_backend = "pyannote"
                 logger.info("Using pyannote diarization backend")
-            except Exception as e:
+            except (RuntimeError, OSError, ImportError, ValueError) as e:
                 logger.warning("pyannote init failed (%s), falling back to MFCC", e)
                 self._active_backend = "mfcc"
         else:

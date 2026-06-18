@@ -45,13 +45,13 @@ try:
     _env_path = Path(__file__).parent.parent / ".env"
     if _env_path.exists():
         load_dotenv(_env_path)
-        logger.debug(f"Loaded .env from {_env_path}")
+        logger.debug("Loaded .env from %s", _env_path)
     else:
         # Also check current working directory
         _cwd_env = Path.cwd() / ".env"
         if _cwd_env.exists():
             load_dotenv(_cwd_env)
-            logger.debug(f"Loaded .env from {_cwd_env}")
+            logger.debug("Loaded .env from %s", _cwd_env)
 except ImportError:
     logger.debug(
         "python-dotenv not installed, .env file will not be loaded. "
@@ -90,7 +90,7 @@ def _get_env(key: str, default: Any = None, cast_type: type = str) -> Any:
             return value
     except (ValueError, TypeError) as e:
         logger.warning(
-            f"Invalid value for {key}='{value}': {e}. Using default: {default}"
+            "Invalid value for %s='%s': %s. Using default: %s", key, value, e, default
         )
         return default
 
@@ -160,51 +160,60 @@ class OmniConfig:
         # Validate
         self._validate()
 
+    # ── Class-level allowed values ────────────────────────────────────
+    _VALID_DEVICES = ("cuda", "cpu")
+    _VALID_BACKENDS = ("auto", "faster_whisper", "whisper_cpp", "openai_api")
+    _VALID_COMPUTE_TYPES = ("int8", "float16", "float32")
+    _VALID_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+    _VALID_SAMPLE_RATES = (8000, 16000, 22050, 44100, 48000)
+    _MIN_SAMPLE_RATE = 1000
+    _MAX_SAMPLE_RATE = 192000
+
     def _validate(self):
-        """Validate configuration values."""
+        """Validate configuration values and fix invalid ones."""
+        errors: list = []
+        warnings: list = []
+
         # Device validation
-        if self.device not in ("cuda", "cpu"):
-            logger.warning(
-                f"Invalid device '{self.device}', falling back to 'cuda'"
-            )
+        if self.device not in self._VALID_DEVICES:
+            warnings.append(f"Invalid device '{self.device}', falling back to 'cuda'")
             self.device = "cuda"
 
         # Sample rate validation
         if self.sample_rate <= 0:
-            logger.warning(
-                f"Invalid sample_rate {self.sample_rate}, falling back to 16000"
-            )
+            warnings.append(f"Invalid sample_rate {self.sample_rate}, falling back to 16000")
             self.sample_rate = 16000
+        elif self.sample_rate < self._MIN_SAMPLE_RATE or self.sample_rate > self._MAX_SAMPLE_RATE:
+            warnings.append(
+                f"sample_rate {self.sample_rate} outside reasonable range "
+                f"[{self._MIN_SAMPLE_RATE}, {self._MAX_SAMPLE_RATE}], "
+                "proceeding but may cause issues"
+            )
 
         # Whisper backend validation
-        valid_backends = ("auto", "faster_whisper", "whisper_cpp", "openai_api")
-        if self.whisper_backend not in valid_backends:
-            logger.warning(
+        if self.whisper_backend not in self._VALID_BACKENDS:
+            warnings.append(
                 f"Invalid whisper_backend '{self.whisper_backend}', falling back to 'auto'"
             )
             self.whisper_backend = "auto"
 
         # Whisper device validation
-        if self.whisper_device not in ("cuda", "cpu"):
-            logger.warning(
+        if self.whisper_device not in self._VALID_DEVICES:
+            warnings.append(
                 f"Invalid whisper_device '{self.whisper_device}', falling back to 'cuda'"
             )
             self.whisper_device = "cuda"
 
         # Whisper compute type validation
-        valid_compute = ("int8", "float16", "float32")
-        if self.whisper_compute_type not in valid_compute:
-            logger.warning(
+        if self.whisper_compute_type not in self._VALID_COMPUTE_TYPES:
+            warnings.append(
                 f"Invalid whisper_compute_type '{self.whisper_compute_type}', falling back to 'float16'"
             )
             self.whisper_compute_type = "float16"
 
         # Log level validation
-        valid_levels = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
-        if self.log_level.upper() not in valid_levels:
-            logger.warning(
-                f"Invalid log_level '{self.log_level}', falling back to INFO"
-            )
+        if self.log_level.upper() not in self._VALID_LOG_LEVELS:
+            warnings.append(f"Invalid log_level '{self.log_level}', falling back to INFO")
             self.log_level = "INFO"
         else:
             self.log_level = self.log_level.upper()
@@ -212,7 +221,7 @@ class OmniConfig:
         # Whisper model path validation
         if self.whisper_model_path is not None:
             if not self.whisper_model_path.exists():
-                logger.warning(
+                warnings.append(
                     f"Whisper model not found: {self.whisper_model_path}. "
                     "Local whisper.cpp transcription may fail."
                 )
@@ -220,6 +229,38 @@ class OmniConfig:
         # Language validation
         if self.language is not None:
             self.language = self.language.lower().strip()
+
+        # Emit warnings
+        for w in warnings:
+            logger.warning(w)
+
+    def validate(self) -> list:
+        """
+        Public validation that returns a list of (non-fatal) issues found.
+
+        Returns:
+            List of warning/error strings. Empty list means all OK.
+        """
+        issues: list = []
+
+        if self.device not in self._VALID_DEVICES:
+            issues.append(f"Invalid device: {self.device}")
+        if self.whisper_backend not in self._VALID_BACKENDS:
+            issues.append(f"Invalid whisper_backend: {self.whisper_backend}")
+        if self.whisper_device not in self._VALID_DEVICES:
+            issues.append(f"Invalid whisper_device: {self.whisper_device}")
+        if self.whisper_compute_type not in self._VALID_COMPUTE_TYPES:
+            issues.append(f"Invalid whisper_compute_type: {self.whisper_compute_type}")
+        if self.log_level.upper() not in self._VALID_LOG_LEVELS:
+            issues.append(f"Invalid log_level: {self.log_level}")
+        if self.sample_rate <= 0:
+            issues.append(f"Invalid sample_rate: {self.sample_rate}")
+        if self.whisper_model_path is not None and not self.whisper_model_path.exists():
+            issues.append(f"Whisper model file not found: {self.whisper_model_path}")
+        if self.whisper_cpp_path is not None and not self.whisper_cpp_path.exists():
+            issues.append(f"whisper.cpp path not found: {self.whisper_cpp_path}")
+
+        return issues
 
     @property
     def has_openai_key(self) -> bool:
@@ -301,4 +342,4 @@ def setup_logging(level: Optional[str] = None):
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    logger.info(f"vram_core logging initialized at {log_level} level")
+    logger.info("vram_core logging initialized at %s level", log_level)

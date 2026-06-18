@@ -43,7 +43,7 @@ try:
     import pynvml
     pynvml.nvmlInit()
     _NVML_AVAILABLE = True
-except Exception:
+except (ImportError, OSError, RuntimeError):
     _NVML_AVAILABLE = False
 
 
@@ -52,6 +52,17 @@ class MemoryPressure(Enum):
     MEDIUM = "medium"    # 50-70% used
     HIGH = "high"        # 70-85% used
     CRITICAL = "critical"  # > 85% used
+
+
+# ── Named Constants ──────────────────────────────────────────────
+_MB_TO_GB: float = 1 / 1024.0
+_PRESSURE_LOW_THRESHOLD_PCT: float = 50.0
+_PRESSURE_MEDIUM_THRESHOLD_PCT: float = 70.0
+_PRESSURE_HIGH_THRESHOLD_PCT: float = 85.0
+_DTYPE_BYTES_FP16: int = 2
+_DTYPE_BYTES_FP32: int = 4
+_MB_BYTES: int = 1024 * 1024
+_GB_BYTES: int = 1024 ** 3
 
 
 @dataclass
@@ -138,23 +149,23 @@ class VRAMOptimizer:
                 props = torch.cuda.get_device_properties(self.device_id)
                 gpu_name = props.name
                 mem_info = torch.cuda.mem_get_info(self.device_id)
-                free = mem_info[0] // (1024 * 1024)
-                total = mem_info[1] // (1024 * 1024)
+                free = mem_info[0] // _MB_BYTES
+                total = mem_info[1] // _MB_BYTES
                 used = total - free
-            except Exception:
-                pass
+            except (RuntimeError, OSError) as e:
+                logger.debug("torch mem_get_info failed: %s", e)
         elif _NVML_AVAILABLE:
             try:
                 handle = pynvml.nvmlDeviceGetHandleByIndex(self.device_id)
                 name = pynvml.nvmlDeviceGetName(handle)
                 gpu_name = name.decode("utf-8") if isinstance(name, bytes) else name
                 mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                total = mem.total // (1024 * 1024)
-                used = mem.used // (1024 * 1024)
-                free = mem.free // (1024 * 1024)
+                total = mem.total // _MB_BYTES
+                used = mem.used // _MB_BYTES
+                free = mem.free // _MB_BYTES
                 temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
-            except Exception:
-                pass
+            except (pynvml.NVMLError, RuntimeError, OSError) as e:
+                logger.debug("NVML mem_get_info failed: %s", e)
 
         usage_pct = (used / total * 100.0) if total > 0 else 0.0
         pressure = self._compute_pressure(usage_pct)
@@ -172,11 +183,11 @@ class VRAMOptimizer:
 
     @staticmethod
     def _compute_pressure(usage_pct: float) -> MemoryPressure:
-        if usage_pct < 50:
+        if usage_pct < _PRESSURE_LOW_THRESHOLD_PCT:
             return MemoryPressure.LOW
-        elif usage_pct < 70:
+        elif usage_pct < _PRESSURE_MEDIUM_THRESHOLD_PCT:
             return MemoryPressure.MEDIUM
-        elif usage_pct < 85:
+        elif usage_pct < _PRESSURE_HIGH_THRESHOLD_PCT:
             return MemoryPressure.HIGH
         else:
             return MemoryPressure.CRITICAL
@@ -248,11 +259,16 @@ class VRAMOptimizer:
                 return "none"
 
         # No specific requirement: use thresholds
-        if free_mb >= 8000:
+        # Thresholds based on typical model requirements
+        _FREE_THRESHOLD_FLOAT32_MB: int = 8000
+        _FREE_THRESHOLD_FLOAT16_MB: int = 4000
+        _FREE_THRESHOLD_INT8_MB: int = 2000
+
+        if free_mb >= _FREE_THRESHOLD_FLOAT32_MB:
             return "float32"
-        elif free_mb >= 4000:
+        elif free_mb >= _FREE_THRESHOLD_FLOAT16_MB:
             return "float16"
-        elif free_mb >= 2000:
+        elif free_mb >= _FREE_THRESHOLD_INT8_MB:
             return "int8"
         else:
             return "none"
@@ -268,32 +284,40 @@ class VRAMOptimizer:
         status = self.get_status()
 
         if status.pressure == MemoryPressure.CRITICAL:
-            logger.warning("VRAM CRITICAL (%.1f%%) 锟?forcing cleanup", status.usage_pct)
+            logger.warning("VRAM CRITICAL (%.1f%%) — forcing cleanup", status.usage_pct)
             self.force_cleanup()
             return True
         elif status.pressure == MemoryPressure.HIGH:
             if status.usage_pct >= self.cleanup_threshold_pct:
-                logger.info("VRAM HIGH (%.1f%%) 锟?running cleanup", status.usage_pct)
+                logger.info("VRAM HIGH (%.1f%%) — running cleanup", status.usage_pct)
                 self.cleanup_cache()
                 return True
 
         return False
 
-    def cleanup_cache(self):
+    def cleanup_cache(self) -> None:
         """Clear PyTorch CUDA cache and run garbage collection."""
         gc.collect()
         if _TORCH_AVAILABLE and torch.cuda.is_available():
-            torch.cuda.empty_cache()
+            try:
+                torch.cuda.empty_cache()
+            except RuntimeError as e:
+                logger.warning("Failed to clear CUDA cache: %s", e)
+                return
             self._last_cleanup_time = time.time()
             self._cleanup_count += 1
             logger.info("GPU cache cleared (cleanup #%d)", self._cleanup_count)
 
-    def force_cleanup(self):
+    def force_cleanup(self) -> None:
         """Aggressive cleanup: clear all caches and synchronize."""
         gc.collect()
         if _TORCH_AVAILABLE and torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize(self.device_id)
+            try:
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize(self.device_id)
+            except RuntimeError as e:
+                logger.warning("Failed during forced GPU cleanup: %s", e)
+                return
             self._last_cleanup_time = time.time()
             self._cleanup_count += 1
             logger.info("Forced GPU cleanup (cleanup #%d)", self._cleanup_count)
@@ -317,11 +341,11 @@ class VRAMOptimizer:
     @staticmethod
     def get_model_size_estimate(
         n_params_billion: float,
-        dtype_bytes: int = 2,
+        dtype_bytes: int = _DTYPE_BYTES_FP16,
     ) -> float:
         """Estimate model VRAM in MB given parameter count and dtype.
 
         Uses binary convention: 1 billion = 1024^3, 1 MB = 1024^2 bytes.
         So 7B FP16 = 7 * 1024 * 2 = 14336 MB.
         """
-        return n_params_billion * (1024 ** 3) * dtype_bytes / (1024 * 1024)
+        return n_params_billion * _GB_BYTES * dtype_bytes / _MB_BYTES

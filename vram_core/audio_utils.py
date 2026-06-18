@@ -181,9 +181,12 @@ class AudioProcessor:
         # Convert to float32
         audio = self._to_float32(audio)
 
-        # Stereo to mono
-        if audio.ndim > 1 and audio.shape[1] > 1:
-            audio = self.stereo_to_mono(audio)
+        # Stereo to mono (also flatten single-channel 2D arrays)
+        if audio.ndim > 1:
+            if audio.shape[1] > 1:
+                audio = self.stereo_to_mono(audio)
+            else:
+                audio = audio.flatten()
 
         # Resample if needed
         if sr != self.target_sample_rate:
@@ -237,8 +240,12 @@ class AudioProcessor:
 
         audio = self._to_float32(audio)
 
-        if audio.ndim > 1 and audio.shape[1] > 1:
-            audio = self.stereo_to_mono(audio)
+        # Stereo to mono (also flatten single-channel 2D arrays)
+        if audio.ndim > 1:
+            if audio.shape[1] > 1:
+                audio = self.stereo_to_mono(audio)
+            else:
+                audio = audio.flatten()
 
         if sr != self.target_sample_rate:
             audio = self.resample(audio, sr, self.target_sample_rate)
@@ -401,7 +408,9 @@ class AudioProcessor:
         if audio.dtype == np.int16:
             return audio.astype(np.float32) / 32768.0
         if audio.dtype == np.int32:
-            return audio.astype(np.float32) / 2147483648.0
+            # Use float64 intermediate to avoid precision loss
+            # (float32 only has 24-bit mantissa, int32 needs 32-bit)
+            return (audio.astype(np.float64) / 2147483648.0).astype(np.float32)
         if audio.dtype == np.uint8:
             return (audio.astype(np.float32) - 128.0) / 128.0
         return audio.astype(np.float32)

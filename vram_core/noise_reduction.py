@@ -603,9 +603,18 @@ class NoiseReducer:
 
     def close(self):
         """Release resources."""
+        self._stream_buffer = np.array([], dtype=np.float32)
+        self._noise_estimate = None
         if self._webrtc is not None:
             self._webrtc.close()
             self._webrtc = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
 
     def __del__(self):
         self.close()

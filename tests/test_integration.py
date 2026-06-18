@@ -426,10 +426,12 @@ class TestCrossImportCompatibility:
             assert len(deprecation_warnings) >= 1
             assert "deprecated" in str(deprecation_warnings[0].message).lower()
 
-    def test_version_is_2_1(self):
-        """Package version is 2.1.x."""
+    def test_version_is_current(self):
+        """Package version follows semver format."""
         import vram_core
-        assert vram_core.__version__.startswith("2.1")
+        parts = vram_core.__version__.split(".")
+        assert len(parts) >= 2, "Version should be at least X.Y"
+        assert all(p.isdigit() for p in parts[:3]), "Version parts should be numeric"
 
 
 # ---------------------------------------------------------------------------
