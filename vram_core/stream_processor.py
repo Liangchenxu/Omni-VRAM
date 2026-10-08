@@ -1,26 +1,38 @@
 ﻿"""
-Real-Time Audio Stream Processor for vram_core
-================================================
+Real-Time Full-Duplex Audio Stream Processor for vram_core
+==========================================================
 
 Handles real-time audio streaming with chunk-based processing,
-Voice Activity Detection (VAD), and low-latency transcription
-pipeline integration.
+Voice Activity Detection (VAD), low-latency transcription pipeline
+integration and full-duplex barge-in (interruption) handling.
 
-Target: < 200ms end-to-end latency on RTX 3060.
+Target: < 200ms end-to-end latency on RTX 3060,
+sub-millisecond barge-in signal dispatch.
 
 Architecture:
     - StreamProcessor: Main class for real-time audio processing
-    - CircularBuffer: Lock-free ring buffer for audio chunks
-    - VADProcessor: Simple energy-based Voice Activity Detection
+    - CircularBuffer: Pre-allocated numpy ring buffer (zero-growth audio memory)
+    - VADProcessor: Energy-based Voice Activity Detection (frame level)
+    - StreamState: Speech-segment state machine (backward compatible)
+    - DuplexState: Full-duplex conversational state machine (barge-in aware)
+
+Full-duplex flow:
+    LISTENING --(user speech ends)--> THINKING --(TTS starts)--> SPEAKING
+    SPEAKING --(barge-in detected)--> LISTENING   # playback must flush/mute
+
+The barge-in detector runs at the very head of :meth:`StreamProcessor.feed`,
+before noise reduction / VAD / ASR work, so the external playback pipeline is
+notified (``on_interrupt``) with sub-millisecond latency.
 """
+
+from __future__ import annotations
 
 import time
 import threading
 import logging
-from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, Callable, List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
@@ -31,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 class StreamState(Enum):
-    """Stream processing states."""
+    """Stream processing states (speech segment state machine)."""
     IDLE = "idle"
     LISTENING = "listening"
     SPEAKING = "speaking"
@@ -39,9 +51,78 @@ class StreamState(Enum):
     ERROR = "error"
 
 
+class DuplexState(Enum):
+    """
+    Full-duplex conversational states.
+
+    Attributes:
+        IDLE: Processor is not bound to an active conversation yet.
+        LISTENING: Capturing user audio (playback muted / stopped).
+        THINKING: User finished speaking, ASR / LLM pipeline is running.
+        SPEAKING: System (TTS) playback in progress -- barge-in is armed.
+    """
+    IDLE = "idle"
+    LISTENING = "listening"
+    THINKING = "thinking"
+    SPEAKING = "speaking"
+
+
+@dataclass
+class BargeInEvent:
+    """
+    Evidence payload emitted when the user interrupts system playback.
+
+    Attributes:
+        energy: RMS energy of the triggering frame.
+        threshold: Effective (dynamically weighted) threshold that was exceeded.
+        frames: Number of consecutive high-energy frames observed.
+        playback_elapsed_ms: Milliseconds elapsed since playback started.
+        detection_latency_ms: Milliseconds from ``feed()`` entry to dispatch --
+            this is the "signal truncation" latency the playback pipeline sees.
+        duplex_state: Duplex state at detection time (``SPEAKING``).
+        reason: Human readable trigger reason.
+        timestamp: UNIX timestamp of the detection.
+    """
+    energy: float
+    threshold: float
+    frames: int
+    playback_elapsed_ms: float
+    detection_latency_ms: float
+    duplex_state: DuplexState = DuplexState.SPEAKING
+    reason: str = "energy_vad"
+    timestamp: float = field(default_factory=time.time)
+
+
+
 @dataclass
 class StreamConfig:
-    """Configuration for stream processing."""
+    """
+    Configuration for stream processing.
+
+    Attributes:
+        sample_rate: Audio sample rate in Hz.
+        chunk_duration_ms: Chunk size in milliseconds.
+        vad_threshold: Energy threshold for VAD (0.0 - 1.0).
+        vad_silence_duration_ms: Silence duration to end speech.
+        vad_min_speech_ms: Minimum speech duration to process.
+        max_buffer_duration_s: Maximum segment buffer duration
+            (pre-allocated ring buffer capacity -- no reallocation ever).
+        pre_speech_buffer_ms: Pre-speech context buffer duration.
+        overlap_ms: Overlap between chunks for continuity (informational).
+
+        enable_barge_in: Arm the barge-in detector while playback is active.
+        interrupt_energy_thresh: Base RMS energy required to accept a barge-in
+            frame (before sensitivity / echo weighting).
+        interrupt_min_frames: Consecutive high-energy frames (K) required
+            before the interrupt signal is raised.
+        barge_in_sensitivity: User sensitivity multiplier; values > 1.0 lower the
+            effective threshold (easier to interrupt), < 1.0 raise it.
+        echo_suppression_factor: Extra threshold multiplier applied right after
+            playback starts, to avoid triggering on the speaker echo of the TTS.
+        echo_suppression_decay_ms: Time (ms) over which ``echo_suppression_factor``
+            decays linearly back to 1.0 (floating-weight suppression).
+        vad_frame_ms: Frame length used for frame-level VAD / barge-in scanning.
+    """
     sample_rate: int = 16000
     chunk_duration_ms: int = 100          # Chunk size in milliseconds
     vad_threshold: float = 0.02           # Energy threshold for VAD
@@ -50,6 +131,15 @@ class StreamConfig:
     max_buffer_duration_s: float = 30.0   # Maximum buffer duration
     pre_speech_buffer_ms: int = 200       # Pre-speech context buffer
     overlap_ms: int = 50                  # Overlap between chunks for continuity
+
+    # ---- Full-duplex / barge-in ----
+    enable_barge_in: bool = True
+    interrupt_energy_thresh: float = 0.06
+    interrupt_min_frames: int = 3
+    barge_in_sensitivity: float = 1.0
+    echo_suppression_factor: float = 2.0
+    echo_suppression_decay_ms: int = 400
+    vad_frame_ms: int = 25
 
     @property
     def chunk_size(self) -> int:
@@ -71,22 +161,70 @@ class StreamConfig:
         """Number of pre-speech buffer samples."""
         return int(self.sample_rate * self.pre_speech_buffer_ms / 1000)
 
+    @property
+    def max_buffer_samples(self) -> int:
+        """Capacity (in samples) of the segment ring buffer."""
+        return int(self.sample_rate * self.max_buffer_duration_s)
+
+    @property
+    def vad_frame_size(self) -> int:
+        """VAD frame length in samples."""
+        return max(1, int(self.sample_rate * self.vad_frame_ms / 1000))
+
 
 class CircularBuffer:
     """
-    Thread-safe circular buffer for audio samples.
+    Thread-safe, pre-allocated ring buffer for ``float32`` audio samples.
 
-    Uses a deque with maxlen for automatic old-sample eviction.
+    Unlike the previous ``deque``-based implementation this buffer owns a single
+    contiguous ``numpy`` array, so writing audio never allocates per sample and
+    never triggers ``np.concatenate`` / ``np.append`` growth: memory usage stays
+    constant regardless of how long the stream runs (real-time safe).
+
+    All operations are O(1) amortised; the only copies are the ``n`` samples
+    returned by :meth:`read` / :meth:`peek`. When the buffer is full the oldest
+    samples are silently evicted (sliding-window semantics).
+
+    Args:
+        max_samples: Capacity in samples (must be > 0).
     """
 
+    __slots__ = ("capacity", "_data", "_head", "_tail", "_count",
+                 "_total_written", "_lock")
+
     def __init__(self, max_samples: int):
-        self.max_samples = max_samples
-        self._buffer: deque = deque(maxlen=max_samples)
+        if max_samples is None or max_samples <= 0:
+            raise ValueError("max_samples must be a positive integer")
+        self.capacity = int(max_samples)
+        self._data = np.zeros(self.capacity, dtype=np.float32)
+        self._head = 0
+        self._tail = 0
+        self._count = 0
+        self._total_written = 0
         self._lock = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # Internal helpers (callers must hold ``self._lock``)
+    # ------------------------------------------------------------------
+
+    def _copy_from(self, start: int, n_samples: int) -> np.ndarray:
+        """Copy ``n_samples`` starting at physical index ``start`` (wrapping)."""
+        end = start + n_samples
+        if end <= self.capacity:
+            return self._data[start:end].copy()
+        first = self.capacity - start
+        out = np.empty(n_samples, dtype=np.float32)
+        out[:first] = self._data[start:]
+        out[first:] = self._data[:n_samples - first]
+        return out
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def write(self, data: np.ndarray) -> int:
         """
-        Write audio samples to the buffer.
+        Write audio samples to the buffer (evicting oldest on overflow).
 
         Args:
             data: Audio samples to write.
@@ -94,10 +232,37 @@ class CircularBuffer:
         Returns:
             Number of samples written.
         """
+        if data is None:
+            return 0
+        samples = np.asarray(data, dtype=np.float32).reshape(-1)
+        n_samples = int(samples.size)
+        if n_samples == 0:
+            return 0
+        samples = np.ascontiguousarray(samples)
+
         with self._lock:
-            samples = data.flatten().tolist()
-            self._buffer.extend(samples)
-            return len(samples)
+            self._total_written += n_samples
+            if n_samples >= self.capacity:
+                # Only the newest ``capacity`` samples are relevant.
+                self._data[:] = samples[-self.capacity:]
+                self._head = 0
+                self._count = self.capacity
+                self._tail = 0
+                return n_samples
+
+            space_to_end = self.capacity - self._head
+            if n_samples <= space_to_end:
+                self._data[self._head:self._head + n_samples] = samples
+            else:
+                self._data[self._head:] = samples[:space_to_end]
+                self._data[:n_samples - space_to_end] = samples[space_to_end:]
+
+            self._head = (self._head + n_samples) % self.capacity
+            self._count += n_samples
+            if self._count >= self.capacity:
+                self._count = self.capacity
+                self._tail = self._head
+            return n_samples
 
     def read(self, n_samples: int) -> np.ndarray:
         """
@@ -107,42 +272,97 @@ class CircularBuffer:
             n_samples: Number of samples to read.
 
         Returns:
-            Audio samples as numpy array.
+            Audio samples as numpy array (float32).
         """
         with self._lock:
-            n = min(n_samples, len(self._buffer))
-            if n == 0:
+            n = min(int(n_samples), self._count)
+            if n <= 0:
                 return np.array([], dtype=np.float32)
-            samples = [self._buffer.popleft() for _ in range(n)]
-            return np.array(samples, dtype=np.float32)
+            out = self._copy_from(self._tail, n)
+            self._tail = (self._tail + n) % self.capacity
+            self._count -= n
+            return out
+
+    def read_all(self) -> np.ndarray:
+        """
+        Read and remove every buffered sample (chronological order).
+
+        Returns:
+            Audio samples as numpy array (float32).
+        """
+        return self.read(self.size)
 
     def peek(self, n_samples: int) -> np.ndarray:
         """
         Read n samples without removing them.
 
+        This is the sliding-window extractor: ``peek(window_samples)`` always
+        returns the most recent window of audio at O(n) cost using the
+        pre-allocated storage (no growth, no ``np.concatenate``).
+
         Args:
             n_samples: Number of samples to peek.
 
         Returns:
-            Audio samples as numpy array.
+            Audio samples as numpy array (float32).
         """
         with self._lock:
-            n = min(n_samples, len(self._buffer))
-            if n == 0:
+            n = min(int(n_samples), self._count)
+            if n <= 0:
                 return np.array([], dtype=np.float32)
-            samples = list(self._buffer)[-n:]
-            return np.array(samples, dtype=np.float32)
+            start = (self._tail + self._count - n) % self.capacity
+            return self._copy_from(start, n)
+
+    def extract_window(self, n_samples: int) -> np.ndarray:
+        """Sliding-window extraction alias of :meth:`peek`."""
+        return self.peek(n_samples)
+
+    def clear(self) -> None:
+        """Clear the buffer (keeps the pre-allocated memory)."""
+        with self._lock:
+            self._head = 0
+            self._tail = 0
+            self._count = 0
 
     @property
     def size(self) -> int:
         """Current number of samples in buffer."""
         with self._lock:
-            return len(self._buffer)
+            return self._count
 
-    def clear(self) -> None:
-        """Clear the buffer."""
+    @property
+    def available(self) -> int:
+        """Remaining free space in samples."""
         with self._lock:
-            self._buffer.clear()
+            return self.capacity - self._count
+
+    @property
+    def total_written(self) -> int:
+        """Total number of samples ever written (diagnostics only)."""
+        with self._lock:
+            return self._total_written
+
+    @property
+    def memory_bytes(self) -> int:
+        """Bytes of pre-allocated storage owned by this buffer (constant)."""
+        return int(self._data.nbytes)
+
+    @property
+    def is_empty(self) -> bool:
+        """True when no samples are buffered."""
+        return self.size == 0
+
+    @property
+    def is_full(self) -> bool:
+        """True when the buffer is at capacity."""
+        return self.size >= self.capacity
+
+    def __len__(self) -> int:
+        return self.size
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics only
+        return (f"CircularBuffer(capacity={self.capacity}, size={self.size}, "
+                f"dtype=float32)")
 
 
 class VADProcessor:
@@ -210,6 +430,57 @@ class VADProcessor:
         crossings = np.sum(np.abs(np.diff(np.sign(audio)))) / 2
         return crossings / (len(audio) - 1)
 
+    def frame_energies(
+        self,
+        audio: np.ndarray,
+        frame_size: Optional[int] = None,
+    ) -> np.ndarray:
+        """
+        Compute per-frame RMS energies (vectorised, allocation friendly).
+
+        Used by the barge-in detector to count *consecutive* high-energy frames
+        without any Python-level per-sample loop.
+
+        Args:
+            audio: Audio chunk (float32).
+            frame_size: Frame length in samples (defaults to ``self.frame_size``).
+
+        Returns:
+            float32 array with one RMS energy per full frame. If the chunk is
+            shorter than one frame a single energy covering the whole chunk is
+            returned; an empty chunk yields an empty array.
+        """
+        if audio is None or len(audio) == 0:
+            return np.array([], dtype=np.float32)
+        size = int(frame_size or self.frame_size)
+        if size <= 0:
+            size = self.frame_size
+        usable = (len(audio) // size) * size
+        if usable < size:
+            return np.array([self.compute_energy(audio)], dtype=np.float32)
+        frames = np.asarray(audio, dtype=np.float32)[:usable].reshape(-1, size)
+        return np.sqrt(np.mean(frames * frames, axis=1)).astype(np.float32)
+
+    def speech_confidence(self, audio: np.ndarray) -> float:
+        """
+        Map RMS energy onto a 0..1 speech confidence.
+
+        The mapping is smooth (``0.5`` at the VAD threshold) so callers can
+        weigh decisions instead of relying on a hard boolean.
+
+        Args:
+            audio: Audio chunk (float32).
+
+        Returns:
+            Confidence in the range 0.0 - 1.0.
+        """
+        energy = self.compute_energy(audio)
+        if energy <= 0.0:
+            return 0.0
+        if self.threshold <= 0.0:
+            return 1.0
+        return float(energy / (energy + self.threshold))
+
     def detect_speech_segments(
         self,
         audio: np.ndarray,
@@ -255,11 +526,35 @@ class VADProcessor:
 
 @dataclass
 class StreamEvent:
-    """Event emitted by the stream processor."""
+    """Event emitted by the stream processor.
+
+    ``event_type`` is one of ``"speech_start"``, ``"speech_end"``,
+    ``"transcription"``, ``"interrupt"``, ``"playback_start"``,
+    ``"playback_stop"`` or ``"error"``.
+    """
     event_type: str  # "speech_start", "speech_end", "transcription", "error"
     timestamp: float = field(default_factory=time.time)
     data: Optional[object] = None
     audio: Optional[np.ndarray] = None
+
+
+@dataclass
+class _FeedOutcome:
+    """
+    Internal container for work produced while the state lock was held.
+
+    Callbacks and events are queued here instead of being invoked inline so the
+    lock is always released before user code runs (prevents re-entrancy
+    deadlocks and keeps the audio thread free of user latency).
+
+    Attributes:
+        callbacks: Zero-argument callables to run after unlocking.
+        events: ``StreamEvent`` objects to publish after unlocking.
+        segment: Completed speech segment ready for transcription.
+    """
+    callbacks: List[Callable[[], None]] = field(default_factory=list)
+    events: List[StreamEvent] = field(default_factory=list)
+    segment: Optional[np.ndarray] = None
 
 
 class StreamProcessor:
@@ -302,24 +597,27 @@ class StreamProcessor:
         # Noise reduction (pre-VAD preprocessing)
         self.noise_reducer = NoiseReducer(strength="medium")
 
-        # VAD processor
+        # VAD processor (frame level, shared with the barge-in detector)
         self.vad = VADProcessor(
             threshold=self.config.vad_threshold,
             sample_rate=self.config.sample_rate,
+            frame_size_ms=self.config.vad_frame_ms,
         )
 
-        # Circular buffers
-        max_buffer_samples = int(
-            self.config.sample_rate * self.config.max_buffer_duration_s
-        )
-        self._audio_buffer = CircularBuffer(max_buffer_samples)
+        # Pre-allocated ring buffers (fixed memory, no concatenation growth)
+        self._audio_buffer = CircularBuffer(self.config.max_buffer_samples)
         self._pre_speech_buffer = CircularBuffer(self.config.pre_speech_samples)
 
-        # State
+        # Speech segment state
         self._state = StreamState.IDLE
+        self._duplex_state = DuplexState.IDLE
         self._silence_counter = 0
-        self._speech_chunks: List[np.ndarray] = []
         self._total_speech_samples = 0
+
+        # Full-duplex / barge-in state
+        self._playback_active = False
+        self._playback_started_at: Optional[float] = None
+        self._interrupt_frames = 0
 
         # Callbacks
         self.on_speech_start: Optional[Callable[[], None]] = None
@@ -327,9 +625,12 @@ class StreamProcessor:
         self.on_transcription: Optional[Callable[[object], None]] = None
         self.on_state_change: Optional[Callable[[StreamState], None]] = None
         self.on_event: Optional[Callable[[StreamEvent], None]] = None
+        self.on_interrupt: Optional[Callable[[BargeInEvent], None]] = None
+        self.on_duplex_state_change: Optional[Callable[[DuplexState], None]] = None
 
-        # Threading
-        self._lock = threading.Lock()
+        # Threading -- re-entrant lock: helpers are called from locked sections
+        # and callbacks are always dispatched after the lock is released.
+        self._lock = threading.RLock()
         self._processing_thread: Optional[threading.Thread] = None
 
         # Statistics
@@ -339,39 +640,291 @@ class StreamProcessor:
             "total_speech_duration_s": 0.0,
             "total_processing_time_s": 0.0,
             "avg_latency_ms": 0.0,
+            "interrupts": 0,
+            "last_interrupt_latency_ms": 0.0,
         }
 
     @property
     def state(self) -> StreamState:
-        """Current stream state."""
+        """Current speech-segment state."""
         return self._state
+
+    @property
+    def duplex_state(self) -> DuplexState:
+        """Current full-duplex conversational state."""
+        return self._duplex_state
+
+    @property
+    def is_playback_active(self) -> bool:
+        """True while external playback (TTS) is running."""
+        return self._playback_active
+
+    @property
+    def memory_footprint_bytes(self) -> int:
+        """Bytes of pre-allocated audio memory (constant over time)."""
+        return self._audio_buffer.memory_bytes + self._pre_speech_buffer.memory_bytes
 
     @property
     def stats(self) -> dict:
         """Processing statistics."""
         return self._stats.copy()
 
-    def _set_state(self, new_state: StreamState) -> None:
-        """Update state and notify callback. Thread-safe."""
-        with self._lock:
-            if self._state != new_state:
-                self._state = new_state
-                logger.debug("State -> %s", new_state.value)
-                callback = self.on_state_change
-        # Invoke callback outside lock to avoid deadlocks
-        if callback:
-            try:
-                callback(new_state)
-            except Exception as e:
-                logger.warning("State change callback error: %s", e)
+    def _set_state(
+        self,
+        new_state: StreamState,
+        outcome: Optional["_FeedOutcome"] = None,
+    ) -> None:
+        """
+        Update the speech state and notify ``on_state_change``.
 
-    def _emit_event(self, event: StreamEvent) -> None:
-        """Emit event to callback."""
+        Thread-safe: the callback is always invoked *after* the state lock is
+        released. When ``outcome`` is provided (feed path) the notification is
+        queued so the caller can dispatch it once it owns no lock.
+
+        Args:
+            new_state: New ``StreamState`` value.
+            outcome: Optional notification collector for deferred dispatch.
+        """
+        with self._lock:
+            if self._state == new_state:
+                return
+            self._state = new_state
+            callback = self.on_state_change
+        logger.debug("State -> %s", new_state.value)
+        if callback is not None:
+            if outcome is not None:
+                outcome.callbacks.append(
+                    lambda cb=callback, st=new_state: self._safe_call(cb, st)
+                )
+            else:
+                self._safe_call(callback, new_state)
+
+    def _set_duplex_state(
+        self,
+        new_state: DuplexState,
+        outcome: Optional["_FeedOutcome"] = None,
+    ) -> None:
+        """
+        Update the full-duplex state and notify ``on_duplex_state_change``.
+
+        Args:
+            new_state: New ``DuplexState`` value.
+            outcome: Optional notification collector for deferred dispatch.
+        """
+        with self._lock:
+            if self._duplex_state == new_state:
+                return
+            self._duplex_state = new_state
+            callback = self.on_duplex_state_change
+        logger.debug("Duplex state -> %s", new_state.value)
+        if callback is not None:
+            if outcome is not None:
+                outcome.callbacks.append(
+                    lambda cb=callback, st=new_state: self._safe_call(cb, st)
+                )
+            else:
+                self._safe_call(callback, new_state)
+
+    @staticmethod
+    def _safe_call(callback: Callable, *args) -> None:
+        """Invoke a user callback, swallowing (and logging) exceptions."""
+        try:
+            callback(*args)
+        except Exception as e:  # noqa: BLE001 - user callback must never break audio
+            logger.warning("Callback error: %s", e)
+
+    def _emit_event(
+        self,
+        event: StreamEvent,
+        outcome: Optional["_FeedOutcome"] = None,
+    ) -> None:
+        """
+        Emit a stream event to ``on_event``.
+
+        Args:
+            event: Event to publish.
+            outcome: Optional notification collector for deferred dispatch.
+        """
+        if outcome is not None:
+            outcome.events.append(event)
+            return
         if self.on_event:
-            try:
-                self.on_event(event)
-            except Exception as e:
-                logger.warning("Event callback error: %s", e)
+            self._safe_call(self.on_event, event)
+
+    # ------------------------------------------------------------------
+    # Full-Duplex / Barge-In
+    # ------------------------------------------------------------------
+
+    def set_playback_state(self, is_playing: bool) -> None:
+        """
+        Notify the processor that external playback (TTS) starts or stops.
+
+        While playback is active the processor enters ``DuplexState.SPEAKING``
+        and arms the barge-in detector. The effective interrupt threshold is
+        weighted by ``echo_suppression_factor`` for the first
+        ``echo_suppression_decay_ms`` milliseconds (floating weight) so the
+        speaker echo of the TTS cannot trigger a false interruption.
+
+        Args:
+            is_playing: True when playback starts, False when it stops.
+        """
+        now = time.perf_counter()
+        with self._lock:
+            self._playback_active = bool(is_playing)
+            self._playback_started_at = now if is_playing else None
+            self._interrupt_frames = 0
+
+        if is_playing:
+            self._set_duplex_state(DuplexState.SPEAKING)
+            self._emit_event(StreamEvent(event_type="playback_start"))
+        else:
+            self._set_duplex_state(DuplexState.LISTENING)
+            self._emit_event(StreamEvent(event_type="playback_stop"))
+        logger.info("Playback state -> %s", "playing" if is_playing else "stopped")
+
+    def _is_barge_in_armed(self) -> bool:
+        """True when barge-in detection should scan incoming chunks."""
+        return (
+            self.config.enable_barge_in
+            and self._playback_active
+            and self._duplex_state is DuplexState.SPEAKING
+        )
+
+    def _effective_interrupt_threshold(self, now: float) -> float:
+        """
+        Compute the dynamically weighted barge-in threshold.
+
+        ``threshold = interrupt_energy_thresh / barge_in_sensitivity`` with an
+        additional damping factor that decays linearly from
+        ``echo_suppression_factor`` (right after playback start) back to ``1.0``
+        after ``echo_suppression_decay_ms``.
+
+        Args:
+            now: ``time.perf_counter()`` value of the current scan.
+
+        Returns:
+            Effective RMS energy threshold.
+        """
+        sensitivity = max(self.config.barge_in_sensitivity, 1e-6)
+        threshold = self.config.interrupt_energy_thresh / sensitivity
+
+        started = self._playback_started_at
+        decay_ms = max(self.config.echo_suppression_decay_ms, 0)
+        if started is None or decay_ms <= 0:
+            return threshold
+
+        elapsed_ms = (now - started) * 1000.0
+        progress = min(1.0, max(0.0, elapsed_ms / decay_ms))
+        damping = self.config.echo_suppression_factor - (
+            self.config.echo_suppression_factor - 1.0
+        ) * progress
+        return threshold * damping
+
+    def _scan_barge_in(
+        self,
+        audio_chunk: np.ndarray,
+        enter: float,
+    ) -> Optional[BargeInEvent]:
+        """
+        Scan one chunk for barge-in evidence (allocation-light fast path).
+
+        The chunk is split into ``vad_frame_ms`` frames (strided numpy view, no
+        copy) and consecutive frames above the weighted threshold are counted.
+        Counting continues across chunk boundaries, so the signal is raised as
+        soon as ``interrupt_min_frames`` consecutive frames are observed -- a few
+        milliseconds of sustained user speech.
+
+        Args:
+            audio_chunk: Raw (unprocessed) audio chunk.
+            enter: ``time.perf_counter()`` captured at :meth:`feed` entry.
+
+        Returns:
+            A :class:`BargeInEvent` when the frame gate is satisfied, else None.
+        """
+        if audio_chunk is None or audio_chunk.size == 0:
+            return None
+
+        now = time.perf_counter()
+        threshold = self._effective_interrupt_threshold(now)
+        energies = self.vad.frame_energies(audio_chunk)
+
+        min_frames = max(1, int(self.config.interrupt_min_frames))
+        with self._lock:
+            # Frame counting continues across chunk boundaries, so a barge-in
+            # that starts just before a chunk edge is still confirmed.
+            frames = self._interrupt_frames
+
+        triggered = False
+        trigger_energy = 0.0
+        for energy in energies:
+            if float(energy) > threshold:
+                frames += 1
+                trigger_energy = float(energy)
+                if frames >= min_frames:
+                    triggered = True
+                    break
+            else:
+                frames = 0
+
+        with self._lock:
+            self._interrupt_frames = min(frames, min_frames)
+
+        if not triggered:
+            return None
+
+        started = self._playback_started_at or now
+        return BargeInEvent(
+            energy=trigger_energy,
+            threshold=threshold,
+            frames=frames,
+            playback_elapsed_ms=(now - started) * 1000.0,
+            detection_latency_ms=(time.perf_counter() - enter) * 1000.0,
+            duplex_state=DuplexState.SPEAKING,
+        )
+
+    def _trigger_interrupt(self, event: BargeInEvent) -> None:
+        """
+        Raise the barge-in signal and drop the interrupted turn's audio.
+
+        Ordering matters: ``on_interrupt`` is invoked *first* (so the playback
+        pipeline can mute/flush immediately), then the stale input of the
+        interrupted turn is discarded and the machine returns to
+        ``DuplexState.LISTENING``. Nothing here blocks the audio thread.
+
+        The detector is disarmed as part of the interrupt (``is_playback_active``
+        becomes False), because the truncated utterance is no longer playing; the
+        next playback session re-arms it through
+        :meth:`set_playback_state`.
+
+        Args:
+            event: Detection evidence produced by :meth:`_scan_barge_in`.
+        """
+        with self._lock:
+            if self._duplex_state is not DuplexState.SPEAKING:
+                return
+            self._interrupt_frames = 0
+            self._playback_active = False
+            self._playback_started_at = None
+            self._pre_speech_buffer.clear()  # drop TTS tail / echo context
+            self._stats["interrupts"] += 1
+            self._stats["last_interrupt_latency_ms"] = event.detection_latency_ms
+            callback = self.on_interrupt
+
+        logger.info(
+            "Barge-in detected (energy=%.4f > thr=%.4f, frames=%d, latency=%.3f ms)",
+            event.energy, event.threshold, event.frames,
+            event.detection_latency_ms,
+        )
+
+        # 1) Truncation signal -- the most latency critical notification
+        if callback is not None:
+            self._safe_call(callback, event)
+        else:
+            logger.debug("Barge-in detected but no on_interrupt callback registered")
+
+        # 2) Discard the interrupted turn, re-enter listening mode
+        self._reset_speech_state()
+        self._emit_event(StreamEvent(event_type="interrupt", data=event))
 
     # ------------------------------------------------------------------
     # Audio Input
@@ -381,32 +934,61 @@ class StreamProcessor:
         """
         Feed an audio chunk into the stream processor.
 
-        The chunk is processed through VAD and routed to the
-        appropriate handler based on current state.
+        Processing order (latency critical first):
+
+        1. **Barge-in fast path** -- a raw, frame-level energy scan that can
+           raise ``on_interrupt`` synchronously (sub-millisecond) while the
+           system is speaking.
+        2. Noise reduction (pre-VAD preprocessing).
+        3. VAD analysis + speech state machine (ring-buffer accumulation).
+
+        All user callbacks are dispatched *after* the internal state lock has
+        been released, so a callback may safely call back into the processor.
 
         Args:
             audio_chunk: Audio samples (float32, mono, 16kHz).
         """
+        if audio_chunk is None:
+            return
+        enter = time.perf_counter()
+        chunk = np.asarray(audio_chunk, dtype=np.float32).reshape(-1)
+
+        # ---- Priority path: barge-in detection -------------------------
+        if self._is_barge_in_armed():
+            event = self._scan_barge_in(chunk, enter)
+            if event is not None:
+                self._trigger_interrupt(event)
+
+        # ---- Regular pipeline -----------------------------------------
+        if self.noise_reducer is not None and chunk.size:
+            chunk = self.noise_reducer.process(
+                chunk, sample_rate=self.config.sample_rate
+            )
+
+        is_speech = self.vad.is_speech(chunk)
+
+        outcome = _FeedOutcome()
         with self._lock:
             self._stats["chunks_processed"] += 1
-
-            # Ensure float32
-            if audio_chunk.dtype != np.float32:
-                audio_chunk = audio_chunk.astype(np.float32)
-
-            # Noise reduction (pre-VAD preprocessing)
-            if self.noise_reducer is not None:
-                audio_chunk = self.noise_reducer.process(
-                    audio_chunk, sample_rate=self.config.sample_rate
-                )
-
-            # VAD analysis
-            is_speech = self.vad.is_speech(audio_chunk)
-
+            if self._duplex_state is DuplexState.IDLE:
+                self._set_duplex_state(DuplexState.LISTENING, outcome)
             if is_speech:
-                self._handle_speech(audio_chunk)
+                self._handle_speech(chunk, outcome)
             else:
-                self._handle_silence(audio_chunk)
+                self._handle_silence(chunk, outcome)
+
+        # Dispatch notifications outside the lock (callbacks may re-enter)
+        self._dispatch(outcome)
+        if outcome.segment is not None:
+            self._finish_segment(outcome.segment)
+
+    def _dispatch(self, outcome: "_FeedOutcome") -> None:
+        """Publish queued events/callbacks. Never called while holding a lock."""
+        for event in outcome.events:
+            if self.on_event:
+                self._safe_call(self.on_event, event)
+        for callback in outcome.callbacks:
+            callback()
 
     def feed_bytes(self, audio_bytes: bytes, sample_width: int = 2) -> None:
         """
@@ -425,62 +1007,117 @@ class StreamProcessor:
 
         self.feed(audio)
 
-    def _handle_speech(self, audio_chunk: np.ndarray) -> None:
-        """Handle a chunk detected as speech."""
-        if self._state == StreamState.IDLE:
-            # Speech started
-            self._set_state(StreamState.SPEAKING)
-            self._speech_chunks = []
-            self._total_speech_samples = 0
-            self._silence_counter = 0
+    def _handle_speech(
+        self,
+        audio_chunk: np.ndarray,
+        outcome: "_FeedOutcome",
+    ) -> None:
+        """
+        Handle a chunk detected as speech (state lock held).
 
-            # Include pre-speech buffer for context
-            pre_samples = self._pre_speech_buffer.read(
-                self._pre_speech_buffer.size
-            )
-            if len(pre_samples) > 0:
-                self._speech_chunks.append(pre_samples)
-                self._total_speech_samples += len(pre_samples)
+        Args:
+            audio_chunk: Speech chunk (already noise reduced).
+            outcome: Notification collector for deferred dispatch.
+        """
+        if self._state is StreamState.IDLE:
+            self._start_speech(outcome)
+        elif self._duplex_state is DuplexState.THINKING:
+            # User is talking again while ASR/LLM is still running
+            self._set_duplex_state(DuplexState.LISTENING, outcome)
 
-            if self.on_speech_start:
-                try:
-                    self.on_speech_start()
-                except Exception as e:
-                    logger.warning("Speech start callback error: %s", e)
-
-            self._emit_event(StreamEvent(event_type="speech_start"))
-
-        # Accumulate speech chunk
-        self._speech_chunks.append(audio_chunk)
-        self._total_speech_samples += len(audio_chunk)
+        self._accumulate(audio_chunk)
         self._silence_counter = 0
 
-    def _handle_silence(self, audio_chunk: np.ndarray) -> None:
-        """Handle a chunk detected as silence."""
-        # Always keep recent audio in pre-speech buffer
-        self._pre_speech_buffer.write(audio_chunk)
+    def _start_speech(self, outcome: "_FeedOutcome") -> None:
+        """
+        Open a new speech segment: reset the ring buffer, prepend pre-speech
+        context and fire ``on_speech_start`` (state lock held).
+        """
+        self._set_state(StreamState.SPEAKING, outcome)
+        if self._duplex_state in (DuplexState.IDLE, DuplexState.THINKING):
+            self._set_duplex_state(DuplexState.LISTENING, outcome)
 
-        if self._state == StreamState.SPEAKING:
-            self._silence_counter += 1
+        self._silence_counter = 0
+        self._total_speech_samples = 0
+        self._audio_buffer.clear()
 
-            # Still accumulate during silence (for trailing audio)
-            self._speech_chunks.append(audio_chunk)
-            self._total_speech_samples += len(audio_chunk)
+        # Include pre-speech context for better ASR accuracy
+        pre_samples = self._pre_speech_buffer.read(self._pre_speech_buffer.size)
+        if pre_samples.size:
+            self._accumulate(pre_samples)
 
-            if self._silence_counter >= self.config.silence_chunks:
-                # Speech ended
-                self._end_speech()
+        logger.debug("Speech started")
+        if self.on_speech_start is not None:
+            outcome.callbacks.append(lambda: self._safe_call(self.on_speech_start))
+        outcome.events.append(StreamEvent(event_type="speech_start"))
 
-    def _end_speech(self) -> None:
-        """Process end of speech segment."""
-        self._set_state(StreamState.PROCESSING)
+    def _accumulate(self, audio_chunk: np.ndarray) -> None:
+        """
+        Append audio to the segment ring buffer (state lock held).
 
-        # Concatenate all speech chunks
-        if len(self._speech_chunks) == 0:
-            self._set_state(StreamState.IDLE)
+        Uses pre-allocated contiguous memory: no ``np.concatenate`` /
+        ``np.append`` growth, so memory usage is bounded by
+        ``max_buffer_duration_s`` regardless of segment length.
+
+        Args:
+            audio_chunk: Audio samples to append.
+        """
+        if audio_chunk is None or len(audio_chunk) == 0:
+            return
+        self._audio_buffer.write(audio_chunk)
+        self._total_speech_samples = min(
+            self._total_speech_samples + int(len(audio_chunk)),
+            self._audio_buffer.capacity,
+        )
+
+    def _handle_silence(
+        self,
+        audio_chunk: np.ndarray,
+        outcome: "_FeedOutcome",
+    ) -> None:
+        """
+        Handle a chunk detected as silence (state lock held).
+
+        Args:
+            audio_chunk: Silent chunk (already noise reduced).
+            outcome: Notification collector for deferred dispatch.
+        """
+        # Always keep recent audio in the pre-speech ring buffer
+        if audio_chunk is not None and len(audio_chunk) > 0:
+            self._pre_speech_buffer.write(audio_chunk)
+
+        if self._state is not StreamState.SPEAKING:
             return
 
-        full_speech = np.concatenate(self._speech_chunks)
+        self._silence_counter += 1
+
+        # Still accumulate during silence (keeps the trailing audio)
+        self._accumulate(audio_chunk)
+
+        if self._silence_counter >= self.config.silence_chunks:
+            self._end_speech(outcome)
+
+    def _end_speech(self, outcome: "_FeedOutcome") -> None:
+        """
+        Close the current speech segment (state lock held).
+
+        Extracts the segment from the ring buffer in a single copy, applies the
+        minimum-duration gate and queues the end-of-speech notifications. The
+        heavy transcription work is *not* done here (see
+        :meth:`_finish_segment`).
+
+        Args:
+            outcome: Notification collector; receives ``segment`` when valid.
+        """
+        self._silence_counter = 0
+
+        if self._total_speech_samples <= 0:
+            self._set_state(StreamState.IDLE, outcome)
+            return
+
+        full_speech = self._audio_buffer.read(self._total_speech_samples)
+        self._audio_buffer.clear()
+        self._total_speech_samples = 0
         speech_duration = len(full_speech) / self.config.sample_rate
 
         # Check minimum speech duration
@@ -490,32 +1127,44 @@ class StreamProcessor:
                 "Speech too short (%.2fs < %.2fs), discarding",
                 speech_duration, min_duration,
             )
-            self._reset_speech_state()
+            self._set_state(StreamState.IDLE, outcome)
+            self._set_duplex_state(
+                DuplexState.SPEAKING if self._playback_active
+                else DuplexState.LISTENING,
+                outcome,
+            )
             return
 
         self._stats["speech_segments"] += 1
         self._stats["total_speech_duration_s"] += speech_duration
+        self._set_state(StreamState.PROCESSING, outcome)
+        self._set_duplex_state(DuplexState.THINKING, outcome)
 
         logger.info(
             "Speech segment: %.2fs (%d samples)",
             speech_duration, len(full_speech),
         )
 
-        if self.on_speech_end:
-            try:
-                self.on_speech_end(full_speech)
-            except Exception as e:
-                logger.warning("Speech end callback error: %s", e)
-
-        self._emit_event(
+        if self.on_speech_end is not None:
+            outcome.callbacks.append(
+                lambda audio=full_speech: self._safe_call(self.on_speech_end, audio)
+            )
+        outcome.events.append(
             StreamEvent(event_type="speech_end", audio=full_speech)
         )
+        outcome.segment = full_speech
 
-        # Transcribe if bridge is available
-        if self.whisper_bridge:
-            self._transcribe_async(full_speech)
+    def _finish_segment(self, audio: np.ndarray) -> None:
+        """
+        Start transcription for a finished segment (called without the lock).
+
+        Args:
+            audio: The completed speech segment.
+        """
+        if self.whisper_bridge is not None:
+            self._transcribe_async(audio)
         else:
-            self._set_state(StreamState.IDLE)
+            self._reset_speech_state()
 
     def _transcribe_async(self, audio: np.ndarray) -> None:
         """Run transcription in a background thread."""
@@ -553,11 +1202,8 @@ class StreamProcessor:
                 result.text[:50], processing_time,
             )
 
-            if self.on_transcription:
-                try:
-                    self.on_transcription(result)
-                except Exception as e:
-                    logger.warning("Transcription callback error: %s", e)
+            if self.on_transcription is not None:
+                self._safe_call(self.on_transcription, result)
 
             self._emit_event(
                 StreamEvent(event_type="transcription", data=result)
@@ -574,31 +1220,62 @@ class StreamProcessor:
             self._reset_speech_state()
 
     def _reset_speech_state(self) -> None:
-        """Reset speech accumulation state. Thread-safe."""
+        """
+        Reset speech accumulation state. Thread-safe.
+
+        Clears the segment ring buffer (keeping its pre-allocated memory) and
+        returns the processor to ``IDLE`` -- or straight back to
+        ``DuplexState.SPEAKING`` when TTS playback is still active.
+        """
         with self._lock:
-            self._speech_chunks = []
+            self._audio_buffer.clear()
             self._total_speech_samples = 0
             self._silence_counter = 0
+            self._interrupt_frames = 0
         self._set_state(StreamState.IDLE)
+        self._set_duplex_state(
+            DuplexState.SPEAKING if self._playback_active else DuplexState.LISTENING
+        )
 
     # ------------------------------------------------------------------
     # Control
     # ------------------------------------------------------------------
 
     def reset(self) -> None:
-        """Reset the processor to initial state."""
+        """Reset the processor to its initial state (keeps playback armed state)."""
         with self._lock:
             self._audio_buffer.clear()
             self._pre_speech_buffer.clear()
-            self._reset_speech_state()
+            self._total_speech_samples = 0
+            self._silence_counter = 0
+            self._interrupt_frames = 0
             self._stats = {
                 "chunks_processed": 0,
                 "speech_segments": 0,
                 "total_speech_duration_s": 0.0,
                 "total_processing_time_s": 0.0,
                 "avg_latency_ms": 0.0,
+                "interrupts": 0,
+                "last_interrupt_latency_ms": 0.0,
             }
-            logger.info("Stream processor reset")
+        self._set_state(StreamState.IDLE)
+        self._set_duplex_state(DuplexState.IDLE)
+        logger.info("Stream processor reset")
+
+    def flush(self) -> None:
+        """
+        Drop all buffered input audio without touching statistics.
+
+        Useful after a barge-in or after the playback pipeline has muted, to
+        guarantee that echoed TTS audio never reaches the recogniser.
+        """
+        with self._lock:
+            self._audio_buffer.clear()
+            self._pre_speech_buffer.clear()
+            self._total_speech_samples = 0
+            self._silence_counter = 0
+            self._interrupt_frames = 0
+        logger.debug("Input buffers flushed")
 
     def update_threshold(self, threshold: float) -> None:
         """

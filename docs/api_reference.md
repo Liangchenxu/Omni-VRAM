@@ -347,6 +347,81 @@ processor.feed(audio_float)
 
 ---
 
+### Full-Duplex Barge-In (v2.6.0)
+
+Interruption handling for TTS playback. New `StreamConfig` fields (all with
+defaults, so existing code keeps working):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enable_barge_in` | `bool` | `True` | Arm the barge-in detector while playback is active |
+| `interrupt_energy_thresh` | `float` | `0.06` | Base RMS energy for a barge-in frame |
+| `interrupt_min_frames` | `int` | `3` | Consecutive high-energy frames (K) required |
+| `barge_in_sensitivity` | `float` | `1.0` | > 1.0 lowers the threshold (easier to interrupt) |
+| `echo_suppression_factor` | `float` | `2.0` | Threshold multiplier right after playback starts |
+| `echo_suppression_decay_ms` | `int` | `400` | Time for that multiplier to decay back to 1.0 |
+| `vad_frame_ms` | `int` | `25` | Frame length used for frame-level VAD / barge-in |
+
+### `DuplexState` (enum)
+
+```python
+from Omni-VRAM import DuplexState
+
+DuplexState.IDLE       # not bound to a conversation yet
+DuplexState.LISTENING  # capturing user audio (playback muted)
+DuplexState.THINKING   # user finished; ASR / LLM pipeline is working
+DuplexState.SPEAKING   # TTS playback active; barge-in is armed
+```
+
+| Callback | Signature | Fired when |
+|----------|-----------|------------|
+| `on_interrupt` | `(BargeInEvent) -> None` | user interrupts playback |
+| `on_duplex_state_change` | `(DuplexState) -> None` | duplex state changes |
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `set_playback_state` | `(is_playing: bool) -> None` | notify TTS start/stop |
+| `flush` | `() -> None` | drop buffered input (e.g. after barge-in) |
+
+`BargeInEvent` carries `energy`, `threshold`, `frames`, `playback_elapsed_ms` and
+`detection_latency_ms` (the sub-millisecond truncation latency). Callbacks are
+always invoked after the internal lock is released, so they may safely call back
+into the processor.
+
+### Streaming ASR: Overlap Alignment & Hallucination Suppression (v2.6.0)
+
+New `StreamASRConfig` fields (defaults keep behaviour unchanged except for the
+suppression, which is on by default):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enable_overlap_alignment` | `bool` | `True` | Merge sliding-window transcripts with LCS overlap-add |
+| `max_overlap_chars` | `int` | `40` | Maximum removable overlap length |
+| `normalize_punctuation` | `bool` | `True` | Ignore punctuation/space drift in the overlap |
+| `use_lcs_alignment` | `bool` | `True` | Absorb single-character ASR jitter |
+| `enable_hallucination_filter` | `bool` | `True` | Drop credits / loops / punctuation-only output |
+| `min_speech_energy` | `float` | `0.005` | Window RMS below this is never sent to Whisper |
+| `max_ngram_size` | `int` | `8` | Longest repeated block considered a loop |
+| `min_repeat_count` | `int` | `3` | Repeats that make a loop pathological |
+| `repeat_keep` | `int` | `1` | Repetitions kept when truncating |
+| `max_transcript_chars` | `int` | `4000` | Safety cap that finalizes a long utterance |
+
+Public helpers:
+
+```python
+from Omni-VRAM import align_overlap_text, clean_transcript
+
+align_overlap_text("今天天气", "天气真好")   # -> "今天天气真好"
+clean_transcript("谢谢大家谢谢大家谢谢大家")  # -> "谢谢大家"
+clean_transcript("感谢观看")                 # -> ""
+```
+
+New methods: `StreamASR.flush()` drops buffered audio and the pending partial
+text (useful after a barge-in). `on_partial_result` / `on_final_result`,
+`feed()`, `start()` and `stop()` signatures are unchanged.
+
+---
+
 ## 6. CUDA 扩展 (`Omni-VRAM._vram_hacker`)
 
 > 仅在 CUDA 扩展编译成功且有 NVIDIA GPU 时可用�? 

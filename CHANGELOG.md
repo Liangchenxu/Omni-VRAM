@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Full-duplex barge-in engine** (`vram_core/stream_processor.py`)
+  - `DuplexState` (IDLE / LISTENING / THINKING / SPEAKING) conversational state machine
+  - `StreamProcessor.set_playback_state(is_playing)` arms the interruption detector
+  - `on_interrupt` callback with `BargeInEvent` evidence (energy, threshold, frames,
+    playback elapsed time and sub-millisecond `detection_latency_ms`)
+  - Frame-level (K consecutive frames) energy detection with dynamically weighted
+    thresholds; floating `echo_suppression_factor` + `barge_in_sensitivity`
+  - Pre-allocated contiguous ring buffer (`CircularBuffer`) replacing
+    `np.concatenate`/`np.append` growth: constant memory footprint, O(1) writes and
+    O(n) sliding-window extraction
+  - Re-entrant state lock + deferred callback dispatch (fixes a `feed()` deadlock
+    where `_set_state` re-acquired the non-reentrant lock)
+  - `VADProcessor.frame_energies()` / `speech_confidence()` frame-level helpers
+  - `StreamProcessor.flush()` and `memory_footprint_bytes` diagnostics
+- **Streaming ASR hardening** (`vram_core/streaming_asr.py`)
+  - Dynamic overlap-add (LCS) alignment: `align_overlap_text()`, `OverlapAligner`
+    (`[今天天气] + [天气真好] -> [今天天气真好]`, no duplicated window boundary)
+  - Whisper hallucination suppression: `is_hallucination()`,
+    `filter_hallucinations()`, `truncate_repetitions()`, `clean_transcript()`,
+    `TranscriptFilter` (artefact phrases, punctuation-only output, low-energy
+    silence gating and pathological n-gram loops such as "谢谢大家" x3)
+  - `StreamASR.flush()` and new `StreamASRConfig` options (alignment, silence
+    energy gate, loop detection) with backward-compatible defaults
+- **Tests**: `tests/test_full_duplex_barge_in.py` (duplex state machine, barge-in
+  latency, echo suppression, ring-buffer memory stability, slice accuracy) and
+  `tests/test_streaming_asr_alignment.py` (overlap alignment, hallucination
+  filtering, StreamASR integration)
+
 ### Planned
 - CUDA 12.x optimized kernels
 - Real-time voice conversation with LLM (full duplex)

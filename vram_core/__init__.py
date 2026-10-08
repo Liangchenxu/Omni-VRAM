@@ -48,8 +48,14 @@ from vram_core.whisper import (
     WhisperBridge, WhisperBackend, WhisperResult,
     TranscriptionResult, AudioPreprocessor,
 )
-from vram_core.stream_processor import StreamProcessor, StreamConfig, StreamState
-from vram_core.streaming_asr import StreamASR, StreamASRConfig, StreamASRResult
+from vram_core.stream_processor import (
+    StreamProcessor, StreamConfig, StreamState, DuplexState, BargeInEvent,
+    CircularBuffer, VADProcessor,
+)
+from vram_core.streaming_asr import (
+    StreamASR, StreamASRConfig, StreamASRResult,
+    OverlapAligner, TranscriptFilter, align_overlap_text, clean_transcript,
+)
 from vram_core.noise_reduction import NoiseReducer
 from vram_core.emotion_recognition import EmotionRecognizer
 from vram_core.speaker_diarization import SpeakerDiarizer
@@ -98,10 +104,20 @@ __all__ = [
     "StreamProcessor",
     "StreamConfig",
     "StreamState",
+    # Full-duplex / barge-in (v2.6.0)
+    "DuplexState",
+    "BargeInEvent",
+    "CircularBuffer",
+    "VADProcessor",
     # Streaming ASR
     "StreamASR",
     "StreamASRConfig",
     "StreamASRResult",
+    # Overlap alignment & hallucination suppression (v2.6.0)
+    "OverlapAligner",
+    "TranscriptFilter",
+    "align_overlap_text",
+    "clean_transcript",
     # Audio Enhancement
     "NoiseReducer",
     # Emotion & Speaker

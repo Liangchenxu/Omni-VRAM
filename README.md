@@ -146,6 +146,8 @@ Omni-VRAM/
 │   ├── test_integration.py          # Full pipeline integration tests
 │   ├── test_websocket.py            # WebSocket API tests
 │   ├── test_realtime_latency.py     # Real-time latency tests
+│   ├── test_full_duplex_barge_in.py        # Full-duplex barge-in tests
+│   ├── test_streaming_asr_alignment.py     # Overlap alignment & hallucination tests
 │   ├── test_v250.py                 # v2.5.0 feature tests (16 cases)
 │   └── benchmark_comparison.py      # Benchmark comparison
 │
@@ -349,6 +351,64 @@ asr.on_final_result = lambda result: print(f"[Final] {result.text}")
 asr.start()
 audio_chunk = np.random.randn(3200).astype(np.float32)  # from microphone
 asr.feed(audio_chunk)
+```
+
+### Full-Duplex Barge-In & Hallucination Suppression (v2.6.0, unreleased)
+
+Overlap alignment, silence gating and barge-in (user interruption) support. All
+new options are defaults inside `StreamConfig` / `StreamASRConfig`, so existing
+code keeps working unchanged:
+
+```python
+import numpy as np
+from vram_core.stream_processor import (
+    StreamProcessor, StreamConfig, DuplexState,
+)
+
+config = StreamConfig(
+    vad_threshold=0.02,
+    enable_barge_in=True,            # arm the barge-in detector
+    interrupt_energy_thresh=0.06,    # base RMS threshold for a barge-in frame
+    interrupt_min_frames=3,          # K consecutive frames required
+    barge_in_sensitivity=1.0,        # > 1.0 = easier to interrupt
+    echo_suppression_factor=2.0,     # damped threshold right after TTS starts
+    echo_suppression_decay_ms=400,   # ... decaying back to 1.0
+)
+processor = StreamProcessor(config=config)
+
+def on_interrupt(event):
+    """Sub-millisecond truncation signal: flush the playback pipeline."""
+    print(f"Interrupted after {event.playback_elapsed_ms:.0f}ms "
+          f"(latency {event.detection_latency_ms:.3f}ms)")
+
+processor.on_interrupt = on_interrupt
+processor.on_duplex_state_change = lambda state: print(f"Duplex: {state.value}")
+
+processor.set_playback_state(True)   # TTS started -> DuplexState.SPEAKING
+mic_chunk = np.random.randn(1600).astype(np.float32)  # microphone input
+processor.feed(mic_chunk)            # user barges in -> on_interrupt fires
+processor.set_playback_state(False)  # playback finished
+```
+
+Streaming ASR applies dynamic overlap-add (LCS) alignment plus Whisper
+hallucination suppression automatically (`StreamASRConfig`):
+
+```python
+from vram_core.streaming_asr import (
+    StreamASRConfig, align_overlap_text, clean_transcript,
+)
+
+config = StreamASRConfig(
+    enable_overlap_alignment=True,     # merge window boundaries via LCS
+    max_overlap_chars=40,
+    enable_hallucination_filter=True,  # drop credits/loops from silence
+    min_speech_energy=0.005,           # never send silence to Whisper
+    min_repeat_count=3,                # "谢谢大家" x3 -> "谢谢大家"
+)
+
+align_overlap_text("今天天气", "天气真好")          # -> "今天天气真好"
+clean_transcript("谢谢大家谢谢大家谢谢大家")        # -> "谢谢大家"
+clean_transcript("感谢观看")                       # -> ""
 ```
 
 ### Chinese Meeting Transcription
@@ -797,6 +857,8 @@ Omni-VRAM/
 │   ├── test_integration.py          # 全管线集成测试
 │   ├── test_websocket.py            # WebSocket API 测试
 │   ├── test_realtime_latency.py     # 实时延迟测试
+│   ├── test_full_duplex_barge_in.py        # 全双工打断测试
+│   ├── test_streaming_asr_alignment.py     # 重叠对齐与幻觉抑制测试
 │   ├── test_v250.py                 # v2.5.0 功能测试（16 个用例）
 │   └── benchmark_comparison.py      # 基准对比
 │
