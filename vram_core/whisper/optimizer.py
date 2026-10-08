@@ -117,6 +117,42 @@ class CacheStats:
 # Transcription Cache
 # ---------------------------------------------------------------------------
 
+@dataclass
+class FrontendGraphStatus:
+    """
+    Result of a CUDA-graph capture attempt for the audio front-end (v2.6.0).
+
+    Attributes:
+        captured: True when a graph is live and replayable.
+        reason: Human readable explanation when ``captured`` is False.
+        sample_chunk_size: Fixed waveform length the graph was built for.
+        n_mels: Mel bands produced by the front-end.
+        n_fft: STFT window length.
+        hop_length: STFT hop length.
+        device: Device the graph lives on ("cuda:0", ... or "cpu").
+    """
+
+    captured: bool = False
+    reason: str = ""
+    sample_chunk_size: int = 0
+    n_mels: int = 0
+    n_fft: int = 0
+    hop_length: int = 0
+    device: str = "cpu"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialise the status (used by ``get_stats``)."""
+        return {
+            "captured": self.captured,
+            "reason": self.reason,
+            "sample_chunk_size": self.sample_chunk_size,
+            "n_mels": self.n_mels,
+            "n_fft": self.n_fft,
+            "hop_length": self.hop_length,
+            "device": self.device,
+        }
+
+
 class TranscriptionCache:
     """
     File-hash based transcription result cache.
@@ -333,6 +369,15 @@ class WhisperOptimizer:
                 enable_disk=enable_disk_cache,
             )
 
+        # CUDA-graph audio front-end (v2.6.0)
+        self._frontend_graph = None
+        self._frontend_static_in = None
+        self._frontend_static_out = None
+        self._frontend_mel_cache: Dict[Any, Any] = {}
+        self._frontend_status = FrontendGraphStatus(
+            captured=False, reason="not captured yet"
+        )
+
         # Stats
         self._transcribe_count = 0
         self._total_audio_duration = 0.0
@@ -393,6 +438,327 @@ class WhisperOptimizer:
     def is_warm(self) -> bool:
         """Whether the model has been warmed up."""
         return self._warmup_done
+
+    # ------------------------------------------------------------------
+    # 1b. Audio front-end: mel spectrogram with CUDA Graph capture (v2.6.0)
+    # ------------------------------------------------------------------
+
+    def _cuda_device_index(self) -> int:
+        """GPU index parsed from ``self.device`` (0 when it is not a cuda device)."""
+        device = str(getattr(self, "device", "cpu"))
+        if device.startswith("cuda:"):
+            try:
+                return int(device.split(":", 1)[1])
+            except (IndexError, ValueError):
+                return 0
+        return 0
+
+    def _frontend_mel_matrix(self, n_bins: int, n_mels: int, device, dtype):
+        """Cached torch mel filterbank ``(n_mels, n_bins)`` for the given device."""
+        import torch
+
+        key = ("mel", n_bins, n_mels, str(device), str(dtype))
+        cached = self._frontend_mel_cache.get(key)
+        if cached is not None:
+            return cached
+
+        def hz_to_mel(hz):
+            return 2595.0 * torch.log10(1.0 + hz / 700.0)
+
+        def mel_to_hz(mel):
+            return 700.0 * (torch.pow(10.0, mel / 2595.0) - 1.0)
+
+        sample_rate = float(_DEFAULT_SAMPLE_RATE)
+        fft_freqs = torch.linspace(0.0, sample_rate / 2.0, n_bins, device=device, dtype=dtype)
+        mel_range = torch.linspace(
+            float(hz_to_mel(torch.tensor(0.0, device=device, dtype=dtype))),
+            float(hz_to_mel(torch.tensor(sample_rate / 2.0, device=device, dtype=dtype))),
+            n_mels + 2,
+            device=device,
+            dtype=dtype,
+        )
+        hz_points = mel_to_hz(mel_range)
+
+        filterbank = torch.zeros((n_mels, n_bins), device=device, dtype=dtype)
+        for index in range(n_mels):
+            low, center, high = hz_points[index], hz_points[index + 1], hz_points[index + 2]
+            rising = (fft_freqs - low) / torch.clamp(center - low, min=1e-8)
+            falling = (high - fft_freqs) / torch.clamp(high - center, min=1e-8)
+            filterbank[index] = torch.clamp(torch.minimum(rising, falling), min=0.0)
+
+        self._frontend_mel_cache[key] = filterbank
+        return filterbank
+
+    def _frontend_window(self, n_fft: int, device, dtype):
+        """Cached Hann analysis window for the STFT front-end."""
+        import torch
+
+        key = ("window", n_fft, str(device), str(dtype))
+        cached = self._frontend_mel_cache.get(key)
+        if cached is None:
+            cached = torch.hann_window(n_fft, device=device, dtype=dtype, periodic=True)
+            self._frontend_mel_cache[key] = cached
+        return cached
+
+    def _frontend_mel(self, waveform, n_fft: int, hop_length: int, n_mels: int):
+        """
+        Torch front-end: STFT -> power spectrum -> mel filterbank -> log.
+
+        Every operation is shape-static and allocation-light, which is what
+        makes the graph capture below possible.
+        """
+        import torch
+
+        window = self._frontend_window(n_fft, waveform.device, waveform.dtype)
+        spectrum = torch.stft(
+            waveform,
+            n_fft=n_fft,
+            hop_length=hop_length,
+            win_length=n_fft,
+            window=window,
+            center=True,
+            pad_mode="reflect",
+            return_complex=True,
+        )
+        power = spectrum.real ** 2 + spectrum.imag ** 2
+        mel_matrix = self._frontend_mel_matrix(
+            power.shape[0], n_mels, waveform.device, waveform.dtype
+        )
+        return torch.log(mel_matrix @ power + 1e-10)
+
+    @staticmethod
+    def _frontend_mel_numpy(
+        waveform: np.ndarray,
+        n_fft: int = 512,
+        hop_length: int = 256,
+        n_mels: int = 80,
+        sample_rate: int = _DEFAULT_SAMPLE_RATE,
+    ) -> np.ndarray:
+        """NumPy fallback for the mel front-end (torch-free deployments)."""
+        from scipy.signal import stft as _stft
+
+        waveform = np.asarray(waveform, dtype=np.float32).reshape(-1)
+        if waveform.size < n_fft:
+            waveform = np.pad(waveform, (0, n_fft - waveform.size))
+
+        _freqs, _times, Zxx = _stft(
+            waveform, fs=sample_rate, nperseg=n_fft, noverlap=n_fft - hop_length
+        )
+        power = np.abs(Zxx) ** 2
+        n_bins = power.shape[0]
+
+        def hz_to_mel(hz):
+            return 2595.0 * np.log10(1.0 + hz / 700.0)
+
+        def mel_to_hz(mel):
+            return 700.0 * (10.0 ** (mel / 2595.0) - 1.0)
+
+        points = mel_to_hz(
+            np.linspace(hz_to_mel(0.0), hz_to_mel(sample_rate / 2.0), n_mels + 2)
+        )
+        freq_bins = np.linspace(0.0, sample_rate / 2.0, n_bins)
+        filterbank = np.zeros((n_mels, n_bins), dtype=np.float32)
+        for index in range(n_mels):
+            low, center, high = points[index], points[index + 1], points[index + 2]
+            rising = (freq_bins - low) / max(center - low, 1e-8)
+            falling = (high - freq_bins) / max(high - center, 1e-8)
+            filterbank[index] = np.clip(np.minimum(rising, falling), 0.0, None)
+
+        return np.log(filterbank @ power + 1e-10).astype(np.float32)
+
+    def capture_frontend_graph(
+        self,
+        sample_chunk_size: int = 16000,
+        n_fft: int = 512,
+        hop_length: int = 256,
+        n_mels: int = 80,
+        warmup_iters: int = 3,
+    ) -> FrontendGraphStatus:
+        """
+        Capture the fixed-shape STFT + mel front-end into a CUDA graph.
+
+        A graph removes the per-chunk CPU->GPU launch overhead and the Python
+        interpreter cost of ``torch.stft`` + the mel matmul (dozens of small
+        kernel launches per 1-second chunk) -- exactly what a streaming ASR
+        front-end pays on every window.
+
+        The capture is *fixed shape* by design: the graph is built for
+        ``sample_chunk_size`` samples and replays instantly for any chunk of that
+        length; other lengths transparently use the eager path.
+
+        Degradation: on a CPU-only host (or without torch) no exception is
+        raised -- a status with ``captured=False`` and a reason is returned so
+        callers can keep using the eager front-end.
+
+        Args:
+            sample_chunk_size: Waveform length (samples) the graph is built for.
+            n_fft: STFT window length.
+            hop_length: STFT hop length.
+            n_mels: Number of mel bands.
+            warmup_iters: Warm-up replays before capture (must be > 0).
+
+        Returns:
+            :class:`FrontendGraphStatus` describing what happened.
+        """
+        if sample_chunk_size <= 0:
+            raise ValueError("sample_chunk_size must be positive")
+        if n_fft <= 0 or hop_length <= 0 or n_mels <= 0:
+            raise ValueError("n_fft, hop_length and n_mels must be positive")
+
+        def _status(captured: bool, reason: str, device: str = "cpu") -> FrontendGraphStatus:
+            self._frontend_status = FrontendGraphStatus(
+                captured=captured,
+                reason=reason,
+                sample_chunk_size=sample_chunk_size,
+                n_mels=n_mels,
+                n_fft=n_fft,
+                hop_length=hop_length,
+                device=device,
+            )
+            return self._frontend_status
+
+        try:
+            import torch
+        except ImportError:
+            return _status(False, "torch is not installed")
+
+        if not torch.cuda.is_available():
+            return _status(False, "CUDA is not available; eager front-end is used")
+
+        try:
+            device = torch.device(f"cuda:{self._cuda_device_index()}")
+            static_in = torch.zeros(sample_chunk_size, device=device, dtype=torch.float32)
+
+            # Warm up on a side stream: every lazy CUDA initialisation must happen
+            # outside the capture region, otherwise the capture fails.
+            capture_stream = torch.cuda.Stream(device=device)
+            capture_stream.wait_stream(torch.cuda.current_stream(device))
+            with torch.cuda.stream(capture_stream):
+                for _ in range(max(int(warmup_iters), 1)):
+                    self._frontend_mel(static_in, n_fft, hop_length, n_mels)
+            torch.cuda.current_stream(device).wait_stream(capture_stream)
+            torch.cuda.synchronize(device)
+
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph, stream=capture_stream):
+                static_out = self._frontend_mel(static_in, n_fft, hop_length, n_mels)
+            torch.cuda.synchronize(device)
+
+            self._frontend_graph = graph
+            self._frontend_static_in = static_in
+            self._frontend_static_out = static_out
+            logger.info(
+                "Front-end CUDA graph captured: %d samples -> %d mel bands (%s)",
+                sample_chunk_size, n_mels, device,
+            )
+            return _status(True, "", str(device))
+        except (RuntimeError, OSError, ValueError) as error:
+            self._frontend_graph = None
+            self._frontend_static_in = None
+            self._frontend_static_out = None
+            logger.warning("Front-end CUDA graph capture failed: %s", error)
+            return _status(False, f"capture failed: {error}")
+
+    def run_frontend_graph(self, audio: np.ndarray):
+        """
+        Replay the captured front-end graph on one audio chunk.
+
+        Args:
+            audio: Float32 waveform with exactly ``sample_chunk_size`` samples.
+
+        Returns:
+            The mel spectrogram as a CPU ``torch.Tensor``, or None when no graph
+            is captured / the chunk length does not match (callers should then
+            fall back to :meth:`frontend_mel`).
+        """
+        if self._frontend_graph is None or self._frontend_static_in is None:
+            return None
+        try:
+            import torch
+        except ImportError:  # pragma: no cover - a graph cannot exist without torch
+            return None
+
+        waveform = np.asarray(audio, dtype=np.float32).reshape(-1)
+        if waveform.size != self._frontend_static_in.numel():
+            return None
+
+        with torch.no_grad():
+            self._frontend_static_in.copy_(
+                torch.from_numpy(waveform).to(self._frontend_static_in.device)
+            )
+            self._frontend_graph.replay()
+            return self._frontend_static_out.detach().to("cpu")
+
+    def frontend_mel(
+        self,
+        audio: np.ndarray,
+        use_graph: bool = True,
+        n_fft: Optional[int] = None,
+        hop_length: Optional[int] = None,
+        n_mels: Optional[int] = None,
+    ) -> np.ndarray:
+        """
+        Compute the log-mel spectrogram of an audio chunk.
+
+        Order of preference: captured CUDA graph -> eager torch (CPU/GPU) ->
+        pure NumPy. The returned array has shape ``(n_mels, n_frames)`` float32.
+
+        Args:
+            audio: Waveform (float32, mono).
+            use_graph: Allow replaying the captured graph when the length matches.
+            n_fft: STFT window (defaults to the captured/last used value).
+            hop_length: STFT hop (defaults to the captured/last used value).
+            n_mels: Mel bands (defaults to the captured/last used value).
+        """
+        waveform = np.asarray(audio, dtype=np.float32).reshape(-1)
+        status = self._frontend_status
+        n_fft = int(n_fft or status.n_fft or 512)
+        hop_length = int(hop_length or status.hop_length or 256)
+        n_mels = int(n_mels or status.n_mels or 80)
+
+        if waveform.size == 0:
+            return np.zeros((n_mels, 0), dtype=np.float32)
+
+        if use_graph:
+            replayed = self.run_frontend_graph(waveform)
+            if replayed is not None:
+                return replayed.numpy().astype(np.float32)
+
+        try:
+            import torch
+        except ImportError:
+            return self._frontend_mel_numpy(waveform, n_fft, hop_length, n_mels)
+
+        device = (
+            f"cuda:{self._cuda_device_index()}" if torch.cuda.is_available() else "cpu"
+        )
+        with torch.no_grad():
+            tensor = torch.from_numpy(waveform.copy()).to(device)
+            mel = self._frontend_mel(tensor, n_fft, hop_length, n_mels)
+            return mel.detach().to("cpu").numpy().astype(np.float32)
+
+    @property
+    def frontend_graph_status(self) -> FrontendGraphStatus:
+        """Status of the CUDA-graph front-end (captured flag or fallback reason)."""
+        return self._frontend_status
+
+    @property
+    def is_frontend_graph_ready(self) -> bool:
+        """True when a replayable front-end graph is available."""
+        return self._frontend_graph is not None
+
+    def release_frontend_graph(self) -> None:
+        """Drop the captured graph and its static tensors (releases VRAM)."""
+        self._frontend_graph = None
+        self._frontend_static_in = None
+        self._frontend_static_out = None
+        self._frontend_mel_cache.clear()
+        self._frontend_status = FrontendGraphStatus(
+            captured=False, reason="released", device="cpu"
+        )
+
+
+
 
     # ------------------------------------------------------------------
     # 2. Single Transcription (with cache)

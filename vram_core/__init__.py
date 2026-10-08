@@ -29,7 +29,7 @@ Modules:
     - meeting_summarizer: AI-powered meeting summarization with topic/decision/action extraction
 """
 
-__version__ = "2.5.0"
+__version__ = "2.6.0"
 
 # CUDA extension (built from vram_hacker.cu)
 try:
@@ -40,6 +40,8 @@ try:
     launch_dynamic_kernel = _backend.launch_dynamic_kernel
     inject_into_model = _backend.inject_into_model
     query_memory = _backend.query_memory
+    # Paged KV-Cache primitive (v2.6.0 extension build)
+    paged_kv_cache_append = getattr(_backend, "paged_kv_cache_append", None)
 except (ImportError, AttributeError):
     CUDA_AVAILABLE = False
 
@@ -50,17 +52,25 @@ from vram_core.whisper import (
 )
 from vram_core.stream_processor import (
     StreamProcessor, StreamConfig, StreamState, DuplexState, BargeInEvent,
-    CircularBuffer, VADProcessor,
+    CircularBuffer, VADProcessor, PinnedUploadChannel,
 )
 from vram_core.streaming_asr import (
     StreamASR, StreamASRConfig, StreamASRResult,
     OverlapAligner, TranscriptFilter, align_overlap_text, clean_transcript,
 )
-from vram_core.noise_reduction import NoiseReducer
+from vram_core.noise_reduction import (
+    NoiseReducer, AlgorithmType, MultibandSpectralSuppressor,
+)
 from vram_core.emotion_recognition import EmotionRecognizer
-from vram_core.speaker_diarization import SpeakerDiarizer
+from vram_core.speaker_diarization import (
+    SpeakerDiarizer, BaseVoiceprintExtractor, MFCCExtractor,
+    ONNXEmbeddingExtractor, AdaptiveCosineClusterer,
+    create_voiceprint_extractor,
+)
 from vram_core.multi_gpu import MultiGPUManager
-from vram_core.vram_optimizer import VRAMOptimizer, MemoryPressure
+from vram_core.vram_optimizer import (
+    VRAMOptimizer, MemoryPressure, PagedKVCacheManager, BlockAllocator,
+)
 from vram_core.tts_engine import TTSEngine
 from vram_core.voice_translator import VoiceTranslator
 from vram_core.audio_event_detection import AudioEventDetector
@@ -109,6 +119,8 @@ __all__ = [
     "BargeInEvent",
     "CircularBuffer",
     "VADProcessor",
+    # Pinned-memory async upload (v2.6.0)
+    "PinnedUploadChannel",
     # Streaming ASR
     "StreamASR",
     "StreamASRConfig",
@@ -120,14 +132,26 @@ __all__ = [
     "clean_transcript",
     # Audio Enhancement
     "NoiseReducer",
+    # Multi-band denoising (v2.6.0)
+    "AlgorithmType",
+    "MultibandSpectralSuppressor",
     # Emotion & Speaker
     "EmotionRecognizer",
     "SpeakerDiarizer",
+    # Voiceprint embedding interface (v2.6.0)
+    "BaseVoiceprintExtractor",
+    "MFCCExtractor",
+    "ONNXEmbeddingExtractor",
+    "AdaptiveCosineClusterer",
+    "create_voiceprint_extractor",
     # Multi-GPU
     "MultiGPUManager",
     # VRAM Optimization
     "VRAMOptimizer",
     "MemoryPressure",
+    # Paged KV-Cache (v2.6.0)
+    "PagedKVCacheManager",
+    "BlockAllocator",
     # TTS
     "TTSEngine",
     # Translation

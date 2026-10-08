@@ -30,6 +30,118 @@ __global__ void kv_cache_append_kernel(
     }
 }
 
+// ============================================================
+// CUDA Kernel: Paged KV-Cache append (physical block table)
+// ============================================================
+// Appends K/V tokens into a *discrete* pool of physical blocks whose layout is
+// described by a block table (vLLM / PagedAttention style). The logical sequence
+// is therefore no longer required to live in one contiguous allocation: blocks
+// are mapped on demand, which removes the "max_seq_len" over-allocation of the
+// contiguous kernel above.
+//
+// Memory access pattern (fully coalesced):
+//   threadIdx.x -> head_dim    (consecutive floats => 128B transactions)
+//   blockIdx.x  -> token index inside the new chunk
+//   blockIdx.y  -> head index
+//   batch_index -> batch element (launched once per sequence)
+// ============================================================
+__global__ void paged_kv_cache_append_kernel(
+    const float* __restrict__ new_kv,        // [batch, num_heads, new_tokens, head_dim]
+    float* __restrict__ paged_kv_pool,       // [total_blocks, num_heads, block_size, head_dim]
+    const int* __restrict__ block_table,     // [batch, max_blocks_per_seq]
+    const int* __restrict__ seq_lens,        // [batch] length BEFORE the append
+    int num_new_tokens,
+    int block_size,
+    int head_dim,
+    int num_heads,
+    int max_blocks_per_seq,
+    int total_blocks,
+    int batch_index,
+    int layer_stride                         // num_heads * block_size * head_dim
+) {
+    const int token_idx = blockIdx.x;
+    const int head_idx = blockIdx.y;
+    if (token_idx >= num_new_tokens || head_idx >= num_heads) return;
+
+    const int start_len = seq_lens[batch_index];
+    const int position = start_len + token_idx;
+    const int logical_block = position / block_size;       // block inside the sequence
+    const int offset_in_block = position % block_size;     // token slot inside the block
+    if (logical_block >= max_blocks_per_seq) return;
+
+    const int physical_block = block_table[batch_index * max_blocks_per_seq + logical_block];
+    if (physical_block < 0 || physical_block >= total_blocks) return;  // unmapped slot
+
+    const size_t src_base =
+        (((size_t)batch_index * num_heads + head_idx) * num_new_tokens + token_idx) * head_dim;
+    const size_t dst_base =
+        (size_t)physical_block * layer_stride
+        + ((size_t)head_idx * block_size + offset_in_block) * head_dim;
+
+    // Contiguous per-warp writes over head_dim -> coalesced global transactions
+    for (int dim_idx = threadIdx.x; dim_idx < head_dim; dim_idx += blockDim.x) {
+        paged_kv_pool[dst_base + dim_idx] = new_kv[src_base + dim_idx];
+    }
+}
+
+// C++ Binding: paged_kv_cache_append
+void paged_kv_cache_append(
+    torch::Tensor new_kv,
+    torch::Tensor paged_kv_pool,
+    torch::Tensor block_table,
+    torch::Tensor seq_lens,
+    int64_t block_size
+) {
+    TORCH_CHECK(new_kv.is_cuda(), "new_kv must be a CUDA tensor");
+    TORCH_CHECK(paged_kv_pool.is_cuda(), "paged_kv_pool must be a CUDA tensor");
+    TORCH_CHECK(block_table.is_cuda(), "block_table must be a CUDA tensor");
+    TORCH_CHECK(seq_lens.is_cuda(), "seq_lens must be a CUDA tensor");
+    TORCH_CHECK(new_kv.is_contiguous(), "new_kv must be contiguous");
+    TORCH_CHECK(paged_kv_pool.is_contiguous(), "paged_kv_pool must be contiguous");
+    TORCH_CHECK(new_kv.dtype() == torch::kFloat32, "new_kv must be float32");
+    TORCH_CHECK(new_kv.dim() == 4, "new_kv must be [batch, heads, tokens, head_dim]");
+
+    const int batch = new_kv.size(0);
+    const int num_heads = new_kv.size(1);
+    const int num_new_tokens = new_kv.size(2);
+    const int head_dim = new_kv.size(3);
+    const int total_blocks = paged_kv_pool.size(0);
+    const int max_blocks_per_seq = block_table.size(1);
+    const int layer_stride = num_heads * block_size * head_dim;
+
+    TORCH_CHECK(paged_kv_pool.dim() == 4, "paged_kv_pool must be 4-D");
+    TORCH_CHECK(paged_kv_pool.size(1) == num_heads, "head mismatch between new_kv and pool");
+    TORCH_CHECK(paged_kv_pool.size(2) == block_size, "pool block_size mismatch");
+    TORCH_CHECK(paged_kv_pool.size(3) == head_dim, "head_dim mismatch between new_kv and pool");
+    TORCH_CHECK(block_table.size(0) == batch, "block_table batch mismatch");
+    TORCH_CHECK(seq_lens.numel() >= batch, "seq_lens must hold one length per batch element");
+    TORCH_CHECK(block_size > 0, "block_size must be positive");
+
+    const int threads = (head_dim >= 128) ? 128 : 64;
+    dim3 blocks((unsigned)num_new_tokens, (unsigned)num_heads);
+
+    for (int b = 0; b < batch; ++b) {
+        paged_kv_cache_append_kernel<<<blocks, threads>>>(
+            new_kv.data_ptr<float>(),
+            paged_kv_pool.data_ptr<float>(),
+            block_table.data_ptr<int>(),
+            seq_lens.data_ptr<int>(),
+            num_new_tokens,
+            (int)block_size,
+            head_dim,
+            num_heads,
+            max_blocks_per_seq,
+            total_blocks,
+            b,
+            layer_stride
+        );
+    }
+    cudaDeviceSynchronize();
+
+    // Extend every sequence in-place by the number of appended tokens
+    seq_lens.add_(num_new_tokens);
+}
+
 // C++ Binding: append_to_kv_cache
 void append_to_kv_cache(torch::Tensor kv_cache, torch::Tensor new_tokens, torch::Tensor current_pos_tensor) {
     int current_pos = current_pos_tensor.item<int>();
@@ -306,6 +418,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
     m.def("append_to_kv_cache", &append_to_kv_cache,
         "Zero-Copy Direct VRAM Memory Injection for LLMs");
+
+    m.def("paged_kv_cache_append", &paged_kv_cache_append,
+        "Paged KV-Cache append with a physical block table (PagedAttention-style)");
 
     m.def("fused_audio_preprocess", &fused_audio_preprocess,
         "Fused Audio Preprocessing (VAD + Pre-emphasis + Windowing)");

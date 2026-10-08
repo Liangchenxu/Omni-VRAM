@@ -5,6 +5,13 @@ Speaker Verification Module for vram_core
 Provides 1:1 speaker identity verification using MFCC + cosine similarity.
 Supports: register voiceprint, verify voiceprint, delete voiceprint.
 
+v2.6.0 additions:
+    - Pluggable voiceprint embeddings (``BaseVoiceprintExtractor`` with ONNX or
+      MFCC backends) usable instead of the built-in MFCC statistics
+    - Duration-adaptive verification thresholds for short probes
+    - Dynamic cosine pruning of inconsistent enrolment templates
+    - Optional Gaussian BIC veto for statistically inconsistent probes
+
 Architecture:
     - Voiceprint: Dataclass storing MFCC feature template
     - SpeakerVerifier: Main verification engine
@@ -120,6 +127,13 @@ class SpeakerVerifier:
         - Delete / update voiceprints
         - Persistent storage (JSON file)
         - Multi-sample enrollment (averages multiple recordings)
+        - Pluggable voiceprint extractors (``extractor=`` /
+          ``extractor_backend=``, v2.6.0): ONNX speaker-embedding models with a
+          transparent MFCC fallback
+        - Duration-adaptive thresholds (``adaptive_threshold=True``) and dynamic
+          cosine pruning (``dynamic_pruning=True``) for short / noisy probes
+        - Optional Gaussian BIC veto (``use_bic=True``) rejecting probes that are
+          statistically inconsistent with the enrollment templates
 
     Usage:
         verifier = SpeakerVerifier(threshold=0.75)
@@ -132,6 +146,12 @@ class SpeakerVerifier:
         result = verifier.verify("alice", test_audio, sample_rate=16000)
         if result.verified:
             print(f"Welcome, Alice! (confidence: {result.confidence:.2f})")
+
+    v2.6.0 hardening (all opt-in, legacy defaults are unchanged):
+        verifier = SpeakerVerifier(
+            extractor_backend="auto", model_path="ecapa.onnx",
+            adaptive_threshold=True, dynamic_pruning=True, use_bic=True,
+        )
     """
 
     def __init__(
@@ -140,6 +160,17 @@ class SpeakerVerifier:
         n_mfcc: int = 20,
         sample_rate: int = 16000,
         storage_path: Optional[Union[str, Path]] = None,
+        extractor: Optional[Any] = None,
+        extractor_backend: str = "builtin",
+        model_path: Optional[str] = None,
+        adaptive_threshold: bool = False,
+        min_segment_s: float = 1.0,
+        short_penalty: float = 0.12,
+        max_templates: int = 8,
+        dynamic_pruning: bool = False,
+        template_prune_gap: float = 0.15,
+        bic_penalty: float = 1.0,
+        use_bic: bool = False,
     ):
         """
         Initialize SpeakerVerifier.
@@ -149,6 +180,28 @@ class SpeakerVerifier:
             n_mfcc: Number of MFCC coefficients to extract.
             sample_rate: Expected audio sample rate.
             storage_path: Path to persist voiceprints (JSON file).
+            extractor: Optional voiceprint extractor object exposing
+                ``embed(audio, sample_rate)`` (e.g. a
+                :class:`BaseVoiceprintExtractor`). When given it replaces the
+                built-in MFCC statistics for scoring.
+            extractor_backend: ``"builtin"`` (legacy MFCC path, default) or a
+                backend understood by ``create_voiceprint_extractor()``
+                (``"auto"`` / ``"onnx"`` / ``"mfcc"``).
+            model_path: ONNX speaker-embedding model used by the ONNX backend.
+            adaptive_threshold: Raise the threshold for short probes
+                (see :meth:`dynamic_threshold`), mirroring
+                ``AdaptiveCosineClusterer``.
+            min_segment_s: Probe duration (s) at which the base threshold is used.
+            short_penalty: Extra threshold applied to a zero-length probe.
+            max_templates: Enrollment vectors kept per speaker (FIFO).
+            dynamic_pruning: Prune enrollment vectors that disagree with the best
+                match before averaging, so a single bad enrollment cannot drag
+                the score down.
+            template_prune_gap: Cosine gap below the best match that still counts
+                as agreement (used when ``dynamic_pruning`` is enabled).
+            bic_penalty: Penalty of the Gaussian BIC likelihood-ratio test.
+            use_bic: Reject probes the BIC test considers statistically
+                inconsistent with the enrollment vectors.
         """
         self.threshold = threshold
         self.n_mfcc = n_mfcc
@@ -156,14 +209,201 @@ class SpeakerVerifier:
         self._voiceprints: Dict[str, Voiceprint] = {}
         self._storage_path = Path(storage_path) if storage_path else None
 
+        # ── v2.6.0: pluggable embeddings + adaptive decision rules ──────────
+        self.adaptive_threshold = bool(adaptive_threshold)
+        self.min_segment_s = max(float(min_segment_s), 1e-3)
+        self.short_penalty = max(float(short_penalty), 0.0)
+        self.max_templates = max(int(max_templates), 1)
+        self.dynamic_pruning = bool(dynamic_pruning)
+        self.template_prune_gap = max(float(template_prune_gap), 0.0)
+        self.bic_penalty = float(bic_penalty)
+        self.use_bic = bool(use_bic)
+        self._templates: Dict[str, List[np.ndarray]] = {}
+        self.extractor_backend = (extractor_backend or "builtin").lower()
+        self.extractor = extractor or self._create_extractor(model_path)
+
         # Load existing voiceprints if storage exists
         if self._storage_path and self._storage_path.exists():
             self._load()
 
         logger.info(
             f"SpeakerVerifier initialized: threshold={threshold}, "
-            f"n_mfcc={n_mfcc}, registered_speakers={len(self._voiceprints)}"
+            f"n_mfcc={n_mfcc}, extractor={self.extractor_name}, "
+            f"registered_speakers={len(self._voiceprints)}"
         )
+
+    # ── Extractor plumbing (v2.6.0) ───────────────────────────────────────
+
+    def _create_extractor(self, model_path: Optional[str]) -> Optional[Any]:
+        """Build the configured voiceprint extractor (``None`` = builtin MFCC)."""
+        if self.extractor_backend in ("", "builtin", "default", "none"):
+            return None
+        try:
+            from vram_core.speaker_diarization import create_voiceprint_extractor
+
+            return create_voiceprint_extractor(
+                backend=self.extractor_backend,
+                model_path=model_path,
+                n_mfcc=self.n_mfcc,
+                sample_rate=self.sample_rate,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                f"Voiceprint extractor '{self.extractor_backend}' unavailable "
+                f"({exc}); falling back to built-in MFCC features"
+            )
+            return None
+
+    @property
+    def extractor_name(self) -> str:
+        """Identifier of the active extractor (``"builtin"`` for MFCC stats)."""
+        if self.extractor is None:
+            return "builtin"
+        return str(getattr(self.extractor, "name", type(self.extractor).__name__))
+
+    # ── Probe scoring & adaptive decision rules (v2.6.0) ──────────────────
+
+    def _probe(self, audio: np.ndarray, sample_rate: int):
+        """
+        Extract ``(mfcc_mean, probe_vector)`` from an audio buffer.
+
+        ``mfcc_mean`` keeps the historical MFCC-statistics behaviour, while
+        ``probe_vector`` is the L2-normalised vector compared against the
+        enrollment pool (extractor embedding when configured, MFCC mean
+        otherwise).
+        """
+        if np.asarray(audio).reshape(-1).size == 0:
+            # Zero-length probes are rejected deterministically instead of relying
+            # on the feature front-end to cope with empty input.
+            probe_dim = self.n_mfcc
+            if self.extractor is not None:
+                probe_dim = int(getattr(self.extractor, "dim", self.n_mfcc))
+            return (
+                np.zeros(self.n_mfcc, dtype=np.float32),
+                np.zeros(probe_dim, dtype=np.float32),
+            )
+
+        mfcc = np.asarray(self._extract_mfcc(audio, sample_rate), dtype=np.float32)
+        if mfcc.ndim != 2 or mfcc.shape[0] == 0:
+            mean = np.zeros(self.n_mfcc, dtype=np.float32)
+        else:
+            mean = np.mean(mfcc, axis=0).astype(np.float32)
+
+        if self.extractor is not None:
+            vector = np.asarray(
+                self.extractor.embed(audio, sample_rate), dtype=np.float32
+            )
+        else:
+            vector = mean
+        return mean, self._l2_normalize(vector)
+
+    def _probe_vector(self, audio: np.ndarray, sample_rate: int) -> np.ndarray:
+        """L2-normalised comparison vector for ``audio`` (see :meth:`_probe`)."""
+        return self._probe(audio, sample_rate)[1]
+
+    @staticmethod
+    def _l2_normalize(vector: np.ndarray) -> np.ndarray:
+        """L2-normalised copy of ``vector`` (degenerate vectors are returned)."""
+        vector = np.asarray(vector, dtype=np.float32).reshape(-1)
+        norm = float(np.linalg.norm(vector))
+        if np.isfinite(norm) and norm > 1e-10:
+            vector = vector / norm
+        return vector.astype(np.float32)
+
+    def _store_template(self, speaker_id: str, vector: np.ndarray) -> None:
+        """Append a normalised enrollment vector, keeping the newest templates."""
+        pool = self._templates.setdefault(speaker_id, [])
+        pool.append(self._l2_normalize(vector))
+    def _pool_similarity(self, pool: List[np.ndarray], probe: np.ndarray) -> float:
+        """
+        Mean cosine similarity over an enrollment pool.
+
+        Pool entries and ``probe`` are L2-normalised, so the dot product is the
+        cosine similarity. With ``dynamic_pruning`` enabled, templates whose
+        similarity is more than ``template_prune_gap`` below the best match are
+        dropped as outliers (dynamic cosine pruning) before averaging.
+        """
+        if not pool:
+            return 0.0
+        sims = np.array([float(np.dot(t, probe)) for t in pool], dtype=np.float64)
+        if self.dynamic_pruning and sims.size > 1:
+            keep = sims >= (float(np.max(sims)) - self.template_prune_gap)
+            if not np.any(keep):  # never prune the best match itself
+                keep = np.zeros_like(sims, dtype=bool)
+                keep[int(np.argmax(sims))] = True
+            sims = sims[keep]
+        return float(np.mean(sims))
+
+    def _score(
+        self,
+        speaker_id: str,
+        mfcc_mean: np.ndarray,
+        probe: np.ndarray,
+    ) -> float:
+        """
+        Similarity between a probe and a registered speaker.
+
+        The enrollment pool is used when a voiceprint extractor is configured or
+        when ``dynamic_pruning`` is enabled; otherwise the stored MFCC template
+        is compared directly (identical to pre-2.6.0 behaviour).
+        """
+        pool = self._templates.get(speaker_id) or []
+        if pool and (self.extractor is not None or self.dynamic_pruning):
+            return self._pool_similarity(pool, probe)
+
+        voiceprint = self._voiceprints.get(speaker_id)
+        if voiceprint is None or voiceprint.mfcc_mean is None:
+            return 0.0
+        return self._cosine_similarity(voiceprint.mfcc_mean, mfcc_mean)
+
+    def _duration_s(self, audio: np.ndarray, sample_rate: int) -> float:
+        """Duration of ``audio`` in seconds (0.0 for degenerate input)."""
+        length = int(np.asarray(audio).reshape(-1).shape[0])
+        return length / float(sample_rate or self.sample_rate or 16000)
+
+    def dynamic_threshold(self, duration_s: float = 1.0) -> float:
+        """
+        Decision threshold for a probe of ``duration_s`` seconds.
+
+        With ``adaptive_threshold`` disabled this is simply the configured
+        threshold. When enabled, short probes get a stricter threshold,
+        mirroring ``AdaptiveCosineClusterer.dynamic_threshold``.
+        """
+        base = float(self.threshold)
+        if not self.adaptive_threshold:
+            return base
+        ratio = min(max(float(duration_s), 0.0) / self.min_segment_s, 1.0)
+        return float(min(base + self.short_penalty * (1.0 - ratio), 0.999))
+
+    def _bic_veto(self, speaker_id: str, probe: np.ndarray) -> bool:
+        """True when the Gaussian BIC test rejects ``probe`` for ``speaker_id``."""
+        if not self.use_bic:
+            return False
+        pool = self._templates.get(speaker_id) or []
+        if len(pool) < 3:
+            # A covariance test on fewer than three enrollment vectors is noise.
+            return False
+        try:
+            from vram_core.speaker_diarization import AdaptiveCosineClusterer
+        except Exception:  # pragma: no cover - defensive
+            return False
+        score = AdaptiveCosineClusterer.bic_score(
+            np.asarray(pool, dtype=np.float64),
+            np.asarray(probe, dtype=np.float64)[np.newaxis, :],
+            penalty=self.bic_penalty,
+        )
+        return bool(score > 0.0)
+
+    def templates_count(self, speaker_id: Optional[str] = None) -> int:
+        """Number of enrollment vectors stored for a speaker (or in total)."""
+        if speaker_id is None:
+            return sum(len(pool) for pool in self._templates.values())
+        return len(self._templates.get(speaker_id, []))
+
+    def reset_templates(self) -> None:
+        """Forget every stored enrollment vector (voiceprints are untouched)."""
+        self._templates.clear()
+
 
     # 鈹€鈹€ MFCC Feature Extraction 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
@@ -336,6 +576,15 @@ class SpeakerVerifier:
                 f"(features={mfcc_mean.shape[0]})"
             )
 
+        # v2.6.0: keep the enrollment pool used by the pruning / BIC decision
+        # rules and by pluggable voiceprint extractors.
+        enrollment = (
+            np.asarray(self.extractor.embed(audio, sample_rate), dtype=np.float32)
+            if self.extractor is not None
+            else mfcc_mean
+        )
+        self._store_template(speaker_id, enrollment)
+
         # Persist
         self._save()
 
@@ -364,9 +613,16 @@ class SpeakerVerifier:
             Voiceprint object.
         """
         all_mfcc = []
+        enrollments = []
         for sample in audio_samples:
             mfcc = self._extract_mfcc(sample, sample_rate)
             all_mfcc.append(mfcc)
+            if self.extractor is not None:
+                enrollments.append(
+                    np.asarray(self.extractor.embed(sample, sample_rate), dtype=np.float32)
+                )
+            elif getattr(mfcc, "ndim", 0) == 2 and mfcc.shape[0]:
+                enrollments.append(np.mean(mfcc, axis=0).astype(np.float32))
 
         # Concatenate all MFCC frames
         combined = np.concatenate(all_mfcc, axis=0)
@@ -382,6 +638,10 @@ class SpeakerVerifier:
             updated_at=time.time(),
             metadata=metadata or {},
         )
+        # v2.6.0: enrollment pool built from every provided sample
+        for enrollment in enrollments:
+            self._store_template(speaker_id, enrollment)
+
         self._voiceprints[speaker_id] = voiceprint
         self._save()
 
@@ -416,7 +676,6 @@ class SpeakerVerifier:
             KeyError: If speaker_id not registered.
         """
         start_time = time.time()
-        effective_threshold = threshold or self.threshold
 
         if speaker_id not in self._voiceprints:
             raise KeyError(
@@ -424,17 +683,26 @@ class SpeakerVerifier:
                 f"Registered: {list(self._voiceprints.keys())}"
             )
 
-        voiceprint = self._voiceprints[speaker_id]
+        # Probe features: legacy MFCC statistics + normalised comparison vector
+        mfcc_mean, probe = self._probe(audio, sample_rate)
 
-        # Extract MFCC from test audio
-        test_mfcc = self._extract_mfcc(audio, sample_rate)
-        test_mean = np.mean(test_mfcc, axis=0).astype(np.float32)
+        # Threshold: explicit override > duration-adaptive > configured value
+        if threshold:
+            effective_threshold = float(threshold)
+        elif self.adaptive_threshold:
+            effective_threshold = self.dynamic_threshold(
+                self._duration_s(audio, sample_rate)
+            )
+        else:
+            effective_threshold = float(self.threshold)
 
-        # Compute cosine similarity
-        similarity = self._cosine_similarity(voiceprint.mfcc_mean, test_mean)
+        # Similarity against the enrollment pool / stored template
+        similarity = self._score(speaker_id, mfcc_mean, probe)
 
-        # Decision
-        verified = similarity >= effective_threshold
+        # Decision (the BIC veto only applies when explicitly enabled)
+        verified = similarity >= effective_threshold and not self._bic_veto(
+            speaker_id, probe
+        )
 
         elapsed = time.time() - start_time
 
@@ -471,16 +739,23 @@ class SpeakerVerifier:
         Returns:
             Best matching VerificationResult, or None if no match.
         """
-        effective_threshold = threshold or self.threshold
+        mfcc_mean, probe = self._probe(audio, sample_rate)
 
-        test_mfcc = self._extract_mfcc(audio, sample_rate)
-        test_mean = np.mean(test_mfcc, axis=0).astype(np.float32)
+        # Threshold: explicit override > duration-adaptive > configured value
+        if threshold:
+            effective_threshold = float(threshold)
+        elif self.adaptive_threshold:
+            effective_threshold = self.dynamic_threshold(
+                self._duration_s(audio, sample_rate)
+            )
+        else:
+            effective_threshold = float(self.threshold)
 
         best_result = None
         best_confidence = 0.0
 
         for speaker_id, voiceprint in self._voiceprints.items():
-            similarity = self._cosine_similarity(voiceprint.mfcc_mean, test_mean)
+            similarity = self._score(speaker_id, mfcc_mean, probe)
             if similarity > best_confidence:
                 best_confidence = similarity
                 best_result = VerificationResult(
@@ -489,6 +764,17 @@ class SpeakerVerifier:
                     confidence=float(similarity),
                     threshold=effective_threshold,
                 )
+
+        if (
+            best_result
+            and best_result.verified
+            and self._bic_veto(best_result.speaker_id, probe)
+        ):
+            logger.info(
+                f"BIC veto rejected '{best_result.speaker_id}' "
+                f"(confidence={best_result.confidence:.3f})"
+            )
+            return None
 
         if best_result and best_result.verified:
             logger.info(
@@ -514,6 +800,7 @@ class SpeakerVerifier:
         """
         if speaker_id in self._voiceprints:
             del self._voiceprints[speaker_id]
+            self._templates.pop(speaker_id, None)
             self._save()
             logger.info(f"Deleted voiceprint for '{speaker_id}'")
             return True

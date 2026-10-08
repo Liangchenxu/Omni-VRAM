@@ -99,6 +99,33 @@ class SileroVAD:
         self._last_silero_result = False
         self._silero_fail_count = 0
 
+    @property
+    def silero_window_size(self) -> int:
+        """Samples per Silero window: 512 @16 kHz, 256 @8 kHz."""
+        return 512 if self.sample_rate == 16000 else 256
+
+    def preload(self) -> bool:
+        """
+        Load the Silero model eagerly (and warm the TorchScript graph).
+
+        Calling this from ``RealtimePipeline.start()`` moves the one-off model
+        load (~0.5-3 s) out of the first ``feed()`` call, which otherwise shows
+        up as a latency spike on the first audio chunk.
+
+        Returns:
+            True when the neural model is usable, False when the energy-based
+            fallback will be used instead.
+        """
+        try:
+            self._load_model()
+        except (RuntimeError, OSError, ImportError):
+            return False
+
+        # Prime the graph so that the first real window is not paying for
+        # lazy initialization of the TorchScript interpreter.
+        self._run_model(np.zeros(self.silero_window_size, dtype=np.float32))
+        return True
+
     def _load_model(self):
         """Lazily load the Silero VAD model."""
         if self._model is not None:
@@ -140,6 +167,62 @@ class SileroVAD:
             except (RuntimeError, AttributeError):
                 pass
 
+    def _run_model(self, window: np.ndarray) -> Optional[float]:
+        """
+        Run one *aligned* Silero window (512 samples @16 kHz) through the model.
+
+        Any backend failure (including ``torch.jit.Error``, which is raised for
+        wrongly sized input and is not catchable as ``ValueError``) is contained
+        here and reported as ``None`` so the caller can fall back to energy VAD.
+
+        Returns:
+            Speech probability, or None when inference is unavailable.
+        """
+        if self._model is None:
+            return None
+        try:
+            import torch
+
+            tensor = torch.from_numpy(
+                np.ascontiguousarray(window, dtype=np.float32)
+            )
+            with torch.inference_mode():
+                probability = float(self._model(tensor, self.sample_rate).item())
+            self._silero_fail_count = 0
+            return probability
+        except Exception as error:  # noqa: BLE001 - any backend error -> fallback
+            if self._silero_fail_count == 0:
+                logger.warning("Silero VAD inference failed: %s, falling back", error)
+            self._silero_fail_count += 1
+            return None
+
+    def _silero_windows(self, samples: np.ndarray, pad_tail: bool = True):
+        """
+        Split arbitrary-length audio into Silero-sized windows.
+
+        This is the adaptive framing adapter that makes the VAD length-agnostic:
+        the model requires exactly ``silero_window_size`` samples, while callers
+        (streaming chunks, WebSocket frames, ...) may hand over anything from a
+        480-sample microphone chunk to a 1600-sample buffer.
+
+        Args:
+            samples: Float32 mono samples.
+            pad_tail: Zero-pad the final partial window so that short chunks
+                still produce a decision.
+
+        Yields:
+            Float32 windows of ``silero_window_size`` samples.
+        """
+        window_size = self.silero_window_size
+        samples = np.asarray(samples, dtype=np.float32).reshape(-1)
+        for start in range(0, len(samples), window_size):
+            window = samples[start:start + window_size]
+            if len(window) < window_size:
+                if not pad_tail:
+                    break
+                window = np.pad(window, (0, window_size - len(window)), mode="constant")
+            yield window
+
     def is_speech(self, audio_chunk: np.ndarray) -> bool:
         """
         Detect whether the given audio chunk contains speech.
@@ -165,21 +248,16 @@ class SileroVAD:
         # Append to internal buffer
         self._silero_buffer = np.concatenate([self._silero_buffer, audio_chunk])
 
-        # Process all complete windows from the buffer
-        while len(self._silero_buffer) >= self._MIN_SILERO_SAMPLES:
-            window = self._silero_buffer[:self._MIN_SILERO_SAMPLES]
-            self._silero_buffer = self._silero_buffer[self._MIN_SILERO_SAMPLES:]
-            try:
-                import torch
-                tensor = torch.from_numpy(window)
-                prob = self._model(tensor, self.sample_rate).item()
-                self._last_silero_result = prob >= self.threshold
-                self._silero_fail_count = 0
-            except (RuntimeError, OSError, ValueError) as e:
-                if self._silero_fail_count == 0:
-                    logger.warning("Silero VAD inference failed: %s, falling back", e)
-                self._silero_fail_count += 1
+        # Process all *complete* aligned windows from the buffer (512 samples @16kHz)
+        window_size = self.silero_window_size
+        while len(self._silero_buffer) >= window_size:
+            window = self._silero_buffer[:window_size]
+            self._silero_buffer = self._silero_buffer[window_size:]
+            probability = self._run_model(window)
+            if probability is None:
                 self._last_silero_result = self._fallback_energy_vad(window)
+            else:
+                self._last_silero_result = probability >= self.threshold
 
         # Update speech state
         now = time.time()
@@ -208,7 +286,13 @@ class SileroVAD:
 
     def get_speech_probability(self, audio_chunk: np.ndarray) -> float:
         """
-        Get the raw speech probability for the audio chunk.
+        Get the raw speech probability for an audio chunk of *any* length.
+
+        Silero's TorchScript model only accepts fixed windows (512 samples at
+        16 kHz, 256 at 8 kHz). Chunks of arbitrary length (e.g. the 1600-sample
+        streaming buffers) are therefore split by the adaptive framing adapter
+        :meth:`_silero_windows` and the maximum probability over the windows is
+        returned.
 
         Args:
             audio_chunk: Float32 audio samples.
@@ -221,14 +305,19 @@ class SileroVAD:
         if len(audio_chunk) == 0:
             return 0.0
 
-        try:
-            import torch
-            if audio_chunk.dtype != np.float32:
-                audio_chunk = audio_chunk.astype(np.float32)
-            tensor = torch.from_numpy(audio_chunk)
-            return float(self._model(tensor, self.sample_rate).item())
-        except (RuntimeError, OSError, ValueError):
+        if audio_chunk.dtype != np.float32:
+            audio_chunk = audio_chunk.astype(np.float32)
+
+        probabilities = [
+            probability
+            for probability in (
+                self._run_model(window) for window in self._silero_windows(audio_chunk)
+            )
+            if probability is not None
+        ]
+        if not probabilities:
             return self._fallback_energy(audio_chunk)
+        return float(max(probabilities))
 
     @staticmethod
     def _fallback_energy(audio_chunk: np.ndarray) -> float:
@@ -722,6 +811,7 @@ class PipelineConfig:
     language: Optional[str] = None
     max_concurrent_asr: int = 2
     ring_buffer_duration_s: float = 5.0    # Ring buffer capacity
+    preload_vad: bool = True               # Load Silero during start(), not first feed()
 
     @property
     def chunk_size(self) -> int:
@@ -856,11 +946,20 @@ class RealtimePipeline:
         return self._stats
 
     def start(self):
-        """Start the pipeline."""
+        """
+        Start the pipeline.
+
+        The Silero VAD model is preloaded here (``config.preload_vad``) instead
+        of on the first ``feed()`` call: the one-off model load takes hundreds of
+        milliseconds to seconds, and paying it on the first audio chunk shows up
+        as a latency spike in the middle of a conversation.
+        """
         self._is_running = True
         self._stats = PipelineStats()
         self.latency_tracker.clear()
         self.vad.reset()
+        if self.config.preload_vad:
+            self.vad.preload()
         logger.info("RealtimePipeline started (target: < 200ms latency)")
 
     def stop(self):

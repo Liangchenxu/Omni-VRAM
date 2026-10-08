@@ -7,7 +7,7 @@
 ![Python: 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue.svg)
 [![Tests](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml/badge.svg)](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml)
 [![PyPI](https://img.shields.io/pypi/v/omni-vram.svg)](https://pypi.org/project/omni-vram/)
-[![Version](https://img.shields.io/badge/Version-2.5.0-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
+[![Version](https://img.shields.io/badge/Version-2.6.0-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
 
 [**English**](#english-documentation) | [**中文文档**](#chinese-documentation) | [**Docs**](docs/)
 
@@ -17,6 +17,8 @@
 ## 📖 Overview
 
 **Omni-VRAM** is a production-ready **LLM voice interaction framework** that lets large language models hear and speak. Built on CUDA zero-copy technology, it provides **28 core modules** covering the entire audio AI pipeline — from speech recognition to synthesis, from single GPU to distributed clusters.
+
+> **v2.6.0**: Full-duplex voice engine — barge-in interruption (`DuplexState`), overlap-aligned streaming ASR with Whisper hallucination suppression, multi-band adaptive denoising (MBSS + decision-directed Wiener), paged KV-Cache block table (`paged_kv_cache_append` CUDA kernel + NumPy fallback), CUDA-Graph audio front-end and pinned-memory async upload, plus pluggable ONNX voiceprint embeddings.
 
 > **v2.5.0**: Major release with 28 modules, new Audio Enhancer (7-stage pipeline), Speech Quality Assessment (SNR/PESQ-lite), LLM Meeting Assistant (multi-provider AI analysis), Edge Deployment Backends (ONNX/TensorRT/Lite), and 85+ integration tests.
 
@@ -148,6 +150,9 @@ Omni-VRAM/
 │   ├── test_realtime_latency.py     # Real-time latency tests
 │   ├── test_full_duplex_barge_in.py        # Full-duplex barge-in tests
 │   ├── test_streaming_asr_alignment.py     # Overlap alignment & hallucination tests
+│   ├── test_multiband_denoiser.py          # MBSS + decision-directed Wiener tests
+│   ├── test_paged_kv_cache.py              # Paged KV-Cache / block table tests
+│   ├── test_gpu_pipeline_ops.py            # CUDA-Graph front-end & pinned upload tests
 │   ├── test_v250.py                 # v2.5.0 feature tests (16 cases)
 │   └── benchmark_comparison.py      # Benchmark comparison
 │
@@ -729,6 +734,8 @@ You are free to use, modify, and distribute this software in both commercial and
 
 **Omni-VRAM** 是一个生产级的 **LLM 语音交互框架**，让大模型长出耳朵和嘴巴。基于 CUDA 零拷贝技术构建，提供 **28 个核心模块**，覆盖完整的语音 AI 管线——从语音识别到语音合成，从单 GPU 到分布式集群。
 
+> **v2.6.0**：全双工语音引擎——打断检测（`DuplexState`）、重叠对齐流式 ASR 与 Whisper 幻觉抑制、多频带自适应降噪（MBSS + 决策导向维纳滤波）、Paged KV-Cache 物理块表（`paged_kv_cache_append` CUDA 核函数 + NumPy 回退）、CUDA Graph 音频前端与锁页内存异步上传通道，以及可拔插 ONNX 声纹嵌入接口。
+
 > **v2.5.0**：重大版本更新，新增音频增强器（7 级处理管线）、语音质量评估（SNR/PESQ-lite）、LLM 会议助手（多供应商 AI 分析）、边缘部署后端（ONNX/TensorRT/Lite）、85+ 集成测试等。
 
 传统的 Python 音频处理管线和 PyTorch 操作（如 `torch.cat` 更新 KV-Cache）会引入严重的性能开销。Omni-VRAM 在硬件层面实现**算子融合**和**零拷贝内存注入**，使消费级显卡（RTX 30/40 系列）能够为实时语音助手提供亚毫秒级延迟。
@@ -859,6 +866,9 @@ Omni-VRAM/
 │   ├── test_realtime_latency.py     # 实时延迟测试
 │   ├── test_full_duplex_barge_in.py        # 全双工打断测试
 │   ├── test_streaming_asr_alignment.py     # 重叠对齐与幻觉抑制测试
+│   ├── test_multiband_denoiser.py          # 多频带降噪 / 决策导向维纳滤波测试
+│   ├── test_paged_kv_cache.py              # Paged KV-Cache 分页块表测试
+│   ├── test_gpu_pipeline_ops.py            # CUDA Graph 前端与锁页内存上传测试
 │   ├── test_v250.py                 # v2.5.0 功能测试（16 个用例）
 │   └── benchmark_comparison.py      # 基准对比
 │

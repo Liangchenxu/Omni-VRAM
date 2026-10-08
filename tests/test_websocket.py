@@ -20,6 +20,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from vram_core import __version__ as OMNI_VRAM_VERSION
+
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -550,7 +552,9 @@ class TestHealthEndpoint:
                 assert response.status_code == 200
                 data = response.json()
                 assert data["status"] == "ok"
-                assert data["version"] == "2.1.3"
+                # /health must report the installed package version (single
+                # source of truth: vram_core.__version__)
+                assert data["version"] == OMNI_VRAM_VERSION
 
     def test_root_endpoint(self):
         """Test GET /."""
@@ -572,7 +576,7 @@ class TestHealthEndpoint:
                 response = client.get("/")
                 assert response.status_code == 200
                 data = response.json()
-                assert data["version"] == "2.1.3"
+                assert data["version"] == OMNI_VRAM_VERSION
                 assert "endpoints" in data
                 assert "/transcribe/async" in str(data["endpoints"])
                 assert "/ws/transcribe" in str(data["endpoints"])

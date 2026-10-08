@@ -29,6 +29,7 @@ from vram_core.whisper.optimizer import (
     StreamChunk,
     CacheStats,
     TranscriptionCache,
+    FrontendGraphStatus,
 )
 
 __all__ = [
@@ -46,4 +47,5 @@ __all__ = [
     "StreamChunk",
     "CacheStats",
     "TranscriptionCache",
+    "FrontendGraphStatus",
 ]

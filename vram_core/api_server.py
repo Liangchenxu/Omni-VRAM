@@ -40,6 +40,24 @@ from enum import Enum
 
 logger = logging.getLogger(__name__)
 
+# ─── Package version (single source of truth for the REST API) ───────────────
+try:
+    from vram_core import __version__ as _API_VERSION
+except ImportError:  # pragma: no cover - defensive, vram_core is a hard dependency
+    _API_VERSION = "0.0.0"
+
+# ─── Whisper backend (module level, monkey-patch friendly) ──────────────────
+# Kept at module scope (instead of a function-local import) so that
+# ``patch("vram_core.api_server.WhisperBridge")`` in the test-suite — and any
+# user-side instrumentation — reliably intercepts the class used by create_app().
+try:
+    from vram_core.whisper import WhisperBridge, WhisperBackend
+    _WHISPER_IMPORT_ERROR: Optional[Exception] = None
+except ImportError as _error:  # pragma: no cover - optional dependency chain
+    WhisperBridge = None  # type: ignore[assignment]
+    WhisperBackend = None  # type: ignore[assignment]
+    _WHISPER_IMPORT_ERROR = _error
+
 # ─── Constants ──────────────────────────────────────────────────────────────
 MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024  # 100 MB
 SUPPORTED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".webm", ".aac", ".wma"}
@@ -321,9 +339,14 @@ def create_app(
     from fastapi.responses import JSONResponse
     from pydantic import BaseModel
 
-    from vram_core.whisper import WhisperBridge, WhisperBackend
     from vram_core.streaming_asr import StreamASR, StreamASRConfig
     from vram_core.config import config
+
+    if WhisperBridge is None:  # pragma: no cover - optional dependency chain
+        raise RuntimeError(
+            f"Whisper backend unavailable: {_WHISPER_IMPORT_ERROR}. "
+            "Install with: pip install omni-vram[whisper-python]"
+        )
 
     # Resolve backend
     whisper_backend = WhisperBackend.AUTO
@@ -346,7 +369,7 @@ def create_app(
     app = FastAPI(
         title="vram_core Transcription API",
         description="High-performance speech-to-text API powered by vram_core",
-        version="2.2.1",
+        version=_API_VERSION,
     )
 
     # ─── API Key Authentication ───────────────────────────────────────────────
@@ -1182,7 +1205,7 @@ def create_app(
 
         return HealthResponse(
             status="ok",
-            version="2.2.1",
+            version=_API_VERSION,
             gpu=gpu_available,
             backend=whisper.backend.value,
             available_backends=[b.value for b in whisper.get_available_backends()],
@@ -1195,7 +1218,7 @@ def create_app(
         """API root — redirects to docs."""
         return {
             "name": "vram_core Transcription API",
-            "version": "2.2.1",
+            "version": _API_VERSION,
             "docs": "/docs",
             "health": "/health",
             "endpoints": {

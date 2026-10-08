@@ -122,6 +122,8 @@ class StreamConfig:
         echo_suppression_decay_ms: Time (ms) over which ``echo_suppression_factor``
             decays linearly back to 1.0 (floating-weight suppression).
         vad_frame_ms: Frame length used for frame-level VAD / barge-in scanning.
+        async_upload: Mount the pinned-memory asynchronous upload channel so that
+            audio intake overlaps GPU work (v2.6.0).
     """
     sample_rate: int = 16000
     chunk_duration_ms: int = 100          # Chunk size in milliseconds
@@ -140,6 +142,11 @@ class StreamConfig:
     echo_suppression_factor: float = 2.0
     echo_suppression_decay_ms: int = 400
     vad_frame_ms: int = 25
+
+    # ---- GPU pipeline (v2.6.0) ----
+    # Pinned-memory host->device upload channel (CUDA stream isolated). Off by
+    # default: enabling it costs a pinned buffer, so it is opt-in for GPU setups.
+    async_upload: bool = False
 
     @property
     def chunk_size(self) -> int:
@@ -170,6 +177,184 @@ class StreamConfig:
     def vad_frame_size(self) -> int:
         """VAD frame length in samples."""
         return max(1, int(self.sample_rate * self.vad_frame_ms / 1000))
+
+
+class PinnedUploadChannel:
+    """
+    Pinned-memory asynchronous host->device upload channel (v2.6.0).
+
+    Audio chunks arrive on the CPU (microphone / WebSocket) while the GPU is
+    still busy with the previous chunk. Uploading through a *page-locked*
+    (pinned) staging buffer on a **dedicated CUDA stream** lets the DMA engine
+    move the data without paging the host buffer, so the H2D copy overlaps the
+    GPU front-end instead of serialising with it::
+
+        channel = PinnedUploadChannel(buffer_size=1600)
+        device_chunk = channel.upload(chunk)   # returns immediately
+        ... GPU work for the previous chunk ...
+        channel.synchronize()                  # data is now ready
+
+    Every chunk reuses the same staging buffer, so a long stream performs no
+    per-chunk allocation.
+
+    Degradation: without torch (or without a CUDA device) the channel runs in
+    ``simulated`` mode -- it keeps the staging semantics (single reused buffer,
+    no per-chunk allocation, timing statistics) but performs the copy in host
+    memory, so profiling code and tests work everywhere.
+    """
+
+    def __init__(self, buffer_size: int = 16000, device: int = 0, enabled: bool = True):
+        if buffer_size <= 0:
+            raise ValueError("buffer_size must be positive")
+
+        self.buffer_size = int(buffer_size)
+        self.device_index = int(device)
+        self.enabled = bool(enabled)
+        self.backend = "simulated"
+        self._torch = None
+        self._stream = None
+        self._device = None
+        self._staging_tensor = None
+        self._device_buffer = None
+        self._staging = np.zeros(self.buffer_size, dtype=np.float32)
+        self._lock = threading.Lock()
+
+        self._uploads = 0
+        self._bytes = 0
+        self._last_upload_ms = 0.0
+        self._total_upload_ms = 0.0
+
+        if self.enabled:
+            self._try_enable_cuda()
+
+    def _try_enable_cuda(self) -> None:
+        """Enable pinned memory + a private CUDA stream when possible."""
+        try:
+            import torch
+        except ImportError:
+            logger.info(
+                "PinnedUploadChannel: torch unavailable, using simulated upload backend"
+            )
+            return
+        if not torch.cuda.is_available():
+            logger.info(
+                "PinnedUploadChannel: no CUDA device, using simulated upload backend"
+            )
+            return
+        try:
+            device = torch.device(f"cuda:{self.device_index}")
+            self._staging_tensor = torch.zeros(
+                self.buffer_size, dtype=torch.float32, pin_memory=True
+            )
+            self._device_buffer = torch.zeros(
+                self.buffer_size, dtype=torch.float32, device=device
+            )
+            self._stream = torch.cuda.Stream(device=device)
+            self._torch = torch
+            self._device = device
+            self.backend = "cuda"
+            logger.info(
+                "PinnedUploadChannel: pinned-memory upload on a dedicated CUDA stream"
+            )
+        except (RuntimeError, OSError) as error:
+            logger.warning(
+                "PinnedUploadChannel: CUDA init failed (%s), using simulated backend",
+                error,
+            )
+            self.backend = "simulated"
+
+    # ── Properties ────────────────────────────────────────────────────────
+    @property
+    def is_cuda(self) -> bool:
+        """True when pinned memory + a CUDA stream are used."""
+        return self.backend == "cuda"
+
+    @property
+    def staging_buffer(self) -> np.ndarray:
+        """Reusable host staging buffer."""
+        return self._staging
+
+    # ── Upload ────────────────────────────────────────────────────────────
+    def upload(self, chunk: np.ndarray):
+        """
+        Queue one audio chunk for upload (non-blocking on the CUDA backend).
+
+        Args:
+            chunk: Audio samples (float32 preferred). Longer chunks are
+                truncated to ``buffer_size``.
+
+        Returns:
+            A device tensor view (CUDA backend) or None (simulated backend).
+        """
+        if not self.enabled or chunk is None:
+            return None
+
+        samples = np.asarray(chunk, dtype=np.float32).reshape(-1)
+        count = min(samples.size, self.buffer_size)
+        if count == 0:
+            return None
+
+        start = time.perf_counter()
+        result = None
+        if self.backend == "cuda":
+            with self._lock:
+                self._staging_tensor[:count].copy_(
+                    self._torch.from_numpy(np.ascontiguousarray(samples[:count]))
+                )
+                with self._torch.cuda.stream(self._stream):
+                    self._device_buffer[:count].copy_(
+                        self._staging_tensor[:count], non_blocking=True
+                    )
+                result = self._device_buffer[:count]
+        else:
+            self._staging[:count] = samples[:count]
+
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        with self._lock:
+            self._uploads += 1
+            self._bytes += int(count * samples.dtype.itemsize)
+            self._last_upload_ms = elapsed_ms
+            self._total_upload_ms += elapsed_ms
+        return result
+
+    def synchronize(self) -> None:
+        """Block until every queued H2D copy has completed."""
+        if self.backend == "cuda" and self._stream is not None:
+            self._stream.synchronize()
+
+    def stats(self) -> dict:
+        """Upload channel statistics (backend, volume, last/average latency)."""
+        average_ms = self._total_upload_ms / self._uploads if self._uploads else 0.0
+        return {
+            "backend": self.backend,
+            "buffer_size": self.buffer_size,
+            "uploads": self._uploads,
+            "bytes": self._bytes,
+            "last_upload_ms": self._last_upload_ms,
+            "avg_upload_ms": average_ms,
+        }
+
+    def close(self) -> None:
+        """Flush pending copies and release the device buffers."""
+        self.synchronize()
+        self._staging_tensor = None
+        self._device_buffer = None
+        self._stream = None
+        self.backend = "simulated"
+
+    def __enter__(self) -> "PinnedUploadChannel":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        self.close()
+        return False
+
+    def __del__(self):  # pragma: no cover - best effort cleanup
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 - interpreter shutdown safety
+            pass
+
 
 
 class CircularBuffer:
@@ -578,6 +763,8 @@ class StreamProcessor:
         self,
         config: Optional[StreamConfig] = None,
         whisper_bridge: Optional[object] = None,
+        upload_channel: Optional[PinnedUploadChannel] = None,
+        async_upload: Optional[bool] = None,
     ):
         """
         Initialize stream processor.
@@ -585,6 +772,10 @@ class StreamProcessor:
         Args:
             config: Stream processing configuration.
             whisper_bridge: Optional WhisperBridge instance for transcription.
+            upload_channel: Optional pre-built :class:`PinnedUploadChannel`.
+            async_upload: Override ``config.async_upload``; when enabled (and no
+                channel is injected) a pinned-memory upload channel is created so
+                that audio intake overlaps GPU work.
         """
         self.config = config or StreamConfig()
         self.whisper_bridge = whisper_bridge
@@ -603,6 +794,16 @@ class StreamProcessor:
             sample_rate=self.config.sample_rate,
             frame_size_ms=self.config.vad_frame_ms,
         )
+
+        # Pinned-memory asynchronous upload channel (v2.6.0, opt-in)
+        self._upload_channel = upload_channel
+        enable_upload = (
+            bool(self.config.async_upload) if async_upload is None else bool(async_upload)
+        )
+        if self._upload_channel is None and enable_upload:
+            self._upload_channel = PinnedUploadChannel(
+                buffer_size=max(self.config.chunk_size, self.config.vad_frame_size),
+            )
 
         # Pre-allocated ring buffers (fixed memory, no concatenation growth)
         self._audio_buffer = CircularBuffer(self.config.max_buffer_samples)
@@ -663,6 +864,25 @@ class StreamProcessor:
     def memory_footprint_bytes(self) -> int:
         """Bytes of pre-allocated audio memory (constant over time)."""
         return self._audio_buffer.memory_bytes + self._pre_speech_buffer.memory_bytes
+
+    @property
+    def upload_channel(self) -> Optional[PinnedUploadChannel]:
+        """The pinned-memory upload channel (None when disabled)."""
+        return self._upload_channel
+
+    @property
+    def upload_stats(self) -> dict:
+        """
+        Statistics of the asynchronous upload channel.
+
+        Returns ``{"enabled": False}`` when the channel is not mounted, so that
+        monitoring code can call it unconditionally.
+        """
+        if self._upload_channel is None:
+            return {"enabled": False, "backend": "disabled"}
+        stats = dict(self._upload_channel.stats())
+        stats["enabled"] = True
+        return stats
 
     @property
     def stats(self) -> dict:
@@ -958,6 +1178,12 @@ class StreamProcessor:
             event = self._scan_barge_in(chunk, enter)
             if event is not None:
                 self._trigger_interrupt(event)
+
+        # ---- Overlapped host->device upload (pinned memory + CUDA stream) ----
+        # Queued here, before the CPU-bound noise reduction / VAD work, so the
+        # DMA transfer overlaps the current chunk's processing.
+        if self._upload_channel is not None:
+            self._upload_channel.upload(chunk)
 
         # ---- Regular pipeline -----------------------------------------
         if self.noise_reducer is not None and chunk.size:
@@ -1260,6 +1486,8 @@ class StreamProcessor:
             }
         self._set_state(StreamState.IDLE)
         self._set_duplex_state(DuplexState.IDLE)
+        if self._upload_channel is not None:
+            self._upload_channel.synchronize()
         logger.info("Stream processor reset")
 
     def flush(self) -> None:

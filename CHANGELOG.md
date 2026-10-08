@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Planned
+- CUDA 12.x optimized kernels
+- Streaming TTS with chunked output
+- Streaming speech-to-speech translation
+
+---
+
+## [2.6.0] - 2026-10-08
+
 ### Added
 - **Full-duplex barge-in engine** (`vram_core/stream_processor.py`)
   - `DuplexState` (IDLE / LISTENING / THINKING / SPEAKING) conversational state machine
@@ -35,12 +44,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   latency, echo suppression, ring-buffer memory stability, slice accuracy) and
   `tests/test_streaming_asr_alignment.py` (overlap alignment, hallucination
   filtering, StreamASR integration)
+- **Multi-band adaptive denoising** (`vram_core/noise_reduction.py`)
+  - `MultibandSpectralSuppressor`: non-uniform low/mid/high band split with an
+    adaptive over-subtraction factor `alpha_i(SNR_i) = clip(alpha0 - SNR_i/slope,
+    1, 1.5*alpha0)` — high-SNR bands are attenuated less (formant protection),
+    low-SNR bands more (noise-floor collapse)
+  - Decision-directed a-priori SNR (Ephraim-Malah) with recursive clean-speech
+    and noise-PSD memory, Wiener gain `xi/(1+xi)`, 3-tap frequency smoothing and
+    exponential time smoothing plus a residual gain floor — musical noise
+    (isolated birdies) is removed by construction
+  - `NoiseReducer(algorithm="multiband" | "wiener_dd" | "legacy")`, new
+    `reduce_noise(audio, aggressiveness=0.7)`, `multiband_spectral_subtract()`,
+    `wiener_dd_gain()`, `AlgorithmType`, `last_gain` / `last_band_info`
+    diagnostics; the legacy `spectral_subtract()` path is bit-identical
+- **Paged KV-Cache** (`vram_hacker.cu`, `vram_core/vram_optimizer.py`)
+  - `paged_kv_cache_append_kernel`: physical block-table append with coalesced
+    writes along `head_dim` (threadIdx.x -> head_dim, blocks over tokens/heads),
+    replacing the `max_seq_len` over-allocation of the contiguous kernel
+  - `PagedKVCacheManager` (block table + physical pool + `seq_lens`),
+    `BlockAllocator` free-list (O(1) allocate/free), `append()`, `gather()`,
+    `allocate_sequence()` / `free_sequence()`, statistics and sequence-length
+    introspection
+  - Automatic backend selection: the CUDA kernel when the extension and a device
+    are present, otherwise a vectorised NumPy scatter with identical indexing
+    semantics (CPU-only installs keep working, `backend` reports which is used)
+  - `VRAMOptimizer.create_paged_cache()` sizes a pool from the reported free VRAM
+- **GPU operator upgrades**
+  - `WhisperOptimizer.capture_frontend_graph(sample_chunk_size)`: CUDA Graph
+    capture / replay of the fixed-shape STFT + mel filterbank front-end (static
+    input/output latch, side-stream warm-up, `FrontendGraphStatus` with a reason
+    when a graph cannot be built)
+  - `WhisperOptimizer.frontend_mel()` / `_frontend_mel_numpy()`: eager torch and
+    pure NumPy front-ends used automatically when no graph is available
+  - `PinnedUploadChannel` + `StreamConfig.async_upload`: page-locked staging
+    buffer copied to the device on a dedicated CUDA stream, so audio intake
+    overlaps GPU work; simulated backend with identical staging/statistics
+    semantics on CPU-only machines
+- **Pluggable voiceprint embeddings** (`vram_core/speaker_diarization.py`,
+  `vram_core/speaker_verification.py`)
+  - `BaseVoiceprintExtractor` interface with `MFCCExtractor` (cached mel
+    filterbank / DCT, per-frame energy normalisation) and
+    `ONNXEmbeddingExtractor` (ECAPA-TDNN / CAM++ style ONNX graphs with
+    auto-detected tensor names and transparent MFCC fallback)
+  - `create_voiceprint_extractor()` factory and `available_voiceprint_backends()`
+  - `AdaptiveCosineClusterer`: duration-dependent similarity thresholds,
+    similarity EMA smoothing and a penalised Gaussian BIC merge test that vetoes
+    collapsing two distinct voices, eliminating short-segment speaker flapping
+- **Tests**: `tests/test_multiband_denoiser.py` (MBSS / decision-directed gains,
+  SNR improvement, musical-noise smoothness, legacy compatibility),
+  `tests/test_paged_kv_cache.py` (block allocation, paging, block-table growth,
+  gather round-trips, error handling, VRAM sizing) and
+  `tests/test_gpu_pipeline_ops.py` (CUDA-Graph capture/replay contract, pinned
+  upload channel, StreamProcessor integration)
 
-### Planned
-- CUDA 12.x optimized kernels
-- Real-time voice conversation with LLM (full duplex)
-- Streaming TTS with chunked output
-- Streaming speech-to-speech translation
+### Fixed
+- **Silero VAD length assertion** (`tests/test_realtime_latency.py`): the model
+  only accepts 512-sample windows at 16 kHz, while the pipeline feeds arbitrary
+  chunk sizes (e.g. 1600 samples). `SileroVAD` now runs an adaptive framing
+  adapter (`_silero_windows`) for every call site, and `get_speech_probability()`
+  returns the maximum probability over the aligned windows — the
+  `torch.jit.Error` (a non-`ValueError` exception type) is contained in
+  `_run_model()` so the energy fallback always works
+- **VAD preloading**: `SileroVAD.preload()` + `PipelineConfig.preload_vad` load and
+  warm the model in `RealtimePipeline.start()` instead of on the first `feed()`,
+  removing the multi-hundred-millisecond stall on the first audio chunk
+  (measured 42 -> 1200+ chunks/s steady-state throughput in the latency suite)
+- **WebSocket test-suite monkeypatching** (`vram_core/api_server.py`): the whisper
+  backend was imported inside `create_app()`, so
+  `patch("vram_core.api_server.WhisperBridge")` raised `AttributeError`. The
+  import is now module level (and used by `create_app`), and the API reports
+  `vram_core.__version__` from a single source of truth for `/health` and `/`
+  instead of a hard-coded string
+- **Async tests without `pytest-asyncio`** (`tests/conftest.py`): coroutine tests
+  are executed through a small `pytest_pyfunc_call` shim when no async plugin is
+  installed, so the WebSocket coverage actually runs on plain pytest + anyio
+
+### Changed
+- Version bumped to 2.6.0 across `pyproject.toml`, `setup.py`,
+  `vram_core/__init__.py`, `README.md` and the `requirements.txt` header
+- New exports: `AlgorithmType`, `MultibandSpectralSuppressor`,
+  `PagedKVCacheManager`, `BlockAllocator`, `PinnedUploadChannel`,
+  `BaseVoiceprintExtractor`, `MFCCExtractor`, `ONNXEmbeddingExtractor`,
+  `AdaptiveCosineClusterer`, `create_voiceprint_extractor`,
+  `FrontendGraphStatus`
+- All new behaviour is opt-in or default-compatible: existing call signatures,
+  class names and the legacy denoising path are unchanged
 
 ---
 
