@@ -5,16 +5,18 @@ All notable changes to **Omni-VRAM** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Planned
-- CUDA 12.x optimized kernels
-- Streaming TTS with chunked output
-- Streaming speech-to-speech translation
-
----
-
 ## [2.6.0] - 2026-10-08
+
+### Highlights
+- **Full-Duplex & Streaming**: dynamic overlap-aligned (LCS) transcript alignment,
+  a Whisper hallucination-suppression chain and a full-duplex barge-in state machine
+  (`DuplexState` / `BargeInEvent`) with sub-millisecond interruption latency
+- **Paged KV-Cache & VRAM**: a physical block-table (`BlockTable`) Paged KV-Cache
+  manager (`PagedKVCacheManager` / `BlockAllocator`) plus an asynchronous
+  pinned-memory GPU upload channel (`PinnedUploadChannel`)
+- **Acoustic Modernization**: multi-band adaptive spectral subtraction (MBSS) with
+  decision-directed a-priori SNR smoothing and a pluggable voiceprint embedding
+  architecture (`BaseVoiceprintExtractor` / ONNX adapters)
 
 ### Added
 - **Full-duplex barge-in engine** (`vram_core/stream_processor.py`)

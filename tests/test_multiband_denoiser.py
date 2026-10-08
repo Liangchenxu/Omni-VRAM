@@ -126,7 +126,7 @@ class TestNoisePsdEstimation:
         suppressor.process_spectrum(magnitude, sample_rate=SAMPLE_RATE)
         psd = suppressor.noise_psd
         assert psd is not None
-        assert psd.shape == magnitude.shape[0]
+        assert psd.shape[0] == magnitude.shape[0]
         assert np.all(psd > 0)
 
     def test_frames_seen_accumulates_across_calls(self):

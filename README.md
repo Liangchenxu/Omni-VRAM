@@ -358,7 +358,7 @@ audio_chunk = np.random.randn(3200).astype(np.float32)  # from microphone
 asr.feed(audio_chunk)
 ```
 
-### Full-Duplex Barge-In & Hallucination Suppression (v2.6.0, unreleased)
+### Full-Duplex Barge-In & Hallucination Suppression (v2.6.0)
 
 Overlap alignment, silence gating and barge-in (user interruption) support. All
 new options are defaults inside `StreamConfig` / `StreamASRConfig`, so existing

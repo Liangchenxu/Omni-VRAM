@@ -314,6 +314,12 @@ class SpeakerVerifier:
         """Append a normalised enrollment vector, keeping the newest templates."""
         pool = self._templates.setdefault(speaker_id, [])
         pool.append(self._l2_normalize(vector))
+        # FIFO bound: keep only the ``max_templates`` most recent enrollments so
+        # the pool cannot grow without limit across long sessions.
+        excess = len(pool) - self.max_templates
+        if excess > 0:
+            del pool[:excess]
+
     def _pool_similarity(self, pool: List[np.ndarray], probe: np.ndarray) -> float:
         """
         Mean cosine similarity over an enrollment pool.

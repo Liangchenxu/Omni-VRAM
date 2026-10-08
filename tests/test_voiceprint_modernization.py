@@ -280,11 +280,15 @@ class TestSpeakerVerifierModernization:
         voice = synth_voice(15)
         legacy = SpeakerVerifier()
         legacy.register_from_samples("alice", [voice, voice, voice])
-        assert legacy._bic_veto("alice", voice) is False
+        # ``_bic_veto`` consumes the normalised comparison vector (the same probe
+        # ``verify`` / ``verify_any`` pass), not the raw audio buffer.
+        assert legacy._bic_veto("alice", legacy._probe_vector(voice, 16000)) is False
 
         hardened = SpeakerVerifier(use_bic=True)
         hardened.register_from_samples("alice", [voice, voice, voice])
-        assert hardened._bic_veto("alice", voice) is False  # identical enrollment
+        # Identical enrollment: the BIC test never rejects a matching probe.
+        probe = hardened._probe_vector(voice, 16000)
+        assert hardened._bic_veto("alice", probe) is False
         assert hardened.verify("alice", voice).verified
 
     def test_bic_veto_needs_enough_templates(self):
