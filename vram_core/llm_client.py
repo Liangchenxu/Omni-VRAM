@@ -10,7 +10,7 @@ import logging
 import time
 import json
 import asyncio
-from typing import Optional, List, Dict, Any, Generator, AsyncGenerator
+from typing import Optional, List, Dict, Any, Generator, AsyncGenerator, Union
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -102,8 +102,42 @@ class LLMClient:
     # Non-retryable error codes/messages
     _NON_RETRYABLE_ERRORS = (401, 403, 404, 422)
 
-    def __init__(self, config: Optional[LLMConfig] = None, max_retries: int = 3, retry_delay: float = 1.0):
+    #: Provider aliases accepted by ``LLMClient(provider=...)`` (v2.7.0). The
+    #: OpenAI-compatible family (OpenAI / Qwen / Ernie) and the local
+    #: llama.cpp-compatible servers (Ollama, llama.cpp) share one SDK, so the
+    #: friendly names all resolve to an :class:`LLMBackend`.
+    PROVIDER_ALIASES = {
+        "auto": LLMBackend.AUTO,
+        "openai": LLMBackend.OPENAI,
+        "gpt": LLMBackend.OPENAI,
+        "ollama": LLMBackend.LOCAL_LLAMA,
+        "local": LLMBackend.LOCAL_LLAMA,
+        "local_llama": LLMBackend.LOCAL_LLAMA,
+        "llama": LLMBackend.LOCAL_LLAMA,
+        "llama.cpp": LLMBackend.LOCAL_LLAMA,
+        "qwen": LLMBackend.QWEN,
+        "ernie": LLMBackend.ERNIE,
+    }
+
+    def __init__(
+        self,
+        config: Optional[LLMConfig] = None,
+        max_retries: int = 3,
+        retry_delay: float = 1.0,
+        provider: Optional[Union[str, LLMBackend]] = None,
+    ):
+        """
+        Args:
+            config: Optional :class:`LLMConfig`. Created on demand when omitted.
+            max_retries: Retry attempts per request before giving up.
+            retry_delay: Base delay (seconds) for the exponential backoff.
+            provider: Optional provider name (``"openai"``, ``"ollama"``,
+                ``"qwen"`` ...) or :class:`LLMBackend`; overrides
+                ``config.backend`` when given (v2.7.0).
+        """
         self.config = config or LLMConfig()
+        if provider is not None:
+            self.config.backend = self._resolve_provider(provider)
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self._backend = None
@@ -111,23 +145,47 @@ class LLMClient:
         self._total_usage = TokenUsage()
         self._available: Optional[bool] = None  # Cached availability
         self._initialize_backend()
-    
+
+    @classmethod
+    def _resolve_provider(cls, provider: Union[str, LLMBackend]) -> LLMBackend:
+        """Map a provider name (or an :class:`LLMBackend`) to the enum."""
+        if isinstance(provider, LLMBackend):
+            return provider
+        key = str(provider).strip().lower()
+        backend = cls.PROVIDER_ALIASES.get(key)
+        if backend is None:
+            raise ValueError(
+                f"Unknown LLM provider '{provider}'. Known providers: "
+                f"{sorted(cls.PROVIDER_ALIASES)}"
+            )
+        return backend
+
     def _initialize_backend(self):
-        """Initialize the selected LLM backend."""
+        """Initialize the selected LLM backend (gracefully degrading)."""
         backend = self.config.backend
-        
+
         if backend == LLMBackend.AUTO:
             backend = self._auto_detect_backend()
-        
-        if backend == LLMBackend.OPENAI:
-            self._init_openai()
-        elif backend == LLMBackend.LOCAL_LLAMA:
-            self._init_local_llama()
-        elif backend == LLMBackend.QWEN:
-            self._init_qwen()
-        elif backend == LLMBackend.ERNIE:
-            self._init_ernie()
-        
+
+        try:
+            if backend == LLMBackend.OPENAI:
+                self._init_openai()
+            elif backend == LLMBackend.LOCAL_LLAMA:
+                self._init_local_llama()
+            elif backend == LLMBackend.QWEN:
+                self._init_qwen()
+            elif backend == LLMBackend.ERNIE:
+                self._init_ernie()
+        except ImportError as error:
+            # The optional ``openai`` SDK is not installed: keep the client
+            # constructible (``is_available`` stays False, ``chat`` raises a
+            # clear error) instead of failing at import/instantiation time.
+            logger.warning(
+                "LLM backend '%s' unavailable (%s); LLM features are disabled",
+                backend.value, error,
+            )
+            self._available = False
+
         self._backend = backend
         logger.info("LLM backend initialized: %s", backend.value)
     
@@ -222,7 +280,12 @@ class LLMClient:
             
         Returns:
             LLMResponse with content and metadata
+
+        Raises:
+            RuntimeError: When no usable backend client was initialised (e.g.
+                the optional ``openai`` package is missing).
         """
+        self._require_client()
         messages = self._build_messages(prompt, system_prompt, history)
         start_time = time.time()
         
@@ -301,6 +364,7 @@ class LLMClient:
         Yields:
             Response text chunks
         """
+        self._require_client()
         messages = self._build_messages(prompt, system_prompt, history)
         
         effective_max_tokens = max_tokens if max_tokens is not None else self.config.max_tokens
@@ -395,7 +459,31 @@ class LLMClient:
     def backend(self) -> LLMBackend:
         """Get current backend."""
         return self._backend
-    
+
+    @property
+    def available_providers(self) -> List[str]:
+        """
+        Friendly provider names this client can be pointed at (v2.7.0).
+
+        The local llama.cpp / Ollama option needs no Python package (it is an
+        OpenAI-compatible HTTP endpoint probed lazily), so it is always
+        reported; the hosted OpenAI-family providers are only listed when the
+        optional ``openai`` SDK is importable.
+        """
+        providers = ["ollama", "local_llama"]
+        if OPENAI_AVAILABLE:
+            providers.extend(["openai", "qwen", "ernie"])
+        return providers
+
+    def _require_client(self) -> None:
+        """Ensure a backend client exists before issuing a request (v2.7.0)."""
+        if self._client is None:
+            raise RuntimeError(
+                f"LLM backend '{self._backend.value if self._backend else 'unknown'}' "
+                "is not initialised. Install the optional dependency "
+                "(pip install openai) or configure a reachable provider."
+            )
+
     @staticmethod
     def _is_non_retryable(error: Exception) -> bool:
         """Check if an error is non-retryable (auth, validation, etc.)."""

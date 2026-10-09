@@ -5,6 +5,89 @@ All notable changes to **Omni-VRAM** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0] - 2026-10-09
+
+### Highlights
+- **Prefix caching**: Paged KV-Cache blocks are now reference counted and can be
+  *shared* — many conversations starting from the same system prompt / few-shot
+  header pay for one physical copy in VRAM, and any append that would touch a
+  shared block copies it first (copy-on-write), so a prefix is read-only by
+  construction
+- **Sentence-level streaming TTS**: an LLM token stream can be piped straight
+  into the synthesizer; complete sentences are spoken as soon as they close
+  (long before the LLM finishes) and a decimal point such as `3.14` is never
+  treated as a sentence boundary
+- **End-to-end microsecond profiler**: `LatencyProfiler` times a full spoken
+  turn (`vad_cutoff → asr_transcribed → llm_first_token → tts_first_chunk`) and
+  renders an ASCII waterfall plus a JSON export
+- **Zero legacy test debt**: all 10 pre-existing failures are fixed and the whole
+  suite is green
+
+### Added
+- **Ref-counted prefix caching** (`vram_core/vram_optimizer.py`)
+  - `PagedKVCacheManager.register_prefix(prefix_id, tokens)` — writes a shared
+    prompt / KV header once and returns its physical blocks
+  - `PagedKVCacheManager.allocate_sequence(seq_id, prefix_id=...)` — starts a
+    sequence that *shares* those blocks (reference count + 1) instead of copying
+  - `block_ref_counts` (public map), `reference_count(block)`,
+    `shared_block_count`, `prefix_ids`, `free_prefix(prefix_id)` and
+    `stats()["prefixes" | "shared_blocks"]`
+  - Copy-on-write in `append()` / `append_scaled()`: the partially filled prefix
+    block that an append lands in is cloned into a private block (device pool
+    mirrored too) before the write
+  - `free_sequence()` is now refcount aware: a block only returns to the
+    `BlockAllocator` when the last owner (registry or a sharing sequence) lets go
+- **Streaming sentence-level TTS pipeline** (`vram_core/tts_engine.py`)
+  - `SentenceStreamBuffer` — fragment-fed sentence segmenter with CJK/ASCII
+    terminators, trailing-closer retention, `min_chars` merging, optional
+    `max_chars` cutting and the decimal/abbreviation guard (a trailing `.` that
+    might still become `3.14` is held until more text or `flush()` resolves it)
+  - `TTSEngine.stream_synthesize(text)` now accepts a `str` (unchanged), a sync
+    iterable or an async iterator of fragments; each finished sentence is
+    synthesized immediately and the tail is flushed at the end
+  - Keyword-only `sentence_buffer=` and `synthesize=` (injectable per-sentence
+    synthesizer) hooks for observability and testing
+- **End-to-end microsecond latency profiler** (`vram_core/monitoring.py`)
+  - `PIPELINE_STAGES`, `LatencyTrace` (marks, offsets, incremental durations,
+    `span()` context manager, JSON view) and `LatencyProfiler`
+  - `start_trace()` / `mark()` / `finish_trace()` / `trace()` lifecycle,
+    `waterfall()` ASCII chart, `stage_stats()` percentiles (min/mean/p50/p95/max),
+    `summary()` and `export_json(path)`
+  - Optional `MetricsCollector` integration publishing `latency.<stage>.us` and
+    `latency.e2e.us` gauges
+- **Tests**: `tests/test_prefix_caching.py`, `tests/test_streaming_tts_pipeline.py`
+  and `tests/test_latency_profiler.py`
+
+### Fixed
+- **`LLMClient` provider API + graceful degradation** (`vram_core/llm_client.py`)
+  - `LLMClient(provider="ollama")` and the `PROVIDER_ALIASES` map
+    (openai / gpt / ollama / local / llama.cpp / qwen / ernie / auto) plus the
+    `available_providers` property
+  - instantiating the client no longer raises when the optional `openai` SDK is
+    missing: the backend degrades to a clear `RuntimeError` on first use
+- **Meeting analysis from a plain transcript** (`vram_core/meeting_analyzer.py`)
+  - `_detect_priority(text)` (`high` / `medium` / `low`) with urgency and
+    deferral lexicons, now also used by action-item extraction
+  - `_extract_action_items()` (and `_as_segments()`) accept a raw transcript
+    string as well as the diarizer's segment list
+- **Whisper front-end robustness** (`vram_core/whisper/optimizer.py`)
+  - short final chunks are zero-padded to one full window before the reflect
+    padding, so `frontend_mel()` no longer raises
+    `Padding size should be less than the corresponding input dimension`
+  - `_frontend_mel_numpy()` now reproduces torch's framing exactly
+    (reflect padding of `n_fft // 2` on both sides, `boundary=None`,
+    `scaled=False` window-sum unnormalisation), so the NumPy fallback and the
+    torch path are numerically interchangeable
+- **Pinned-memory upload ordering** (`vram_core/stream_processor.py`)
+  - `PinnedUploadChannel.upload()` now orders the private copy stream against the
+    caller's stream on both sides, fixing an intermittent race where the device
+    buffer's zero-initialisation could overwrite the H2D copy (observed as an
+    all-zero tensor on a real RTX 3060)
+- **WebSocket test mocks aligned with the `WhisperBridge` contract**
+  (`tests/test_websocket.py`) — the patched bridge now returns a well-formed
+  transcription result, so the `/stream`, `/ws/transcribe` end-to-end message
+  flows are actually exercised
+
 ## [2.6.1] - 2026-10-09
 
 ### Highlights

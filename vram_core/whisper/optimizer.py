@@ -534,17 +534,43 @@ class WhisperOptimizer:
         n_mels: int = 80,
         sample_rate: int = _DEFAULT_SAMPLE_RATE,
     ) -> np.ndarray:
-        """NumPy fallback for the mel front-end (torch-free deployments)."""
-        from scipy.signal import stft as _stft
+        """
+        NumPy fallback for the mel front-end (torch-free deployments).
+
+        The framing deliberately mirrors ``torch.stft(center=True,
+        pad_mode="reflect")`` used by :meth:`_frontend_mel`: the signal is
+        reflect-padded by ``n_fft // 2`` on both sides (after the zero-pad that
+        lifts very short chunks to one full window) and scipy's per-window
+        normalisation is undone, so the NumPy power spectrum is numerically
+        interchangeable with the torch one.
+        """
+        from scipy.signal import get_window, stft as _stft
 
         waveform = np.asarray(waveform, dtype=np.float32).reshape(-1)
         if waveform.size < n_fft:
             waveform = np.pad(waveform, (0, n_fft - waveform.size))
 
+        # torch.stft(center=True) reflect-pads n_fft // 2 samples on both sides;
+        # numpy's reflect mode requires the pad to be smaller than the signal.
+        pad = n_fft // 2
+        if pad > 0:
+            if waveform.size <= pad:
+                waveform = np.pad(waveform, (0, pad + 1 - waveform.size))
+            waveform = np.pad(waveform, (pad, pad), mode="reflect")
+
+        window = get_window("hann", n_fft, fftbins=True).astype(np.float32)
         _freqs, _times, Zxx = _stft(
-            waveform, fs=sample_rate, nperseg=n_fft, noverlap=n_fft - hop_length
+            waveform,
+            fs=sample_rate,
+            window=window,
+            nperseg=n_fft,
+            noverlap=n_fft - hop_length,
+            boundary=None,
+            padded=False,
         )
-        power = np.abs(Zxx) ** 2
+        # scipy's default ``scaling="spectrum"`` divides every window by
+        # ``window.sum()``; undo it so the two backends share the same scale.
+        power = np.abs(Zxx * float(window.sum())) ** 2
         n_bins = power.shape[0]
 
         def hz_to_mel(hz):
@@ -718,6 +744,13 @@ class WhisperOptimizer:
 
         if waveform.size == 0:
             return np.zeros((n_mels, 0), dtype=np.float32)
+
+        # torch.stft(center=True) reflect-pads n_fft // 2 samples on both sides,
+        # which requires the input to be longer than the pad. Lift short final
+        # chunks to one full window with zeros so they still yield a mel frame
+        # (matching the NumPy fallback) instead of raising in ``F.pad``.
+        if waveform.size < n_fft:
+            waveform = np.pad(waveform, (0, n_fft - waveform.size))
 
         if use_graph:
             replayed = self.run_frontend_graph(waveform)

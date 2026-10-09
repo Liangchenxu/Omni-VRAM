@@ -29,7 +29,7 @@ Modules:
     - meeting_summarizer: AI-powered meeting summarization with topic/decision/action extraction
 """
 
-__version__ = "2.6.1"
+__version__ = "2.7.0"
 
 # CUDA extension (built from vram_hacker.cu)
 try:
@@ -75,7 +75,7 @@ from vram_core.multi_gpu import MultiGPUManager
 from vram_core.vram_optimizer import (
     VRAMOptimizer, MemoryPressure, PagedKVCacheManager, BlockAllocator,
 )
-from vram_core.tts_engine import TTSEngine
+from vram_core.tts_engine import TTSEngine, SentenceStreamBuffer
 from vram_core.voice_translator import VoiceTranslator
 from vram_core.audio_event_detection import AudioEventDetector
 from vram_core.plugin_manager import PluginManager, PluginBase, PluginInfo
@@ -98,7 +98,9 @@ from vram_core.meeting_analyzer import MeetingAnalyzer, MeetingAnalysis, ActionI
 # New modules (v1.0.0)
 from vram_core.speaker_verification import SpeakerVerifier, Voiceprint, VerificationResult
 from vram_core.distributed_transcriber import DistributedTranscriber, DistributedResult
-from vram_core.monitoring import MetricsCollector, SystemHealth
+from vram_core.monitoring import (
+    MetricsCollector, SystemHealth, LatencyProfiler, LatencyTrace, PIPELINE_STAGES,
+)
 from vram_core.wake_word import WakeWordDetector, WakeWordEvent
 
 # gRPC server (optional, may fail if grpcio not installed)
@@ -159,6 +161,8 @@ __all__ = [
     "BlockAllocator",
     # TTS
     "TTSEngine",
+    # Sentence-level streaming TTS pipeline (v2.7.0)
+    "SentenceStreamBuffer",
     # Translation
     "VoiceTranslator",
     # Audio Event Detection
@@ -177,6 +181,10 @@ __all__ = [
     # Monitoring
     "MetricsCollector",
     "SystemHealth",
+    # E2E microsecond latency profiler (v2.7.0)
+    "LatencyProfiler",
+    "LatencyTrace",
+    "PIPELINE_STAGES",
     # Wake Word Detection
     "WakeWordDetector",
     "WakeWordEvent",

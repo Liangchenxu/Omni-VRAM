@@ -25,6 +25,11 @@ Usage:
     # Streaming synthesis
     async for chunk in engine.stream_synthesize("Long text..."):
         process_audio_chunk(chunk)
+
+    # Sentence-level streaming pipeline (v2.7.0): feed the LLM token stream in,
+    # get finished-sentence audio out as soon as each sentence closes.
+    async for chunk in engine.stream_synthesize(llm_token_stream()):
+        process_audio_chunk(chunk)
 """
 
 import asyncio
@@ -33,7 +38,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from enum import Enum
-from typing import AsyncIterator, Callable, List, Optional
+from typing import AsyncIterator, Callable, Iterable, List, Optional, Union
 
 import numpy as np
 
@@ -86,6 +91,152 @@ class TTSResult:
     voice_id: str = ""
     text: str = ""
     file_path: Optional[str] = None
+
+
+class SentenceStreamBuffer:
+    """
+    Accumulates a streamed text fragment feed and emits complete sentences.
+
+    LLM output arrives token by token; feeding every token straight into a TTS
+    backend is both slow (one synthesis per token) and unnatural (no prosody
+    across a sentence). This buffer holds the tail back until a *real* sentence
+    boundary is seen, then releases the finished sentence so the synthesizer can
+    start on it while the LLM is still generating the next one.
+
+    Boundary rules
+    --------------
+    * CJK terminators ``。！？；…`` and newlines end a sentence immediately.
+    * ASCII ``! ? ;`` end a sentence; trailing closing quotes/brackets
+      (``"'\u201d\u2019)]}``) stay attached to it.
+    * ``.`` is only a boundary when it is *not* part of a number or an internal
+      token: ``3.14``, ``1,000.50``, ``v2.7.0`` and ``192.168.0.1`` stay whole.
+    * A ``.`` that is still the last character received is undecidable (the next
+      fragment may turn it into ``3.`` + ``14``), so it is buffered until more
+      text -- or :meth:`flush` -- resolves it.
+
+    Example:
+        >>> buffer = SentenceStreamBuffer()
+        >>> buffer.feed("The value is 3.")
+        []
+        >>> buffer.feed("14 exactly. Done. ")
+        ['The value is 3.14 exactly.', 'Done.']
+        >>> buffer.flush()
+        []
+    """
+
+    CJK_TERMINATORS = "。！？；…\n"
+    ASCII_TERMINATORS = ".!?;"
+    CLOSERS = "\"'\u201d\u2019)]}】」』"
+
+    def __init__(self, min_chars: int = 1, max_chars: int = 0):
+        """
+        Args:
+            min_chars: Minimum sentence length (in characters) that may be
+                emitted; shorter fragments stay buffered.
+            max_chars: When > 0, a punctuation-free run longer than this is cut
+                at the last whitespace before the cap, so a wall of text still
+                streams instead of stalling until the very end.
+        """
+        self.min_chars = max(1, int(min_chars))
+        self.max_chars = max(0, int(max_chars))
+        self._buffer = ""
+
+    # ── State ─────────────────────────────────────────────────────────────
+    @property
+    def pending(self) -> str:
+        """Text held back until its sentence is complete."""
+        return self._buffer
+
+    def __len__(self) -> int:
+        return len(self._buffer)
+
+    def reset(self) -> None:
+        """Drop any buffered text."""
+        self._buffer = ""
+
+    # ── Feeding ───────────────────────────────────────────────────────────
+    def feed(self, fragment: str) -> List[str]:
+        """
+        Add a fragment and return every sentence it completed.
+
+        Args:
+            fragment: Newly arrived text (typically one LLM token/chunk).
+
+        Returns:
+            The complete sentences released by this fragment, in order.
+        """
+        if not fragment:
+            return []
+        self._buffer += str(fragment)
+
+        sentences: List[str] = []
+        while True:
+            boundary = self._find_boundary()
+            if boundary is None:
+                break
+            sentences.append(self._buffer[:boundary].strip())
+            self._buffer = self._buffer[boundary:].lstrip()
+
+        if self.max_chars and len(self._buffer) > self.max_chars:
+            cut = self._buffer.rfind(" ", 0, self.max_chars)
+            if cut <= 0:
+                cut = self.max_chars
+            sentences.append(self._buffer[:cut].strip())
+            self._buffer = self._buffer[cut:].lstrip()
+
+        return [sentence for sentence in sentences if sentence]
+
+    def flush(self) -> List[str]:
+        """Release the remaining buffered text as a final sentence."""
+        tail = self._buffer.strip()
+        self._buffer = ""
+        return [tail] if tail else []
+
+    # ── Boundary detection ────────────────────────────────────────────────
+    def _find_boundary(self) -> Optional[int]:
+        """Index just past the first committed terminator, or ``None``."""
+        text = self._buffer
+        length = len(text)
+        index = 0
+        while index < length:
+            char = text[index]
+            if char in self.CJK_TERMINATORS:
+                end = index + 1
+            elif char in self.ASCII_TERMINATORS:
+                if char == ".":
+                    if self._dot_is_internal(text, index):
+                        index += 1
+                        continue
+                    if index + 1 == length:
+                        # "3." may still become "3.14" in the next fragment.
+                        return None
+                end = index + 1
+            else:
+                index += 1
+                continue
+
+            while end < length and text[end] in self.CLOSERS:
+                end += 1
+            if len(text[:end].strip()) < self.min_chars:
+                index = end
+                continue
+            return end
+        return None
+
+    def _dot_is_internal(self, text: str, index: int) -> bool:
+        """
+        True when the ``.`` at ``index`` belongs to a number or a token rather
+        than to a sentence boundary (``3.14``, ``1,000.50``, ``v2.7.0``,
+        ``e.g.``, ``192.168.0.1``).
+        """
+        previous = text[index - 1] if index > 0 else ""
+        following = text[index + 1] if index + 1 < len(text) else ""
+        if previous.isalnum() and following.isalnum():
+            return True
+        # A trailing "3." at the very end of the buffer is ambiguous: wait.
+        if previous.isalnum() and not following and index + 1 == len(text):
+            return True
+        return False
 
 
 class TTSEngine:
@@ -289,21 +440,68 @@ class TTSEngine:
 
     # 鈹€鈹€ Async Streaming 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
-    async def stream_synthesize(self, text: str) -> AsyncIterator[bytes]:
+    async def stream_synthesize(
+        self,
+        text: Union[str, AsyncIterator[str], Iterable[str]],
+        *,
+        sentence_buffer: Optional["SentenceStreamBuffer"] = None,
+        synthesize: Optional[Callable[[str], AsyncIterator[bytes]]] = None,
+    ) -> AsyncIterator[bytes]:
         """
         Stream synthesis using edge-tts (yields audio chunks).
 
+        Two input modes (v2.7.0):
+
+        * a complete ``str`` -- synthesised as one utterance (original API);
+        * an **async or sync iterator of text fragments** (an LLM token stream).
+          The fragments are buffered into complete sentences by
+          :class:`SentenceStreamBuffer` and each sentence is synthesized the
+          moment it closes, so the first audio chunk leaves long before the LLM
+          has finished generating -- and, because a decimal point never splits a
+          sentence, ``"3.14"`` is spoken as one number rather than two.
+
         Args:
-            text: Text to synthesize.
+            text: Text to synthesize, or an iterable/async-iterable of
+                fragments.
+            sentence_buffer: Optional buffer to reuse (its state is visible to
+                the caller after the stream ends).
+            synthesize: Optional override for the per-sentence synthesizer
+                (``str -> AsyncIterator[bytes]``); defaults to the active
+                backend. Useful for testing and for plugging in a local model.
 
         Yields:
             Audio data chunks as bytes.
         """
+        if isinstance(text, str):
+            async for chunk in self._stream_sentence_audio(text, synthesize):
+                yield chunk
+            return
+
+        buffer = sentence_buffer if sentence_buffer is not None else SentenceStreamBuffer()
+        async for fragment in self._aiter_fragments(text):
+            for sentence in buffer.feed(fragment):
+                async for chunk in self._stream_sentence_audio(sentence, synthesize):
+                    yield chunk
+        for sentence in buffer.flush():
+            async for chunk in self._stream_sentence_audio(sentence, synthesize):
+                yield chunk
+
+    async def _stream_sentence_audio(
+        self, sentence: str, synthesize: Optional[Callable[[str], AsyncIterator[bytes]]]
+    ) -> AsyncIterator[bytes]:
+        """Synthesize one sentence through the injected hook or edge-tts."""
+        if synthesize is not None:
+            async for chunk in synthesize(sentence):
+                yield chunk
+            return
+
         if self._active_backend != "edge-tts":
             raise RuntimeError("Streaming requires edge-tts backend")
+        if not sentence.strip():
+            return
 
         communicate = edge_tts.Communicate(
-            text,
+            sentence,
             voice=self._voice,
             rate=self.rate,
             volume=self.volume,
@@ -313,6 +511,16 @@ class TTSEngine:
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
                 yield chunk["data"]
+
+    @staticmethod
+    async def _aiter_fragments(source) -> AsyncIterator[str]:
+        """Normalise a sync/async iterable of fragments into async iteration."""
+        if hasattr(source, "__aiter__"):
+            async for fragment in source:
+                yield fragment
+            return
+        for fragment in source:
+            yield fragment
 
     # 鈹€鈹€ Voice Listing 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 

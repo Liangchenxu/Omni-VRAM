@@ -134,6 +134,19 @@ class MeetingAnalyzer:
     
     # Question patterns
     QUESTION_PATTERNS = re.compile(r'[?？]|^(what|why|how|when|where|who|which|is|are|do|does|can|could|would|should)\b', re.IGNORECASE)
+
+    # Priority lexicons (v2.7.0): urgency and deferral markers used by
+    # :meth:`_detect_priority` to grade a task sentence.
+    HIGH_PRIORITY_KEYWORDS = [
+        "紧急", "立即", "马上", "尽快", "务必", "必须", "今天", "今晚", "优先",
+        "asap", "urgent", "urgently", "immediately", "critical", "top priority",
+        "right away", "as soon as possible", "blocker", "blocking",
+    ]
+    LOW_PRIORITY_KEYWORDS = [
+        "以后", "以后再说", "稍后", "不急", "有空", "随时", "顺便", "不着急",
+        "later", "someday", "whenever", "no rush", "not urgent", "low priority",
+        "optional", "nice to have", "eventually",
+    ]
     
     def __init__(self, llm_client=None):
         """
@@ -388,8 +401,58 @@ class MeetingAnalyzer:
         
         return sentiments
     
-    def _extract_action_items(self, segments: List[Dict[str, Any]]) -> List[ActionItem]:
-        """Extract action items from transcript."""
+    @staticmethod
+    def _as_segments(transcript: Any) -> List[Dict[str, Any]]:
+        """
+        Normalise a transcript into ``{speaker, text, start_time, end_time}``
+        segments (v2.7.0).
+
+        Accepts the already-segmented list produced by the diarizer, a single
+        segment dict, or a plain transcript string (the sentence length is used
+        to synthesise a monotonic timeline).
+        """
+        if transcript is None:
+            return []
+        if isinstance(transcript, str):
+            text = transcript.strip()
+            if not text:
+                return []
+            return [{
+                "speaker": "Unknown",
+                "text": text,
+                "start_time": 0.0,
+                "end_time": len(text) * 0.05,
+            }]
+        if isinstance(transcript, dict):
+            return [transcript]
+        return list(transcript)
+
+    def _detect_priority(self, text: Any) -> str:
+        """
+        Grade the priority of a task sentence as ``"high"`` / ``"medium"`` /
+        ``"low"`` (v2.7.0).
+
+        Urgency markers win over deferral markers so that "紧急，以后再说" is
+        still treated as high priority.
+        """
+        if not text:
+            return "medium"
+        lower = str(text).lower()
+        if any(keyword in lower for keyword in self.HIGH_PRIORITY_KEYWORDS):
+            return "high"
+        if any(keyword in lower for keyword in self.LOW_PRIORITY_KEYWORDS):
+            return "low"
+        return "medium"
+
+    def _extract_action_items(self, transcript: Any) -> List[ActionItem]:
+        """
+        Extract action items from a transcript or from segmented speech.
+
+        Args:
+            transcript: Plain transcript string or the ``{speaker, text, ...}``
+                segment list (both accepted since v2.7.0).
+        """
+        segments = self._as_segments(transcript)
         items = []
         seen = set()
         
@@ -420,7 +483,7 @@ class MeetingAnalyzer:
                         assignee = assignee_match.group(1)
                     
                     # Determine priority
-                    priority = "high" if any(w in lower for w in ["紧急", "立即", "asap", "urgent", "immediately"]) else "medium"
+                    priority = self._detect_priority(sentence)
                     
                     items.append(ActionItem(
                         description=sentence,

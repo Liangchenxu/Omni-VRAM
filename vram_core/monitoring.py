@@ -15,12 +15,37 @@ import time
 import logging
 import threading
 import json
-from typing import Optional, Dict, Any, List
+from contextlib import contextmanager
+from typing import Optional, Dict, Any, Iterator, List, Tuple
 from dataclasses import dataclass, field
 from collections import deque
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+#: Canonical stage order of the end-to-end voice pipeline (v2.7.0).
+#: Every timestamp is taken on the same monotonic clock, in microseconds.
+PIPELINE_STAGES: Tuple[str, ...] = (
+    "vad_cutoff",
+    "asr_transcribed",
+    "llm_first_token",
+    "tts_first_chunk",
+)
+
+
+def _now_us() -> float:
+    """Monotonic clock in microseconds (``perf_counter_ns`` based)."""
+    return time.perf_counter_ns() / 1000.0
+
+
+def _percentile(values: List[float], pct: float) -> float:
+    """Nearest-rank percentile (0.0 for an empty sample)."""
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    rank = (pct / 100.0) * (len(ordered) - 1)
+    index = max(0, min(len(ordered) - 1, int(round(rank))))
+    return float(ordered[index])
 
 
 @dataclass
@@ -371,6 +396,346 @@ class MetricsCollector:
             self._counters.clear()
             self._start_time = time.time()
             logger.info("Metrics reset")
+
+
+@dataclass
+class LatencyTrace:
+    """
+    One end-to-end pipeline run, timestamped with microsecond resolution.
+
+    Timestamps are stored as absolute ``perf_counter_ns`` microseconds; the
+    helpers below expose them relative to :attr:`start_us`, which is what a
+    waterfall chart needs.
+    """
+
+    trace_id: str = ""
+    start_us: float = field(default_factory=_now_us)
+    marks: Dict[str, float] = field(default_factory=dict)
+    completed: bool = False
+
+    # ── Recording ─────────────────────────────────────────────────────────
+    def mark(self, stage: str) -> float:
+        """
+        Timestamp a pipeline stage.
+
+        Returns:
+            The stage offset from the trace start, in microseconds.
+        """
+        self.marks[str(stage)] = _now_us()
+        return self.offset_us(stage)
+
+    @contextmanager
+    def span(self, stage: str) -> Iterator["LatencyTrace"]:
+        """Time a block of code as ``stage`` (marks it on exit)."""
+        try:
+            yield self
+        finally:
+            self.mark(stage)
+
+    def offset_us(self, stage: str) -> float:
+        """Microseconds between the trace start and ``stage`` (0.0 if unmarked)."""
+        if stage not in self.marks:
+            return 0.0
+        return self.marks[stage] - self.start_us
+
+    def duration_us(self, stage: str) -> float:
+        """
+        Incremental cost of ``stage``: the gap from the previous marked pipeline
+        stage (``vad_cutoff`` is measured from the trace start).
+        """
+        if stage not in self.marks:
+            return 0.0
+        order: List[str] = list(PIPELINE_STAGES)
+        index = order.index(stage) if stage in order else len(order)
+        previous = 0.0
+        for earlier in order[:index]:
+            if earlier in self.marks:
+                previous = self.marks[earlier] - self.start_us
+        return self.offset_us(stage) - previous
+
+    # ── Views ─────────────────────────────────────────────────────────────
+    @property
+    def total_us(self) -> float:
+        """End-to-end latency of the trace (µs)."""
+        if not self.marks:
+            return 0.0
+        return max(value - self.start_us for value in self.marks.values())
+
+    def offsets(self) -> Dict[str, float]:
+        """Stage name -> offset from the trace start (µs)."""
+        return {stage: self.offset_us(stage) for stage in self.marks}
+
+    def stage_durations(self) -> Dict[str, float]:
+        """Stage name -> incremental microsecond cost."""
+        return {stage: self.duration_us(stage) for stage in self.marks}
+
+    def to_dict(self) -> Dict[str, Any]:
+        """JSON-serialisable representation of the trace."""
+        return {
+            "trace_id": self.trace_id,
+            "completed": self.completed,
+            "total_us": round(self.total_us, 2),
+            "stages": {
+                stage: {
+                    "offset_us": round(self.offset_us(stage), 2),
+                    "duration_us": round(self.duration_us(stage), 2),
+                }
+                for stage in self.marks
+            },
+        }
+
+
+class LatencyProfiler:
+    """
+    End-to-end, microsecond-resolution latency profiler for the voice pipeline.
+
+    It follows the canonical stages of a spoken turn::
+
+        vad_cutoff -------- the VAD decided the user stopped speaking
+        asr_transcribed --- the final transcript is available
+        llm_first_token --- the first token arrived from the LLM
+        tts_first_chunk --- the first synthesized audio chunk is ready to play
+
+    Every boundary is captured with ``time.perf_counter_ns`` so the per-stage
+    budget of a real-time turn (target: well under a second end-to-end, with the
+    ASR/LLM/TTS stages individually in the tens of milliseconds) is measurable
+    without a sampling profiler.
+
+    Typical use::
+
+        profiler = LatencyProfiler()
+        trace = profiler.start_trace("turn-1")
+        trace.mark("vad_cutoff")
+        ... asr work ...
+        trace.mark("asr_transcribed")
+        ... llm work ...
+        trace.mark("llm_first_token")
+        ... tts work ...
+        trace.mark("tts_first_chunk")
+        profiler.finish_trace(trace)
+
+        print(profiler.waterfall())
+        profiler.export_json("latency.json")
+
+    Args:
+        max_history: Completed traces retained for percentile statistics.
+        stages: Stage order to use (defaults to :data:`PIPELINE_STAGES`).
+        collector: Optional :class:`MetricsCollector`; when given, the stage
+            durations of every finished trace are published as gauges
+            (``latency.<stage>.us``).
+    """
+
+    def __init__(
+        self,
+        max_history: int = 1000,
+        stages: Tuple[str, ...] = PIPELINE_STAGES,
+        collector: Optional[MetricsCollector] = None,
+    ):
+        self.stages: Tuple[str, ...] = tuple(stages)
+        self.collector = collector
+        self._lock = threading.Lock()
+        self._history: deque = deque(maxlen=max_history)
+        self._active: Dict[str, LatencyTrace] = {}
+
+    # ── Trace lifecycle ───────────────────────────────────────────────────
+    def start_trace(self, trace_id: Optional[str] = None) -> LatencyTrace:
+        """Begin a new trace and register it as active."""
+        trace = LatencyTrace(trace_id=trace_id or f"trace-{time.time_ns()}")
+        with self._lock:
+            self._active[trace.trace_id] = trace
+        return trace
+
+    def trace(self, trace_id: Optional[str] = None):
+        """
+        Context manager that starts, yields and finishes a trace::
+
+            with profiler.trace("turn-1") as t:
+                t.mark("vad_cutoff")
+        """
+        return _TraceContext(self, trace_id)
+
+    def _current(self, trace_id: Optional[str] = None) -> LatencyTrace:
+        with self._lock:
+            if trace_id is not None:
+                trace = self._active.get(trace_id)
+            else:
+                trace = next(reversed(self._active.values()), None) if self._active else None
+        if trace is None:
+            raise RuntimeError(
+                "LatencyProfiler has no active trace; call start_trace() first"
+            )
+        return trace
+
+    def mark(self, stage: str, trace_id: Optional[str] = None) -> float:
+        """Timestamp ``stage`` on the active (or named) trace."""
+        return self._current(trace_id).mark(stage)
+
+    def finish_trace(self, trace: Optional[LatencyTrace] = None) -> LatencyTrace:
+        """
+        Complete a trace, store it and publish its stage gauges.
+
+        When ``trace`` is omitted the most recently started active trace is used.
+        """
+        if trace is None:
+            trace = self._current()
+        trace.completed = True
+        with self._lock:
+            self._active.pop(trace.trace_id, None)
+            self._history.append(trace)
+        if self.collector is not None:
+            for stage, duration in trace.stage_durations().items():
+                self.collector.set_gauge(f"latency.{stage}.us", duration)
+            self.collector.set_gauge("latency.e2e.us", trace.total_us)
+        return trace
+
+    # ── History ───────────────────────────────────────────────────────────
+    @property
+    def traces(self) -> List[LatencyTrace]:
+        """Completed traces, oldest first."""
+        with self._lock:
+            return list(self._history)
+
+    @property
+    def last_trace(self) -> Optional[LatencyTrace]:
+        """The most recently completed trace, if any."""
+        with self._lock:
+            return self._history[-1] if self._history else None
+
+    # ── Statistics ────────────────────────────────────────────────────────
+    def stage_stats(self) -> Dict[str, Dict[str, float]]:
+        """
+        Per-stage microsecond statistics over the completed traces.
+
+        Returns:
+            ``{stage: {"count", "min", "mean", "p50", "p95", "max"}}`` with every
+            value in microseconds.
+        """
+        traces = self.traces
+        stats: Dict[str, Dict[str, float]] = {}
+        for stage in self.stages:
+            samples = [
+                trace.duration_us(stage)
+                for trace in traces
+                if stage in trace.marks
+            ]
+            if not samples:
+                continue
+            stats[stage] = {
+                "count": float(len(samples)),
+                "min": min(samples),
+                "mean": sum(samples) / len(samples),
+                "p50": _percentile(samples, 50),
+                "p95": _percentile(samples, 95),
+                "max": max(samples),
+            }
+        return stats
+
+    def summary(self) -> Dict[str, Any]:
+        """Compact JSON-friendly overview of the profiler state."""
+        traces = self.traces
+        totals = [trace.total_us for trace in traces]
+        return {
+            "traces": len(traces),
+            "stages": list(self.stages),
+            "end_to_end_us": {
+                "min": min(totals) if totals else 0.0,
+                "mean": (sum(totals) / len(totals)) if totals else 0.0,
+                "p95": _percentile(totals, 95),
+                "max": max(totals) if totals else 0.0,
+            },
+            "stage_stats": self.stage_stats(),
+        }
+
+    # ── Rendering ─────────────────────────────────────────────────────────
+    def waterfall(self, trace: Optional[LatencyTrace] = None, width: int = 32) -> str:
+        """
+        Render an ASCII waterfall chart of one trace.
+
+        Each row is a pipeline stage: the bar starts at the stage's offset from
+        the turn start and its length is that stage's incremental duration, so
+        serialisation gaps are visible at a glance.
+
+        Args:
+            trace: Trace to render (defaults to the most recent one).
+            width: Character width of the timeline.
+
+        Returns:
+            Multi-line string, or a placeholder when no trace is available.
+        """
+        trace = trace or self.last_trace
+        if trace is None:
+            return "LatencyProfiler: no completed trace"
+        width = max(8, int(width))
+        total = trace.total_us or 1.0
+        lines = [
+            f"trace {trace.trace_id} - total {total:.1f} us "
+            f"(0 - {total / 1000.0:.3f} ms)"
+        ]
+        for stage in self.stages:
+            if stage not in trace.marks:
+                continue
+            offset = trace.offset_us(stage)
+            duration = trace.duration_us(stage)
+            start_col = min(width - 1, int(round(offset / total * width)))
+            span_col = max(1, int(round(duration / total * width)))
+            span_col = min(span_col, width - start_col)
+            bar = [" "] * width
+            for column in range(start_col, start_col + span_col):
+                bar[column] = "#"
+            lines.append(
+                f"{stage:<18} |{''.join(bar)}| "
+                f"{duration:10.1f} us @{offset:10.1f} us"
+            )
+        return "\n".join(lines)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """JSON-serialisable snapshot (summary + every completed trace)."""
+        return {
+            "summary": self.summary(),
+            "traces": [trace.to_dict() for trace in self.traces],
+        }
+
+    def export_json(self, path: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Export the profile as JSON.
+
+        Args:
+            path: Optional destination; when given the payload is written there.
+
+        Returns:
+            The exported payload (also returned when nothing is written).
+        """
+        payload = self.to_dict()
+        if path:
+            Path(path).write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            logger.info("Latency profile exported to %s", path)
+        return payload
+
+    def reset(self) -> None:
+        """Drop the history and any active traces."""
+        with self._lock:
+            self._history.clear()
+            self._active.clear()
+        logger.info("LatencyProfiler reset")
+
+
+class _TraceContext:
+    """Helper implementing ``LatencyProfiler.trace()`` as a context manager."""
+
+    def __init__(self, profiler: LatencyProfiler, trace_id: Optional[str]):
+        self._profiler = profiler
+        self._trace_id = trace_id
+        self.trace: Optional[LatencyTrace] = None
+
+    def __enter__(self) -> LatencyTrace:
+        self.trace = self._profiler.start_trace(self._trace_id)
+        return self.trace
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        self._profiler.finish_trace(self.trace)
+        return False
 
 
 # Health check HTTP handler (for integration with FastAPI/Flask)

@@ -557,6 +557,15 @@ class PagedKVCacheManager:
         self._slot_blocks: Dict[int, List[int]] = {}          # slot -> physical blocks
         self._free_slots: List[int] = list(range(self.max_sequences))
 
+        # Prefix caching (v2.7.0): every physical block carries a reference
+        # count. A block is released to the allocator only when the last owner
+        # (the prefix registry or a sharing sequence) drops its reference, and
+        # any append that would write into a shared block copies it first
+        # (copy-on-write), so a prefix is read-only by construction.
+        self.block_ref_counts: Dict[int, int] = {}           # physical block -> refs
+        self.prefix_blocks: Dict[object, List[int]] = {}     # prefix_id -> blocks
+        self._prefix_lengths: Dict[object, int] = {}         # prefix_id -> tokens
+
         # CUDA backend (optional, transparently disabled when unavailable)
         self.device_id = int(device_id)
         self.backend = "numpy"
@@ -608,6 +617,176 @@ class PagedKVCacheManager:
             return
         self._pool[:] = self._torch_pool.detach().cpu().numpy()
         self._seq_lens[:] = self._torch_seq_lens.detach().cpu().numpy()
+
+    def _push_pool_blocks(self, blocks: Iterable[int]) -> None:
+        """Mirror the host copy of ``blocks`` back to the CUDA pool."""
+        if self.backend != "cuda":
+            return
+        for block in blocks:
+            block = int(block)
+            self._torch_pool[block].copy_(
+                torch.from_numpy(np.ascontiguousarray(self._pool[block])).to(self._device)
+            )
+
+    # ── Reference counting (v2.7.0 prefix caching) ────────────────────────
+    def _allocate_blocks(self, count: int) -> List[int]:
+        """Allocate physical blocks and initialise their reference count to 1."""
+        blocks = [int(block) for block in self._allocator.allocate(count)]
+        for block in blocks:
+            self.block_ref_counts[block] = 1
+        return blocks
+
+    def _reference_block(self, block: int) -> None:
+        """Add one owner to a physical block (used when sharing a prefix)."""
+        block = int(block)
+        self.block_ref_counts[block] = self.block_ref_counts.get(block, 0) + 1
+
+    def _release_block(self, block: int) -> None:
+        """
+        Drop one owner from a physical block.
+
+        The block only returns to the free list when the last owner lets go
+        (``ref_count == 0``), which is what keeps a shared prefix alive while
+        any sequence still references it.
+        """
+        block = int(block)
+        remaining = self.block_ref_counts.get(block, 1) - 1
+        if remaining > 0:
+            self.block_ref_counts[block] = remaining
+            return
+        self.block_ref_counts.pop(block, None)
+        self._allocator.free([block])
+
+    def reference_count(self, physical_block: int) -> int:
+        """Number of owners of a physical block (0 when it is free)."""
+        return int(self.block_ref_counts.get(int(physical_block), 0))
+
+    @property
+    def shared_block_count(self) -> int:
+        """Blocks currently referenced by more than one owner (read-only)."""
+        return sum(1 for count in self.block_ref_counts.values() if count > 1)
+
+    @property
+    def prefix_ids(self) -> List[object]:
+        """Ids of the registered shared prefixes."""
+        return list(self.prefix_blocks.keys())
+
+    # ── Prefix registry (v2.7.0) ──────────────────────────────────────────
+    def register_prefix(self, prefix_id: object, tokens) -> List[int]:
+        """
+        Register a shared, read-only prefix (v2.7.0).
+
+        The tokens are written into freshly allocated physical blocks exactly
+        once; every :meth:`allocate_sequence` naming this prefix then *shares*
+        those blocks (their reference count is incremented) instead of copying
+        them. N conversations that start from the same system prompt / few-shot
+        header therefore pay for a single copy of it in VRAM.
+
+        The blocks stay immutable while shared: :meth:`append` performs
+        copy-on-write on the block it is about to touch, so a sequence can keep
+        growing without corrupting the prefix (or its siblings).
+
+        Args:
+            prefix_id: Identifier for the prefix (re-registering frees the old
+                one first).
+            tokens: ``(num_tokens, num_heads, head_dim)`` float32 array/tensor.
+
+        Returns:
+            The physical blocks backing the prefix, in logical order.
+        """
+        tokens_array = self._prepare_tokens(tokens)
+
+        if prefix_id in self.prefix_blocks:
+            self.free_prefix(prefix_id)
+
+        count = int(tokens_array.shape[0])
+        num_blocks = (count + self.block_size - 1) // self.block_size
+        if num_blocks == 0:
+            self.prefix_blocks[prefix_id] = []
+            self._prefix_lengths[prefix_id] = 0
+            return []
+
+        blocks = self._allocate_blocks(num_blocks)
+        positions = np.arange(count)
+        logical = positions // self.block_size
+        offsets = positions % self.block_size
+        physical = np.asarray(blocks, dtype=np.int64)[logical]
+        self._pool[physical, :, offsets, :] = tokens_array
+        self._push_pool_blocks(blocks)
+
+        self.prefix_blocks[prefix_id] = blocks
+        self._prefix_lengths[prefix_id] = count
+        logger.debug(
+            "PagedKV: registered prefix '%s' (%d tokens, %d blocks)",
+            prefix_id, count, num_blocks,
+        )
+        return list(blocks)
+
+    def free_prefix(self, prefix_id: object) -> None:
+        """
+        Drop the registry's reference to a prefix's blocks.
+
+        Sequences still sharing the prefix keep their own references, so the
+        physical blocks survive until the last one is freed as well.
+        """
+        blocks = self.prefix_blocks.pop(prefix_id, None)
+        if blocks is None:
+            return
+        self._prefix_lengths.pop(prefix_id, None)
+        for block in blocks:
+            self._release_block(block)
+
+    def _attach_prefix(self, slot: int, prefix_id: object) -> None:
+        """Point a freshly allocated sequence slot at a registered prefix."""
+        if prefix_id not in self.prefix_blocks:
+            raise KeyError(
+                f"Unknown prefix '{prefix_id}'; call register_prefix() first"
+            )
+        blocks = list(self.prefix_blocks[prefix_id])
+        for block in blocks:
+            self._reference_block(block)
+        self._slot_blocks[slot] = blocks
+        self._block_table[slot, :] = -1
+        if blocks:
+            self._block_table[slot, :len(blocks)] = np.asarray(blocks, dtype=np.int32)
+        self._seq_lens[slot] = int(self._prefix_lengths.get(prefix_id, 0))
+        self._sync_device_block_table(slot)
+
+    def _cow_shared_blocks(self, seq_id: object, start: int, count: int) -> None:
+        """
+        Copy-on-write every shared block the next append is about to touch.
+
+        A shared block (``ref_count > 1``) belongs to a registered prefix; the
+        pending write would silently rewrite the other owners' context, so the
+        block is cloned into a private one and the sequence's block table is
+        re-pointed at the clone. Only the *last* (partially filled) prefix block
+        is ever affected, so an append that starts on a block boundary clones
+        nothing.
+        """
+        if count <= 0:
+            return
+        slot = self._seq_slots[seq_id]
+        first = start // self.block_size
+        last = (start + count - 1) // self.block_size
+        cloned: List[int] = []
+        for logical in range(first, last + 1):
+            physical = int(self._block_table[slot, logical])
+            if physical < 0 or self.block_ref_counts.get(physical, 1) <= 1:
+                continue
+            self._sync_host_pool()
+            replacement = self._allocate_blocks(1)[0]
+            self._pool[replacement] = self._pool[physical]
+            self._block_table[slot, logical] = replacement
+            self._slot_blocks[slot][logical] = replacement
+            self._release_block(physical)
+            cloned.append(replacement)
+        if cloned:
+            self._push_pool_blocks(cloned)
+            self._sync_device_block_table(slot)
+            logger.debug(
+                "PagedKV: copy-on-write for '%s' cloned %d shared block(s)",
+                seq_id, len(cloned),
+            )
 
     # ── Introspection ─────────────────────────────────────────────────────
     @property
@@ -663,15 +842,24 @@ class PagedKVCacheManager:
             "pool_bytes": float(self.pool_bytes),
             "backend_cuda": 1.0 if self.is_cuda else 0.0,
             "fused_scale_append": 1.0 if self._fused_kernel else 0.0,
+            # Prefix caching (v2.7.0)
+            "prefixes": float(len(self.prefix_blocks)),
+            "shared_blocks": float(self.shared_block_count),
         })
         return stats
 
     # ── Sequence lifecycle ────────────────────────────────────────────────
-    def allocate_sequence(self, seq_id: object = None) -> int:
+    def allocate_sequence(self, seq_id: object = None, prefix_id: object = None) -> int:
         """
         Register a sequence and return its slot index.
 
         Idempotent: registering an already known ``seq_id`` returns its slot.
+
+        Args:
+            seq_id: Sequence identifier (auto-generated when omitted).
+            prefix_id: Optional registered prefix to share (v2.7.0); the
+                sequence starts life holding that prefix's tokens and shares its
+                physical blocks by reference instead of copying them.
         """
         if seq_id is None:
             seq_id = f"seq-{len(self._seq_slots)}"
@@ -688,14 +876,23 @@ class PagedKVCacheManager:
         self._block_table[slot, :] = -1
         self._seq_lens[slot] = 0
         self._sync_device_block_table(slot)
+        if prefix_id is not None:
+            self._attach_prefix(slot, prefix_id)
         return slot
 
     def free_sequence(self, seq_id: object) -> None:
-        """Release every physical block owned by ``seq_id``."""
+        """
+        Release the sequence's reference to every physical block it holds.
+
+        Shared blocks (a registered prefix) are only returned to the allocator
+        once the last owner releases them, so freeing one conversation never
+        invalidates a prefix another one is still using.
+        """
         slot = self._seq_slots.pop(seq_id, None)
         if slot is None:
             return
-        self._allocator.free(self._slot_blocks.pop(slot, []))
+        for block in self._slot_blocks.pop(slot, []):
+            self._release_block(block)
         self._block_table[slot, :] = -1
         self._seq_lens[slot] = 0
         self._free_slots.append(slot)
@@ -726,7 +923,7 @@ class PagedKVCacheManager:
         row = self._block_table[slot]
         mapped = int(np.count_nonzero(row >= 0))
         if required_blocks > mapped:
-            blocks = self._allocator.allocate(required_blocks - mapped)
+            blocks = self._allocate_blocks(required_blocks - mapped)
             row[mapped:required_blocks] = np.asarray(blocks, dtype=np.int32)
             self._slot_blocks.setdefault(slot, []).extend(blocks)
             self._sync_device_block_table(slot)
@@ -840,6 +1037,9 @@ class PagedKVCacheManager:
 
         start = self._ensure_capacity(seq_id, tokens.shape[0])
         slot = self._seq_slots[seq_id]
+        # A prefix-backed sequence owns its blocks read-only: clone the block the
+        # append lands in before writing to it (v2.7.0).
+        self._cow_shared_blocks(seq_id, start, tokens.shape[0])
 
         if self.backend == "cuda":
             self._append_cuda(slot, tokens, start)
@@ -892,6 +1092,9 @@ class PagedKVCacheManager:
 
         start = self._ensure_capacity(seq_id, tokens.shape[0])
         slot = self._seq_slots[seq_id]
+        # Copy-on-write before the fused/numpy transform touches a shared block
+        # (v2.7.0 prefix caching).
+        self._cow_shared_blocks(seq_id, start, tokens.shape[0])
 
         if self.backend == "cuda" and self._fused_kernel:
             self._append_scaled_cuda(slot, tokens, start, scale, limit)
@@ -951,13 +1154,16 @@ class PagedKVCacheManager:
 
     # ── Reset ─────────────────────────────────────────────────────────────
     def reset(self) -> None:
-        """Drop every sequence and return all blocks to the allocator."""
+        """Drop every sequence and prefix, returning all blocks to the allocator."""
         self._allocator.reset()
         self._pool[:] = 0.0
         self._block_table[:] = -1
         self._seq_lens[:] = 0
         self._seq_slots.clear()
         self._slot_blocks.clear()
+        self.block_ref_counts.clear()
+        self.prefix_blocks.clear()
+        self._prefix_lengths.clear()
         self._free_slots = list(range(self.max_sequences))
         if self.backend == "cuda":
             self._torch_pool.zero_()

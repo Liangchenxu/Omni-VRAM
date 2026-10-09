@@ -96,6 +96,35 @@ def _make_pcm_f32_bytes(samples: int = 1600, frequency: float = 440.0,
     return audio.tobytes()
 
 
+def _configure_mock_bridge(mock_bridge, text: str = "test transcription"):
+    """
+    Give a patched ``WhisperBridge`` the result contract the API relies on.
+
+    ``create_app`` builds a real ``WhisperBridge`` and ``StreamASR`` calls
+    ``transcribe()`` on it. A bare ``MagicMock`` returns *another* ``MagicMock``
+    for ``result.text``, which is not a string, so the hallucination filter and
+    the JSON response path blow up and the client never sees the
+    ``final`` / ``stopped`` messages. Wiring a properly shaped result keeps the
+    end-to-end message flow under test.
+    """
+    result = MagicMock()
+    result.text = text
+    result.language = "zh"
+    result.confidence = 0.95
+    result.start_time = 0.0
+    result.end_time = 1.0
+    result.audio_duration = 1.0
+    result.segments = []
+    result.backend = MagicMock()
+    result.backend.value = "faster_whisper"
+
+    mock_bridge.language = "zh"
+    mock_bridge.whisper_model = "base"
+    mock_bridge.transcribe.return_value = result
+    mock_bridge.get_available_backends.return_value = [result.backend]
+    return mock_bridge
+
+
 # ─── WebSocket /stream Tests ────────────────────────────────────────────────
 
 class TestWebSocketStream:
@@ -134,10 +163,7 @@ class TestWebSocketStream:
             pytest.skip("fastapi/httpx not installed")
 
         with patch("vram_core.api_server.WhisperBridge") as MockBridge:
-            mock_bridge = MagicMock()
-            mock_bridge.language = "zh"
-            mock_bridge.whisper_model = "base"
-            MockBridge.return_value = mock_bridge
+            MockBridge.return_value = _configure_mock_bridge(MagicMock())
 
             app = create_app(whisper_model="base")
 
@@ -280,10 +306,7 @@ class TestWebSocketWsTranscribe:
             pytest.skip("fastapi/httpx not installed")
 
         with patch("vram_core.api_server.WhisperBridge") as MockBridge:
-            mock_bridge = MagicMock()
-            mock_bridge.language = "zh"
-            mock_bridge.whisper_model = "base"
-            MockBridge.return_value = mock_bridge
+            MockBridge.return_value = _configure_mock_bridge(MagicMock())
 
             app = create_app(whisper_model="base")
 
@@ -346,10 +369,7 @@ class TestWebSocketWsTranscribe:
             pytest.skip("fastapi/httpx not installed")
 
         with patch("vram_core.api_server.WhisperBridge") as MockBridge:
-            mock_bridge = MagicMock()
-            mock_bridge.language = "zh"
-            mock_bridge.whisper_model = "base"
-            MockBridge.return_value = mock_bridge
+            MockBridge.return_value = _configure_mock_bridge(MagicMock())
 
             app = create_app(whisper_model="base")
 

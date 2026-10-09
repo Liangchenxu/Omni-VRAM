@@ -324,10 +324,21 @@ class PinnedUploadChannel:
                 self._staging_tensor[:count].copy_(
                     self._torch.from_numpy(np.ascontiguousarray(samples[:count]))
                 )
+                # Order the private copy stream against the work already queued
+                # on the caller's stream. The device buffer is (re)allocated and
+                # zero-initialised on that stream when the channel is created --
+                # without this handshake the memset can race the H2D copy and
+                # silently leave the buffer zeroed.
+                current = self._torch.cuda.current_stream(self._device)
+                self._stream.wait_stream(current)
                 with self._torch.cuda.stream(self._stream):
                     self._device_buffer[:count].copy_(
                         self._staging_tensor[:count], non_blocking=True
                     )
+                # ...and make the caller's stream observe the finished copy, so
+                # a subsequent read (``.cpu()`` / a front-end kernel) is ordered
+                # after it instead of running concurrently.
+                current.wait_stream(self._stream)
                 result = self._device_buffer[:count]
         else:
             self._staging[:count] = samples[:count]
