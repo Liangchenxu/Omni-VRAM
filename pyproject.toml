@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omni-vram"
-version = "2.6.0"
+version = "2.6.1"
 description = "Production-ready audio AI platform — ASR, TTS, Translation, Speaker Verification, Multi-GPU, VRAM Optimization, LLM Meeting Assistant, Edge Deployment"
 readme = "README.md"
 license = {text = "MIT"}

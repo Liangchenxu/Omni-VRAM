@@ -2,17 +2,28 @@
 vram_core Setup Configuration
 ==============================
 
-Builds the CUDA extension module and installs the vram_core Python package.
-If CUDA is not available or version mismatch, builds a pure Python package (no GPU extension).
+Builds the optional CUDA extension module and installs the vram_core Python
+package.
+
+Packaging is **fail-safe**: when the CUDA toolkit, ``nvcc``, a host compiler,
+the torch extension API or the GPU itself is missing, the build degrades to a
+pure-Python wheel and prints a friendly warning -- ``pip install .`` (and
+``python setup.py sdist bdist_wheel``) therefore never breaks on a machine
+without a build toolchain, because every runtime path has a vectorized
+NumPy/Python fallback.
 """
 
 import os
 import sys
 from setuptools import setup, find_packages
 
-# CUDA Extension (optional) — skip if CUDA unavailable or version mismatch
-ext_modules = []
-cmdclass = {}
+# Warning emitted verbatim whenever the extension cannot be built. Kept as a
+# single constant so packaging logs and CI can grep for it.
+CUDA_FALLBACK_WARNING = (
+    "Warning: CUDA build tools not found. "
+    "Packaging/installing in pure Python mode with runtime vectorized fallback."
+)
+
 
 def _check_cuda_available():
     """Check if CUDA toolkit is available and version matches PyTorch."""
@@ -87,27 +98,55 @@ def _check_cuda_available():
         return False, f"CUDA check failed: {e}"
 
 
-cuda_ok, cuda_msg = _check_cuda_available()
-if cuda_ok:
+def _build_cuda_extension(cuda_msg):
+    """
+    Describe the optional CUDA extension, degrading to pure Python on failure.
+
+    Every step (torch's C++ extension API, host compiler discovery, extension
+    description) is guarded so that no toolchain problem can abort packaging.
+
+    Args:
+        cuda_msg: Human readable status from :func:`_check_cuda_available`.
+
+    Returns:
+        Tuple ``(ext_modules, cmdclass)``; ``([], {})`` in pure-Python mode.
+    """
     try:
         from torch.utils.cpp_extension import BuildExtension, CUDAExtension
-        ext_modules = [
-            CUDAExtension(
-                name='vram_core._vram_hacker',
-                sources=['vram_hacker.cu'],
-                extra_compile_args={'nvcc': ['-O3']},
-            ),
-        ]
-        cmdclass = {'build_ext': BuildExtension}
-        print(f"[setup] Building with CUDA extension: {cuda_msg}")
-    except Exception as e:
-        print(f"[setup] Warning: Skipping CUDA extension: {e}")
-        ext_modules = []
-        cmdclass = {}
+    except Exception as error:  # ImportError / OSError / missing compiler stack
+        print(f"[setup] {CUDA_FALLBACK_WARNING}")
+        print(f"[setup] reason: torch C++/CUDA extension API unavailable ({error})")
+        return [], {}
+
+    try:
+        extension = CUDAExtension(
+            name='vram_core._vram_hacker',
+            sources=['vram_hacker.cu'],
+            extra_compile_args={'nvcc': ['-O3']},
+        )
+    except Exception as error:  # compiler probing raised inside torch
+        print(f"[setup] {CUDA_FALLBACK_WARNING}")
+        print(f"[setup] reason: could not describe the CUDA extension ({error})")
+        return [], {}
+
+    print(f"[setup] Building with CUDA extension: {cuda_msg}")
+    return [extension], {'build_ext': BuildExtension}
+
+
+# CUDA Extension (optional) — never fatal: falls back to a pure Python wheel
+ext_modules = []
+cmdclass = {}
+
+try:
+    cuda_ok, cuda_msg = _check_cuda_available()
+except Exception as _error:  # defensive: detection must not break packaging
+    cuda_ok, cuda_msg = False, f"CUDA detection failed: {_error}"
+
+if cuda_ok:
+    ext_modules, cmdclass = _build_cuda_extension(cuda_msg)
 else:
-    print(f"[setup] Warning: Skipping CUDA extension: {cuda_msg}")
-    ext_modules = []
-    cmdclass = {}
+    print(f"[setup] {CUDA_FALLBACK_WARNING}")
+    print(f"[setup] reason: {cuda_msg}")
 
 # Read README
 with open('README.md', encoding='utf-8') as _f:
@@ -116,7 +155,7 @@ with open('README.md', encoding='utf-8') as _f:
 # Package Setup
 setup(
     name='vram_core',
-    version='2.6.0',
+    version='2.6.1',
     description='vram_core - LLM Voice Interaction Framework',
     long_description=_long_description,
     long_description_content_type='text/markdown',

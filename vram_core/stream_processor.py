@@ -67,6 +67,12 @@ class DuplexState(Enum):
     SPEAKING = "speaking"
 
 
+# Minimum length (samples) of a microphone chunk that may be correlated against
+# the playback reference. Shorter chunks make the NCC estimate too noisy to veto
+# a genuine interruption.
+_MIN_ECHO_NCC_SAMPLES = 64
+
+
 @dataclass
 class BargeInEvent:
     """
@@ -122,6 +128,14 @@ class StreamConfig:
         echo_suppression_decay_ms: Time (ms) over which ``echo_suppression_factor``
             decays linearly back to 1.0 (floating-weight suppression).
         vad_frame_ms: Frame length used for frame-level VAD / barge-in scanning.
+        echo_ncc_threshold: Peak normalised cross-correlation (NCC) against the
+            playback reference above which a candidate barge-in is vetoed as our
+            own speaker echo (v2.6.1). Raise it for aggressive interruption, lower
+            it when the speaker/microphone coupling is loud.
+        echo_ncc_max_lag_ms: Acoustic propagation delay search range for the NCC
+            echo test (0 .. ``echo_ncc_max_lag_ms`` milliseconds).
+        playback_reference_duration_s: Capacity of the playback reference ring
+            buffer (how much TTS audio is kept for echo correlation).
         async_upload: Mount the pinned-memory asynchronous upload channel so that
             audio intake overlaps GPU work (v2.6.0).
     """
@@ -142,6 +156,15 @@ class StreamConfig:
     echo_suppression_factor: float = 2.0
     echo_suppression_decay_ms: int = 400
     vad_frame_ms: int = 25
+
+    # ---- Acoustic echo cancellation / NCC veto (v2.6.1) ----
+    # Energy gating alone cannot separate the user from the TTS speaker: a loud
+    # passage of our own playback looks exactly like a barge-in. The detector
+    # therefore cross-correlates the microphone chunk with the PCM it is
+    # currently playing and vetoes the interruption when the two are coherent.
+    echo_ncc_threshold: float = 0.55
+    echo_ncc_max_lag_ms: int = 400
+    playback_reference_duration_s: float = 2.0
 
     # ---- GPU pipeline (v2.6.0) ----
     # Pinned-memory host->device upload channel (CUDA stream isolated). Off by
@@ -820,6 +843,17 @@ class StreamProcessor:
         self._playback_started_at: Optional[float] = None
         self._interrupt_frames = 0
 
+        # Playback reference ring buffer (v2.6.1 AEC). The TTS playback thread
+        # pushes every chunk it sends to the speaker through
+        # :meth:`register_playback_chunk`; the barge-in detector correlates the
+        # microphone signal against this window to reject its own echo.
+        self._playback_reference_buffer = CircularBuffer(
+            max(
+                self.config.vad_frame_size,
+                int(self.config.sample_rate * self.config.playback_reference_duration_s),
+            )
+        )
+
         # Callbacks
         self.on_speech_start: Optional[Callable[[], None]] = None
         self.on_speech_end: Optional[Callable[[np.ndarray], None]] = None
@@ -843,6 +877,7 @@ class StreamProcessor:
             "avg_latency_ms": 0.0,
             "interrupts": 0,
             "last_interrupt_latency_ms": 0.0,
+            "echo_vetoes": 0,
         }
 
     @property
@@ -863,7 +898,11 @@ class StreamProcessor:
     @property
     def memory_footprint_bytes(self) -> int:
         """Bytes of pre-allocated audio memory (constant over time)."""
-        return self._audio_buffer.memory_bytes + self._pre_speech_buffer.memory_bytes
+        return (
+            self._audio_buffer.memory_bytes
+            + self._pre_speech_buffer.memory_bytes
+            + self._playback_reference_buffer.memory_bytes
+        )
 
     @property
     def upload_channel(self) -> Optional[PinnedUploadChannel]:
@@ -983,7 +1022,10 @@ class StreamProcessor:
         and arms the barge-in detector. The effective interrupt threshold is
         weighted by ``echo_suppression_factor`` for the first
         ``echo_suppression_decay_ms`` milliseconds (floating weight) so the
-        speaker echo of the TTS cannot trigger a false interruption.
+        speaker echo of the TTS cannot trigger a false interruption; on top of
+        that the detector cross-correlates every candidate chunk against the
+        playback reference (see :meth:`register_playback_chunk`) and vetoes the
+        interruption outright when the two are coherent.
 
         Args:
             is_playing: True when playback starts, False when it stops.
@@ -993,6 +1035,9 @@ class StreamProcessor:
             self._playback_active = bool(is_playing)
             self._playback_started_at = now if is_playing else None
             self._interrupt_frames = 0
+            # A new playback session invalidates the previous reference: fresh
+            # TTS audio is registered chunk by chunk from here on.
+            self._playback_reference_buffer.clear()
 
         if is_playing:
             self._set_duplex_state(DuplexState.SPEAKING)
@@ -1009,6 +1054,106 @@ class StreamProcessor:
             and self._playback_active
             and self._duplex_state is DuplexState.SPEAKING
         )
+
+    # ---- Playback reference & acoustic echo veto (v2.6.1) ---------------
+
+    def register_playback_chunk(self, chunk: np.ndarray) -> int:
+        """
+        Record PCM that is about to be sent to the speaker.
+
+        The TTS output thread calls this for every chunk it hands to the playback
+        device, so the processor owns a ~2 s ring buffer of exactly what is
+        currently audible. The barge-in detector correlates the microphone signal
+        against that window to reject *its own* playback as an interruption.
+
+        Args:
+            chunk: Mono PCM of the emitted chunk (float32 preferred).
+
+        Returns:
+            Number of samples written (0 for empty/None input).
+        """
+        if chunk is None:
+            return 0
+        samples = np.asarray(chunk, dtype=np.float32).reshape(-1)
+        if samples.size == 0:
+            return 0
+        with self._lock:
+            self._playback_reference_buffer.write(samples)
+        return int(samples.size)
+
+    def clear_playback_reference(self) -> None:
+        """Forget the playback reference (call when TTS audio is flushed)."""
+        with self._lock:
+            self._playback_reference_buffer.clear()
+
+    @property
+    def playback_reference_buffer(self) -> "CircularBuffer":
+        """Ring buffer holding the most recent playback (speaker) audio."""
+        return self._playback_reference_buffer
+
+    def _echo_ncc_peak(self, audio_chunk: np.ndarray) -> float:
+        """
+        Peak normalised cross-correlation between the microphone and playback.
+
+        For every acoustic propagation delay ``tau`` in
+        ``[0, echo_ncc_max_lag_ms]`` the normalised cross-correlation
+
+        .. math::
+
+            R(\\tau) = \\frac{\\sum (x[t] - \\mu_x)(y[t + \\tau] - \\mu_y)}
+                       {\\sqrt{\\sum (x[t] - \\mu_x)^2 \\sum (y[t + \\tau] - \\mu_y)^2}}
+
+        is evaluated, where ``x`` is the microphone chunk and ``y`` the reference
+        (speaker) signal. The lag sweep is a single vectorised
+        ``np.correlate(..., mode="valid")`` plus a cumulative-sum energy
+        normalisation, so no per-lag Python loop or allocation is involved. On a
+        16 kHz CPU stream the full sweep costs a few milliseconds (~7 ms for a
+        2 s reference and a 400 ms lag range) and is only paid once the
+        frame-level energy gate has already fired.
+
+        Args:
+            audio_chunk: Raw microphone chunk.
+
+        Returns:
+            Highest ``|R(tau)|`` found, in ``[0, 1]``; ``0.0`` when no playback
+            reference is available (the common, echoless case).
+        """
+        reference = self._playback_reference_buffer.peek(
+            self._playback_reference_buffer.size
+        )
+        if reference.size == 0:
+            return 0.0
+
+        x = np.asarray(audio_chunk, dtype=np.float32).reshape(-1)
+        if x.size < _MIN_ECHO_NCC_SAMPLES or reference.size < x.size:
+            return 0.0
+        # Only the newest ``len(x) + max_lag`` reference samples can echo into
+        # this chunk, which also bounds the correlation cost.
+        max_lag = int(
+            self.config.sample_rate * max(0, self.config.echo_ncc_max_lag_ms) / 1000.0
+        )
+        max_lag = int(np.clip(max_lag, 0, reference.size - x.size))
+        # ``max_lag == 0`` degenerates to the single (zero-delay) lag, which is
+        # still a valid echo test; the reference is never shorter than the chunk.
+        segment_length = x.size + max_lag
+        ref = reference[-segment_length:]
+
+        x_zm = x - x.mean()
+        ref_zm = ref - ref.mean()
+        x_energy = float(np.dot(x_zm, x_zm))
+        if x_energy <= 1e-12:
+            return 0.0
+
+        # cross[j] = sum_i ref[j + i] * x[i]  ->  tau = max_lag - j
+        cross = np.correlate(ref_zm.astype(np.float64), x_zm.astype(np.float64), mode="valid")
+        cumulative = np.concatenate(([0.0], np.cumsum(ref_zm.astype(np.float64) ** 2)))
+        window_energy = (
+            cumulative[x.size: x.size + max_lag + 1] - cumulative[: max_lag + 1]
+        )
+        denominator = np.sqrt(np.maximum(window_energy, 1e-12) * x_energy)
+        rho = np.abs(cross / denominator)
+        peak = float(np.max(rho)) if rho.size else 0.0
+        return peak if np.isfinite(peak) else 0.0
 
     def _effective_interrupt_threshold(self, now: float) -> float:
         """
@@ -1054,12 +1199,19 @@ class StreamProcessor:
         soon as ``interrupt_min_frames`` consecutive frames are observed -- a few
         milliseconds of sustained user speech.
 
+        Once the energy gate is satisfied the candidate is confirmed acoustically
+        (v2.6.1): the microphone chunk is cross-correlated with the playback
+        reference and a peak above ``echo_ncc_threshold`` vetoes the interruption
+        as our own speaker echo. Only genuinely uncorrelated (user) audio is
+        allowed through.
+
         Args:
             audio_chunk: Raw (unprocessed) audio chunk.
             enter: ``time.perf_counter()`` captured at :meth:`feed` entry.
 
         Returns:
-            A :class:`BargeInEvent` when the frame gate is satisfied, else None.
+            A :class:`BargeInEvent` when the frame gate is satisfied and the
+            chunk is not a playback echo, else None.
         """
         if audio_chunk is None or audio_chunk.size == 0:
             return None
@@ -1090,6 +1242,22 @@ class StreamProcessor:
             self._interrupt_frames = min(frames, min_frames)
 
         if not triggered:
+            return None
+
+        # ---- Acoustic echo veto (v2.6.1) --------------------------------
+        # A loud TTS passage re-entering through the microphone satisfies the
+        # energy gate, so the candidate is only accepted when it does *not*
+        # correlate with what we are currently playing.
+        ncc_peak = self._echo_ncc_peak(audio_chunk)
+        if ncc_peak >= self.config.echo_ncc_threshold:
+            with self._lock:
+                # The run is discarded: an echo must not arm the next real chunk.
+                self._interrupt_frames = 0
+                self._stats["echo_vetoes"] += 1
+            logger.debug(
+                "Barge-in vetoed as playback echo (NCC=%.3f >= %.3f)",
+                ncc_peak, self.config.echo_ncc_threshold,
+            )
             return None
 
         started = self._playback_started_at or now
@@ -1126,6 +1294,7 @@ class StreamProcessor:
             self._playback_active = False
             self._playback_started_at = None
             self._pre_speech_buffer.clear()  # drop TTS tail / echo context
+            self._playback_reference_buffer.clear()  # ... and its reference
             self._stats["interrupts"] += 1
             self._stats["last_interrupt_latency_ms"] = event.detection_latency_ms
             callback = self.on_interrupt
@@ -1472,6 +1641,7 @@ class StreamProcessor:
         with self._lock:
             self._audio_buffer.clear()
             self._pre_speech_buffer.clear()
+            self._playback_reference_buffer.clear()
             self._total_speech_samples = 0
             self._silence_counter = 0
             self._interrupt_frames = 0
@@ -1483,6 +1653,7 @@ class StreamProcessor:
                 "avg_latency_ms": 0.0,
                 "interrupts": 0,
                 "last_interrupt_latency_ms": 0.0,
+                "echo_vetoes": 0,
             }
         self._set_state(StreamState.IDLE)
         self._set_duplex_state(DuplexState.IDLE)
@@ -1500,6 +1671,7 @@ class StreamProcessor:
         with self._lock:
             self._audio_buffer.clear()
             self._pre_speech_buffer.clear()
+            self._playback_reference_buffer.clear()
             self._total_speech_samples = 0
             self._silence_counter = 0
             self._interrupt_frames = 0

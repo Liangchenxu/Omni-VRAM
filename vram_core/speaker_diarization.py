@@ -99,6 +99,15 @@ class DiarizationResult:
 
 
 # 鈹€鈹€ pyannote Backend 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# Voiceprint backend identifiers understood by :func:`create_voiceprint_extractor`.
+#   * ``auto`` - prefer a usable ONNX model, degrade to MFCC when unavailable
+#   * ``onnx`` - request the neural embedding track (same MFCC fallback)
+#   * ``mfcc`` - force the classic MFCC statistics track
+# All three are always *available*; ``onnx`` simply resolves to the MFCC track
+# when onnxruntime or the model file is missing, so deployments never break.
+VOICEPRINT_BACKENDS: Tuple[str, ...] = ("auto", "onnx", "mfcc")
+
+
 class BaseVoiceprintExtractor(ABC):
     """
     Pluggable voiceprint embedding interface (v2.6.0).
@@ -167,11 +176,36 @@ class MFCCExtractor(BaseVoiceprintExtractor):
     Lightweight pure-NumPy MFCC voiceprint extractor.
 
     Pipeline: STFT -> power spectrum -> mel filterbank -> log -> DCT-II ->
-    per-frame energy normalisation -> (mean[, std]) statistics -> L2 norm.
+    per-frame energy normalisation -> [CMVN] -> [Δ / ΔΔ] -> (mean[, std])
+    statistics -> L2 norm.
 
     The mel filterbank and the DCT basis are cached per shape, so repeated calls
     on short analysis segments no longer rebuild the full ``(n_mels, n_bins)``
     matrix on every call.
+
+    Two feature tracks are available:
+
+    * **Baseline** (default, legacy-compatible): static MFCC statistics.
+    * **Enhanced** (``use_delta=True``, optionally ``cmvn=True``): the static
+      coefficients are expanded with their first (Δ) and second (ΔΔ) order
+      differences and, when ``cmvn`` is set, mean-variance normalised along the
+      frame axis first. Deltas are *not* degenerate after CMVN (an affine,
+      per-dimension transform survives differentiation), so the pooled
+      (mean, std) statistics keep carrying speaker information while becoming
+      markedly more robust to channel/loudness variation.
+
+    Args:
+        n_mfcc: Number of cepstral coefficients kept per frame.
+        frame_length: STFT window length in samples.
+        hop_length: STFT hop size in samples.
+        sample_rate: Sample rate in Hz.
+        n_mels: Mel filterbank channel count.
+        include_std: Also pool the per-coefficient standard deviation.
+        energy_normalize: Remove the per-frame offset (loudness invariance).
+        use_delta: Append Δ and ΔΔ coefficients (enhanced track, v2.6.1).
+        cmvn: Mean-variance normalise the statics along the frame axis before the
+            Δ/ΔΔ expansion (only meaningful together with ``use_delta``).
+        delta_window: Regression window of the Δ operator, in frames.
     """
 
     name = "mfcc"
@@ -185,6 +219,9 @@ class MFCCExtractor(BaseVoiceprintExtractor):
         n_mels: int = 26,
         include_std: bool = True,
         energy_normalize: bool = True,
+        use_delta: bool = False,
+        cmvn: bool = False,
+        delta_window: int = 2,
     ):
         self.n_mfcc = int(n_mfcc)
         self.frame_length = int(frame_length)
@@ -193,13 +230,31 @@ class MFCCExtractor(BaseVoiceprintExtractor):
         self.n_mels = int(n_mels)
         self.include_std = bool(include_std)
         self.energy_normalize = bool(energy_normalize)
+        self.use_delta = bool(use_delta)
+        self.cmvn = bool(cmvn)
+        self.delta_window = max(1, int(delta_window))
+        if self.cmvn and not self.use_delta:
+            logger.warning(
+                "MFCCExtractor: cmvn has no effect without use_delta "
+                "(normalised statics alone are degenerate); enable use_delta=True"
+            )
         self._filterbank_cache: Dict[Tuple[int, int], np.ndarray] = {}
         self._dct_cache: Dict[Tuple[int, int], np.ndarray] = {}
 
     @property
     def dim(self) -> int:
-        """``2 * n_mfcc`` with the std statistics, ``n_mfcc`` without."""
-        return self.n_mfcc * 2 if self.include_std else self.n_mfcc
+        """
+        Embedding width: the pooled (mean[, std]) statistics of the feature
+        matrix, i.e. ``n_mfcc`` coefficients -- or ``3 * n_mfcc`` in the enhanced
+        track (statics + Δ + ΔΔ) -- times two when ``include_std`` is set.
+        """
+        width = self.n_mfcc * 3 if self.use_delta else self.n_mfcc
+        return width * 2 if self.include_std else width
+
+    @property
+    def is_enhanced(self) -> bool:
+        """True when the Δ/ΔΔ (and optionally CMVN) enhancement is active."""
+        return bool(self.use_delta)
 
     # ── Front-end ─────────────────────────────────────────────────────────
     def _mel_filterbank(self, n_filters: int, n_fft: int, sample_rate: int) -> np.ndarray:
@@ -277,15 +332,68 @@ class MFCCExtractor(BaseVoiceprintExtractor):
         return mfcc.astype(np.float32)
 
     # ── Embedding ─────────────────────────────────────────────────────────
+    # ── Embedding ─────────────────────────────────────────────────────────
+    def _delta(self, matrix: np.ndarray, window: int = 2) -> np.ndarray:
+        """
+        First-order regression difference (Δ) along the frame axis.
+
+        Standard ``Δ_t = Σ n·(c_{t+n} - c_{t-n}) / (2 Σ n²)`` operator, applied
+        fully vectorised; edges are replicated so the frame count is preserved.
+
+        Args:
+            matrix: ``(n_features, n_frames)`` feature matrix.
+            window: Regression window in frames (>= 1).
+
+        Returns:
+            Difference matrix with the same shape as ``matrix`` (float32).
+        """
+        window = max(1, int(window))
+        frames = matrix.shape[1]
+        if frames == 0:
+            return np.zeros_like(matrix, dtype=np.float32)
+        padded = np.pad(matrix, ((0, 0), (window, window)), mode="edge")
+        numerator = np.zeros_like(matrix, dtype=np.float32)
+        for n in range(1, window + 1):
+            numerator += n * (
+                padded[:, window + n: window + n + frames]
+                - padded[:, window - n: window - n + frames]
+            )
+        denominator = 2.0 * sum(i * i for i in range(1, window + 1))
+        return (numerator / denominator).astype(np.float32)
+
+    def dynamic_features(self, mfcc: np.ndarray) -> np.ndarray:
+        """
+        Expand a static MFCC matrix with CMVN and/or Δ / ΔΔ coefficients.
+
+        Args:
+            mfcc: ``(n_mfcc, n_frames)`` static MFCC matrix.
+
+        Returns:
+            ``(n_mfcc, n_frames)`` unchanged in the baseline track, or
+            ``(3 * n_mfcc, n_frames)`` (statics + Δ + ΔΔ) in the enhanced track.
+        """
+        features = np.asarray(mfcc, dtype=np.float32)
+        if features.ndim != 2:
+            return features
+        if self.cmvn and self.use_delta and features.shape[1] > 1:
+            mean = features.mean(axis=1, keepdims=True)
+            std = features.std(axis=1, keepdims=True)
+            features = (features - mean) / np.maximum(std, 1e-8)
+        if self.use_delta:
+            delta = self._delta(features, self.delta_window)
+            delta_delta = self._delta(delta, self.delta_window)
+            features = np.concatenate([features, delta, delta_delta], axis=0)
+        return features.astype(np.float32)
+
     def embed_from_mfcc(self, mfcc: np.ndarray) -> np.ndarray:
-        """(mean[, std]) statistics of an MFCC matrix, L2 normalised."""
-        mfcc = np.asarray(mfcc, dtype=np.float32)
-        if mfcc.ndim != 2 or mfcc.shape[1] == 0:
+        """(mean[, std]) statistics of the feature matrix, L2 normalised."""
+        features = self.dynamic_features(mfcc)
+        if features.ndim != 2 or features.shape[1] == 0:
             return np.zeros(self.dim, dtype=np.float32)
-        features = [np.mean(mfcc, axis=1)]
+        pooled = [np.mean(features, axis=1)]
         if self.include_std:
-            features.append(np.std(mfcc, axis=1))
-        return self.l2_normalize(np.concatenate(features))
+            pooled.append(np.std(features, axis=1))
+        return self.l2_normalize(np.concatenate(pooled))
 
     def embed(self, audio: np.ndarray, sample_rate: int = 16000) -> np.ndarray:
         """MFCC-statistics voiceprint embedding."""
@@ -322,11 +430,17 @@ class ONNXEmbeddingExtractor(BaseVoiceprintExtractor):
         fallback_n_mfcc: int = 13,
         normalize: bool = True,
         providers: Optional[List[str]] = None,
+        fallback_enhanced: bool = False,
     ):
         self.model_path = Path(model_path) if model_path else None
         self.sample_rate = int(sample_rate)
         self.normalize = bool(normalize)
-        self._fallback = MFCCExtractor(n_mfcc=fallback_n_mfcc, sample_rate=sample_rate)
+        self._fallback = MFCCExtractor(
+            n_mfcc=fallback_n_mfcc,
+            sample_rate=sample_rate,
+            use_delta=bool(fallback_enhanced),
+            cmvn=bool(fallback_enhanced),
+        )
         self._session = None
         self._input_name = input_name
         self._output_name = output_name
@@ -431,33 +545,53 @@ def create_voiceprint_extractor(
     model_path: Optional[str] = None,
     n_mfcc: int = 13,
     sample_rate: int = 16000,
+    enhanced_mfcc: bool = False,
     **kwargs,
 ) -> BaseVoiceprintExtractor:
     """
     Factory for voiceprint extractors.
 
     Args:
-        backend: "auto" (ONNX when a model path is usable, else MFCC), "onnx"
-            or "mfcc".
+        backend: One of :data:`VOICEPRINT_BACKENDS` -- ``"auto"`` (ONNX when a
+            model path is usable, else MFCC), ``"onnx"`` or ``"mfcc"``. Unknown
+            values log a warning and resolve to ``"mfcc"``.
         model_path: Path to an ONNX speaker-embedding model.
         n_mfcc: MFCC coefficient count for the MFCC extractor / ONNX fallback.
         sample_rate: Sample rate in Hz.
+        enhanced_mfcc: Build the enhanced MFCC track (Δ + ΔΔ with CMVN); applies
+            both to the ``"mfcc"`` backend and to the ONNX fallback so the
+            degradation path never changes features mid-session.
         **kwargs: Forwarded to the concrete extractor constructor.
 
     Returns:
         A :class:`BaseVoiceprintExtractor` instance.
     """
     backend = (backend or "auto").lower()
+    if backend not in VOICEPRINT_BACKENDS:
+        logger.warning(
+            "Unknown voiceprint backend '%s'; expected one of %s -- using 'mfcc'",
+            backend, ", ".join(VOICEPRINT_BACKENDS),
+        )
+        backend = "mfcc"
     if backend in ("onnx", "auto") and model_path:
         extractor = ONNXEmbeddingExtractor(
-            model_path=model_path, sample_rate=sample_rate,
-            fallback_n_mfcc=n_mfcc, **kwargs,
+            model_path=model_path,
+            sample_rate=sample_rate,
+            fallback_n_mfcc=n_mfcc,
+            fallback_enhanced=enhanced_mfcc,
+            **kwargs,
         )
         if not extractor.is_fallback:
             return extractor
         if backend == "onnx":
             logger.warning("Requested ONNX extractor is unavailable, using MFCC")
-    return MFCCExtractor(n_mfcc=n_mfcc, sample_rate=sample_rate, **kwargs)
+    return MFCCExtractor(
+        n_mfcc=n_mfcc,
+        sample_rate=sample_rate,
+        use_delta=bool(enhanced_mfcc),
+        cmvn=bool(enhanced_mfcc),
+        **kwargs,
+    )
 
 
 def available_voiceprint_backends() -> List[str]:

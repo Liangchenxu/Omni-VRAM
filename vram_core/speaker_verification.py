@@ -163,6 +163,7 @@ class SpeakerVerifier:
         extractor: Optional[Any] = None,
         extractor_backend: str = "builtin",
         model_path: Optional[str] = None,
+        enhanced_mfcc: bool = False,
         adaptive_threshold: bool = False,
         min_segment_s: float = 1.0,
         short_penalty: float = 0.12,
@@ -188,6 +189,10 @@ class SpeakerVerifier:
                 backend understood by ``create_voiceprint_extractor()``
                 (``"auto"`` / ``"onnx"`` / ``"mfcc"``).
             model_path: ONNX speaker-embedding model used by the ONNX backend.
+            enhanced_mfcc: Build the *enhanced* MFCC track (Δ/ΔΔ with CMVN, see
+                :class:`MFCCExtractor`) for the configured backend and for the
+                ONNX fallback. Off by default so pre-2.6.1 behaviour (and
+                embeddings) are reproduced exactly.
             adaptive_threshold: Raise the threshold for short probes
                 (see :meth:`dynamic_threshold`), mirroring
                 ``AdaptiveCosineClusterer``.
@@ -220,6 +225,7 @@ class SpeakerVerifier:
         self.use_bic = bool(use_bic)
         self._templates: Dict[str, List[np.ndarray]] = {}
         self.extractor_backend = (extractor_backend or "builtin").lower()
+        self.enhanced_mfcc = bool(enhanced_mfcc)
         self.extractor = extractor or self._create_extractor(model_path)
 
         # Load existing voiceprints if storage exists
@@ -246,6 +252,7 @@ class SpeakerVerifier:
                 model_path=model_path,
                 n_mfcc=self.n_mfcc,
                 sample_rate=self.sample_rate,
+                enhanced_mfcc=self.enhanced_mfcc,
             )
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(

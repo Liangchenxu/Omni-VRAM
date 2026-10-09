@@ -502,7 +502,10 @@ class PagedKVCacheManager:
     --------
     * ``cuda``  - the ``paged_kv_cache_append`` kernel from ``vram_hacker.cu``
       (coalesced writes along ``head_dim``); enabled automatically when the
-      compiled extension and a CUDA device are both present.
+      compiled extension and a CUDA device are both present. When the extension
+      also ships ``fused_paged_kv_cache_scale_append`` (v2.6.1),
+      :meth:`append_scaled` performs its scale/truncation *inside* that kernel and
+      saves one full global-memory round-trip over the new tokens.
     * ``numpy`` - vectorised scatter with *identical* indexing semantics, used on
       CPU-only installs; the unit tests exercise this path.
 
@@ -511,6 +514,7 @@ class PagedKVCacheManager:
         cache = PagedKVCacheManager(num_blocks=64, block_size=16, num_heads=8, head_dim=64)
         cache.allocate_sequence("session-1")
         cache.append("session-1", tokens)          # (num_new_tokens, num_heads, head_dim)
+        cache.append_scaled("session-1", tokens, scale=0.125, clamp_limit=8.0)
         kv = cache.gather("session-1")             # (seq_len, num_heads, head_dim)
         cache.free_sequence("session-1")
     """
@@ -560,6 +564,7 @@ class PagedKVCacheManager:
         self._torch_pool = None
         self._torch_block_table = None
         self._torch_seq_lens = None
+        self._fused_kernel = False
         if use_cuda:
             self._try_enable_cuda()
 
@@ -579,7 +584,11 @@ class PagedKVCacheManager:
             self._torch_seq_lens = torch.from_numpy(self._seq_lens).to(device)
             self._device = device
             self.backend = "cuda"
-            logger.info("PagedKV: CUDA paged kernel enabled (%d blocks)", self.num_blocks)
+            self._fused_kernel = hasattr(_CUDA_EXT, "fused_paged_kv_cache_scale_append")
+            logger.info(
+                "PagedKV: CUDA paged kernel enabled (%d blocks, fused scale+append=%s)",
+                self.num_blocks, self._fused_kernel,
+            )
         except (RuntimeError, OSError, ValueError) as error:
             logger.warning("PagedKV: CUDA backend init failed (%s), using NumPy", error)
             self.backend = "numpy"
@@ -605,6 +614,11 @@ class PagedKVCacheManager:
     def is_cuda(self) -> bool:
         """True when the compiled CUDA kernel drives the pool."""
         return self.backend == "cuda"
+
+    @property
+    def has_fused_kernel(self) -> bool:
+        """True when the fused scale+append kernel drives :meth:`append_scaled`."""
+        return bool(self._fused_kernel)
 
     @property
     def pool(self) -> np.ndarray:
@@ -648,6 +662,7 @@ class PagedKVCacheManager:
             "active_sequences": float(len(self._seq_slots)),
             "pool_bytes": float(self.pool_bytes),
             "backend_cuda": 1.0 if self.is_cuda else 0.0,
+            "fused_scale_append": 1.0 if self._fused_kernel else 0.0,
         })
         return stats
 
@@ -743,17 +758,51 @@ class PagedKVCacheManager:
         # The kernel extends seq_lens in place on the device
         self._seq_lens[slot] = int(self._torch_seq_lens[slot].item())
 
-    def append(self, seq_id: object, new_kv) -> int:
+    def _append_scaled_numpy(
+        self,
+        slot: int,
+        tokens: np.ndarray,
+        start: int,
+        scale: float,
+        clamp_limit: Optional[float],
+    ) -> None:
+        """Vectorised scale (+ clamp) followed by the paged scatter."""
+        scaled = tokens * np.float32(scale)
+        if clamp_limit is not None and clamp_limit > 0.0:
+            np.clip(scaled, -clamp_limit, clamp_limit, out=scaled)
+        self._append_numpy(slot, np.ascontiguousarray(scaled, dtype=np.float32), start)
+
+    def _append_scaled_cuda(
+        self,
+        slot: int,
+        tokens: np.ndarray,
+        start: int,
+        scale: float,
+        clamp_limit: Optional[float],
+    ) -> None:
+        """Launch the fused scale+append kernel for a single sequence."""
+        batched = np.ascontiguousarray(tokens.transpose(1, 0, 2))[np.newaxis, ...]
+        new_kv = torch.from_numpy(batched).to(self._device)
+        row = self._torch_block_table[slot:slot + 1]
+        lengths = self._torch_seq_lens[slot:slot + 1]
+        _CUDA_EXT.fused_paged_kv_cache_scale_append(
+            new_kv, self._torch_pool, row, lengths, int(self.block_size),
+            float(scale), float(clamp_limit or 0.0),
+        )
+        self._seq_lens[slot] = int(self._torch_seq_lens[slot].item())
+
+    def _prepare_tokens(self, new_kv) -> np.ndarray:
         """
-        Append new K/V tokens to a sequence.
+        Validate and normalise a ``(num_new_tokens, num_heads, head_dim)`` block.
 
         Args:
-            seq_id: Sequence identifier (auto-registered on first use).
-            new_kv: ``(num_new_tokens, num_heads, head_dim)`` float32 array or
-                torch tensor.
+            new_kv: float32 array / torch tensor of new K/V tokens.
 
         Returns:
-            The sequence length after the append.
+            Contiguous float32 array shaped like the pool's per-token layout.
+
+        Raises:
+            ValueError: On a wrong rank or a head layout mismatching the pool.
         """
         tokens = new_kv
         if _TORCH_AVAILABLE and isinstance(tokens, torch.Tensor):
@@ -770,6 +819,21 @@ class PagedKVCacheManager:
                 f"new_kv head layout {tokens.shape[1:]} does not match the pool "
                 f"({self.num_heads}, {self.head_dim})"
             )
+        return tokens
+
+    def append(self, seq_id: object, new_kv) -> int:
+        """
+        Append new K/V tokens to a sequence.
+
+        Args:
+            seq_id: Sequence identifier (auto-registered on first use).
+            new_kv: ``(num_new_tokens, num_heads, head_dim)`` float32 array or
+                torch tensor.
+
+        Returns:
+            The sequence length after the append.
+        """
+        tokens = self._prepare_tokens(new_kv)
         if tokens.shape[0] == 0:
             slot = self._require_slot(seq_id)
             return int(self._seq_lens[slot])
@@ -781,6 +845,58 @@ class PagedKVCacheManager:
             self._append_cuda(slot, tokens, start)
         else:
             self._append_numpy(slot, tokens, start)
+            self._seq_lens[slot] = start + tokens.shape[0]
+        return int(self._seq_lens[slot])
+
+    def append_scaled(
+        self,
+        seq_id: object,
+        new_kv,
+        scale: float = 1.0,
+        clamp_limit: Optional[float] = None,
+    ) -> int:
+        """
+        Append K/V tokens after an in-flight ``scale`` (+ optional truncation).
+
+        Semantically ``append(seq_id, new_kv * scale)``, i.e.::
+
+            out = clamp(new_kv * scale, -clamp_limit, +clamp_limit)
+
+        On the CUDA backend the transform happens inside the append kernel
+        (``fused_paged_kv_cache_scale_append_kernel`` in ``vram_hacker.cu``): the
+        new tokens are read from global memory exactly once and the scaled values
+        are written straight into their physical blocks, so the extra
+        read-modify-write pass of a naive "scale then append" pipeline disappears.
+        Without the compiled extension (or on CPU) the identical arithmetic is
+        performed by a vectorised NumPy path, so both backends stay semantically
+        equivalent.
+
+        Args:
+            seq_id: Sequence identifier (auto-registered on first use).
+            new_kv: ``(num_new_tokens, num_heads, head_dim)`` float32 array or
+                torch tensor.
+            scale: Multiplicative factor applied to every element (e.g. an
+                attention temperature or a RoPE rescaling factor).
+            clamp_limit: Optional symmetric magnitude bound (dynamic truncation);
+                ``None`` or ``<= 0`` disables it.
+
+        Returns:
+            The sequence length after the append.
+        """
+        scale = float(scale)
+        limit: Optional[float] = None if clamp_limit is None else float(clamp_limit)
+        tokens = self._prepare_tokens(new_kv)
+        if tokens.shape[0] == 0:
+            slot = self._require_slot(seq_id)
+            return int(self._seq_lens[slot])
+
+        start = self._ensure_capacity(seq_id, tokens.shape[0])
+        slot = self._seq_slots[seq_id]
+
+        if self.backend == "cuda" and self._fused_kernel:
+            self._append_scaled_cuda(slot, tokens, start, scale, limit)
+        else:
+            self._append_scaled_numpy(slot, tokens, start, scale, limit)
             self._seq_lens[slot] = start + tokens.shape[0]
         return int(self._seq_lens[slot])
 

@@ -1,9 +1,14 @@
 # 忽略编译产生的文件
 build/
+dist/
 *.egg-info/
 *.pyd
 *.obj
 *.o
+*.whl
+
+# 忽略测试缓存
+.pytest_cache/
 
 # 忽略 Python 缓存
 __pycache__/
@@ -25,3 +30,6 @@ __pycache__/
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# 任务执行报告 (由 .clinerules 常驻输出规范自动生成，每次覆盖写入)
+result.txt

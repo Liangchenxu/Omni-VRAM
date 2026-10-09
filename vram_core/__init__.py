@@ -29,7 +29,7 @@ Modules:
     - meeting_summarizer: AI-powered meeting summarization with topic/decision/action extraction
 """
 
-__version__ = "2.6.0"
+__version__ = "2.6.1"
 
 # CUDA extension (built from vram_hacker.cu)
 try:
@@ -42,6 +42,10 @@ try:
     query_memory = _backend.query_memory
     # Paged KV-Cache primitive (v2.6.0 extension build)
     paged_kv_cache_append = getattr(_backend, "paged_kv_cache_append", None)
+    # Fused scale + paged append kernel (v2.6.1 extension build)
+    fused_paged_kv_cache_scale_append = getattr(
+        _backend, "fused_paged_kv_cache_scale_append", None
+    )
 except (ImportError, AttributeError):
     CUDA_AVAILABLE = False
 
@@ -65,7 +69,7 @@ from vram_core.emotion_recognition import EmotionRecognizer
 from vram_core.speaker_diarization import (
     SpeakerDiarizer, BaseVoiceprintExtractor, MFCCExtractor,
     ONNXEmbeddingExtractor, AdaptiveCosineClusterer,
-    create_voiceprint_extractor,
+    create_voiceprint_extractor, VOICEPRINT_BACKENDS,
 )
 from vram_core.multi_gpu import MultiGPUManager
 from vram_core.vram_optimizer import (
@@ -144,6 +148,7 @@ __all__ = [
     "ONNXEmbeddingExtractor",
     "AdaptiveCosineClusterer",
     "create_voiceprint_extractor",
+    "VOICEPRINT_BACKENDS",
     # Multi-GPU
     "MultiGPUManager",
     # VRAM Optimization

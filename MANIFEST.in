@@ -1,0 +1,45 @@
+# Manifest for the Omni-VRAM source distribution.
+# ================================================
+# Development-time artefacts (task reports, workflow rules, logs, scratch
+# scripts) must never leak into the published sdist.
+
+# ---- Files that have to be inside the sdist ----
+include README.md
+include LICENSE
+include CHANGELOG.md
+include requirements.txt
+include pyproject.toml
+include setup.py
+include vram_hacker.cu
+
+# ---- Packages and tests ----
+recursive-include vram_core *.py
+recursive-include vram_core/chinese *.py
+recursive-include vram_core/whisper *.py
+recursive-include vram_core/backends *.py
+recursive-include tests *.py
+
+# ---- Never ship development period files ----
+exclude result.txt
+exclude .clinerules
+exclude test_final.txt
+exclude test_output.txt
+exclude verify_final.txt
+exclude test_run.py
+exclude _*.py
+global-exclude *.log
+global-exclude *.tmp
+global-exclude *.bak
+global-exclude *.py[cod]
+global-exclude __pycache__
+global-exclude .DS_Store
+global-exclude Thumbs.db
+
+# ---- Build / cache trees ----
+prune .pytest_cache
+prune .vscode
+prune .idea
+prune build
+prune dist
+prune *.egg-info
+prune .git

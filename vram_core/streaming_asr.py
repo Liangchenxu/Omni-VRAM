@@ -69,6 +69,9 @@ class StreamASRConfig:
             overlap (ASR often punctuates the same words differently).
         use_lcs_alignment: Enable the LCS fallback that absorbs single character
             recognition jitter (e.g. homophone substitutions).
+        word_aware_alignment: Snap overlap cuts onto word / punctuation boundaries
+            (ChineseTokenizer based) so a multi-character word is never split
+            across two sliding windows (v2.6.1).
         enable_hallucination_filter: Enable Whisper hallucination suppression.
         min_speech_energy: Window RMS below this value is treated as silence and
             never sent to Whisper (silence is the main hallucination source).
@@ -96,6 +99,7 @@ class StreamASRConfig:
     max_overlap_chars: int = 40
     normalize_punctuation: bool = True
     use_lcs_alignment: bool = True
+    word_aware_alignment: bool = True
 
     # ---- Hallucination suppression ----
     enable_hallucination_filter: bool = True
@@ -136,6 +140,145 @@ class StreamASRResult:
 # Token pattern: latin words / numbers, whitespace runs, and single characters
 # (CJK ideographs and punctuation are tokenised one character at a time).
 _TOKEN_RE = re.compile(r"[A-Za-z0-9']+|\s+|[^\sA-Za-z0-9]")
+
+
+# ---------------------------------------------------------------------------
+# Word-boundary aware cut snapping (v2.6.1)
+# ---------------------------------------------------------------------------
+
+# CJK ideographs: used to detect multi-character Chinese words.
+_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+
+# Characters that are always safe cut points (never part of a word).
+_PUNCTUATION_RE = re.compile(
+    r"[\s,，。！？!?;；:：、.…—\-－()（）\[\]【】\"'“”‘’《》〈〉]"
+)
+
+# Longest CJK token still trusted as a real word. ``ChineseTokenizer`` segments
+# Chinese into words of a few characters; when jieba is not installed it falls
+# back to "one token per CJK run", which is not a word at all -- such over-long
+# tokens are therefore ignored as boundary anchors.
+_MAX_TRUSTED_CJK_WORD = 6
+
+# Default search radius (characters) when nudging a cut onto a boundary.
+WORD_SNAP_MAX_SHIFT = 8
+
+# Shared ChineseTokenizer instance (built lazily, never a hard dependency).
+_TOKENIZER: Any = None
+_TOKENIZER_LOCK = threading.Lock()
+
+
+def get_alignment_tokenizer() -> Optional[Any]:
+    """
+    Return the shared :class:`ChineseTokenizer` (``None`` when unusable).
+
+    The import is deferred so ``streaming_asr`` stays importable without the
+    Chinese post-processing subpackage, and a single tokenizer instance is
+    reused because loading jieba dictionaries is expensive.
+    """
+    global _TOKENIZER
+    if _TOKENIZER is None:
+        with _TOKENIZER_LOCK:
+            if _TOKENIZER is None:
+                try:
+                    from vram_core.chinese.tokenizer import ChineseTokenizer
+
+                    _TOKENIZER = ChineseTokenizer()
+                except Exception as error:  # noqa: BLE001 - optional dependency
+                    logger.warning(
+                        "ChineseTokenizer unavailable (%s); word-aware alignment disabled",
+                        error,
+                    )
+                    _TOKENIZER = False
+    return _TOKENIZER or None
+
+
+def word_spans(text: str, tokenizer: Optional[Any] = None) -> List[Tuple[int, int]]:
+    """
+    Character spans ``(start, end)`` of the multi-character words in ``text``.
+
+    Args:
+        text: Text to segment.
+        tokenizer: Optional :class:`ChineseTokenizer`-compatible object. When
+            omitted the shared instance is used.
+
+    Returns:
+        List of spans, ordered by position. Single characters, punctuation and
+        untrustworthy (over-long) CJK tokens are excluded, so an empty list means
+        "no word boundary information available".
+    """
+    tokenizer = tokenizer or get_alignment_tokenizer()
+    if tokenizer is None or not text:
+        return []
+    try:
+        tokens = tokenizer.tokenize(text)
+    except Exception as error:  # noqa: BLE001 - never break alignment
+        logger.debug("Word segmentation failed (%s); skipping boundary snap", error)
+        return []
+
+    spans: List[Tuple[int, int]] = []
+    for token in tokens:
+        word = getattr(token, "word", "") or ""
+        start = getattr(token, "start", None)
+        end = getattr(token, "end", None)
+        if start is None or end is None:
+            continue
+        start, end = int(start), int(end)
+        if end <= start or len(word) < 2:
+            continue  # a single character can never be "cut in half"
+        if _CJK_RE.search(word) and len(word) > _MAX_TRUSTED_CJK_WORD:
+            continue  # unsegmented CJK run (no jieba): not a word
+        spans.append((start, end))
+    return spans
+
+
+def snap_to_word_boundary(
+    text: str,
+    index: int,
+    tokenizer: Optional[Any] = None,
+    max_shift: int = WORD_SNAP_MAX_SHIFT,
+) -> int:
+    """
+    Nudge a character cut onto a word (or punctuation) boundary.
+
+    ``align_overlap_text()`` cuts ``new[:index]`` away when merging two windows.
+    Doing that in the middle of a multi-character word produces broken or
+    duplicated characters ("断字重字"), so the cut is moved to the closest
+    boundary reported by :class:`ChineseTokenizer` -- falling back to a
+    punctuation/space edge inside the same search radius.
+
+    Args:
+        text: Text being cut (the new window transcript).
+        index: Candidate cut offset in characters.
+        tokenizer: Optional tokenizer override (see :func:`word_spans`).
+        max_shift: Maximum adjustment distance in characters.
+
+    Returns:
+        The adjusted cut offset; ``index`` unchanged when the position is already
+        safe or no trustworthy boundary is close enough.
+    """
+    if index <= 0 or index >= len(text) or max_shift <= 0:
+        return index
+
+    spans = word_spans(text, tokenizer)
+    if not any(start < index < end for start, end in spans):
+        return index  # not inside a word: already a safe cut
+
+    candidates = set()
+    for start, end in spans:
+        for boundary in (start, end):
+            if 0 < boundary < len(text) and abs(boundary - index) <= max_shift:
+                candidates.add(boundary)
+    for match in _PUNCTUATION_RE.finditer(text):
+        for boundary in (match.start(), match.end()):
+            if 0 < boundary < len(text) and abs(boundary - index) <= max_shift:
+                candidates.add(boundary)
+    if not candidates:
+        return index
+
+    # Closest boundary wins; ties prefer the earlier offset so the new window
+    # keeps the whole word instead of dropping unmatched content.
+    return min(candidates, key=lambda b: (abs(b - index), 0 if b <= index else 1))
 
 
 def tokenize_text(text: str) -> List[str]:
@@ -258,6 +401,8 @@ def align_overlap_text(
     max_overlap_chars: int = 40,
     normalize_punctuation: bool = True,
     use_lcs: bool = True,
+    word_aware: bool = True,
+    tokenizer: Optional[Any] = None,
 ) -> str:
     """
     Merge two consecutive transcripts, removing the boundary duplication.
@@ -273,6 +418,13 @@ def align_overlap_text(
         max_overlap_chars: Upper bound for the overlap length in characters.
         normalize_punctuation: Ignore punctuation/space drift inside the overlap.
         use_lcs: Enable the LCS fallback for jitter inside the overlap.
+        word_aware: Snap the cut detected by the *approximate* (punctuation drift
+            / LCS jitter) paths onto a word / punctuation boundary so a
+            multi-character word is never split across the two windows (v2.6.1).
+            The exact character-overlap path is never adjusted because its
+            concatenation already reassembles words perfectly.
+        tokenizer: Optional :class:`ChineseTokenizer`-compatible segmenter used by
+            the word-boundary snap.
 
     Returns:
         The merged transcript. Content is never dropped: when no overlap can be
@@ -291,10 +443,24 @@ def align_overlap_text(
         # Regression (partial re-recognition): keep the longer transcript.
         return prev
 
+    def merged_from(cut: int, snap: bool = True) -> str:
+        """
+        ``prev`` plus the tail of ``cur`` starting at ``cut``.
+
+        ``snap`` is enabled for the *approximate* overlap paths (punctuation
+        drift and LCS jitter), where a cut inside a multi-character word really
+        can break or duplicate characters. The exact character-overlap path never
+        snaps: there both sides match character by character, so a cut in the
+        middle of a word is reassembled perfectly by the concatenation.
+        """
+        if snap and word_aware:
+            cut = snap_to_word_boundary(cur, cut, tokenizer)
+        return prev + cur[cut:]
+
     # 1) Exact suffix/prefix overlap -- the common case
     k_exact = find_exact_overlap(prev, cur, max_overlap_chars)
     if k_exact > 0:
-        return prev + cur[k_exact:]
+        return merged_from(k_exact, snap=False)
 
     # 2) Punctuation / whitespace tolerant overlap
     if normalize_punctuation:
@@ -312,13 +478,13 @@ def align_overlap_text(
                 return cur
             k_norm = find_exact_overlap(prev_norm, cur_norm, max_overlap_chars)
             if 0 < k_norm < len(cur_map):
-                return prev + cur[cur_map[k_norm]:]
+                return merged_from(cur_map[k_norm])
 
     # 3) LCS fallback (single-character recognition jitter)
     if use_lcs:
         k_lcs, _ = find_lcs_overlap(prev, cur, max_overlap_chars)
         if k_lcs > 0:
-            return prev + cur[k_lcs:]
+            return merged_from(k_lcs)
 
     # 4) No overlap detected: plain concatenation (never drop content)
     return prev + cur
@@ -340,6 +506,10 @@ class OverlapAligner:
         max_overlap_chars: Upper bound for the removable overlap (characters).
         normalize_punctuation: Ignore punctuation/space drift in the overlap.
         use_lcs: Enable the LCS jitter-tolerant fallback.
+        word_aware: Snap every detected cut onto a word / punctuation boundary so
+            multi-character words are never split between two windows (v2.6.1).
+        tokenizer: Optional :class:`ChineseTokenizer`-compatible segmenter used by
+            the word-boundary snap (a shared instance is built on demand).
     """
 
     def __init__(
@@ -347,10 +517,14 @@ class OverlapAligner:
         max_overlap_chars: int = 40,
         normalize_punctuation: bool = True,
         use_lcs: bool = True,
+        word_aware: bool = True,
+        tokenizer: Optional[Any] = None,
     ) -> None:
         self.max_overlap_chars = int(max_overlap_chars)
         self.normalize_punctuation = bool(normalize_punctuation)
         self.use_lcs = bool(use_lcs)
+        self.word_aware = bool(word_aware)
+        self.tokenizer = tokenizer
         self._text = ""
 
     @property
@@ -382,6 +556,8 @@ class OverlapAligner:
             self.max_overlap_chars,
             normalize_punctuation=self.normalize_punctuation,
             use_lcs=self.use_lcs,
+            word_aware=self.word_aware,
+            tokenizer=self.tokenizer,
         )
         return self._text
 
@@ -725,6 +901,7 @@ class StreamASR:
             max_overlap_chars=self.config.max_overlap_chars,
             normalize_punctuation=self.config.normalize_punctuation,
             use_lcs=self.config.use_lcs_alignment,
+            word_aware=self.config.word_aware_alignment,
         )
         self._partial_text = ""
 
@@ -1043,7 +1220,10 @@ class StreamASR:
         # head of the utterance when the ring buffer has slid forward.
         if self.config.enable_overlap_alignment and self._partial_text:
             final_text = align_overlap_text(
-                self._partial_text, final_text, self.config.max_overlap_chars
+                self._partial_text,
+                final_text,
+                self.config.max_overlap_chars,
+                word_aware=self.config.word_aware_alignment,
             )
 
         asr_result = StreamASRResult(

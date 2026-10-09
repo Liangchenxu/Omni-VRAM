@@ -5,6 +5,79 @@ All notable changes to **Omni-VRAM** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.1] - 2026-10-09
+
+### Highlights
+- **Acoustic self-interruption immunity**: the barge-in detector now vetoes its
+  own speaker output through time-domain normalised cross-correlation (NCC)
+  instead of relying on energy gating and a decaying threshold alone
+- **Word-aligned streaming ASR**: overlap cuts are nudged onto word / punctuation
+  boundaries, so a multi-character word is never broken or duplicated at the
+  sliding-window joint
+- **Fused KV-Cache write path**: `append_scaled()` performs the scale (and the
+  optional truncation) inside the paged append kernel, removing one full
+  global-memory round-trip
+- **Industrial packaging**: the CUDA extension is fully optional at build time --
+  no `nvcc`, no host compiler or no GPU degrades to a pure-Python wheel
+
+### Added
+- **Full-duplex acoustic echo veto** (`vram_core/stream_processor.py`)
+  - `StreamProcessor.register_playback_chunk(chunk)` -- the TTS output thread
+    records every emitted PCM chunk in a ~2 s playback reference ring buffer
+    (`playback_reference_duration_s`)
+  - `_echo_ncc_peak()` -- vectorised normalised cross-correlation over the
+    `0 .. echo_ncc_max_lag_ms` propagation-delay range (cumulative-sum energy
+    normalisation, no per-lag Python loop)
+  - Echo veto: a candidate barge-in whose NCC peak reaches `echo_ncc_threshold`
+    (default `0.55`) is rejected, its consecutive-frame run is reset and
+    `stats()["echo_vetoes"]` is incremented -- only uncorrelated user speech
+    reaches `on_interrupt`
+  - `clear_playback_reference()` plus reference invalidation on playback start,
+    interrupt, `flush()` and `reset()`
+- **Word-boundary aware alignment** (`vram_core/streaming_asr.py`)
+  - `word_spans()` / `snap_to_word_boundary()` built on `ChineseTokenizer`
+    (jieba optional: unsegmented CJK runs are ignored, latin words still work)
+  - `align_overlap_text(..., word_aware=True)` and
+    `OverlapAligner(word_aware=..., tokenizer=...)`; the exact character-overlap
+    path is deliberately never adjusted
+  - `StreamASRConfig.word_aware_alignment` (default `True`)
+- **Fused paged KV-Cache scale+append** (`vram_hacker.cu`, `vram_core/vram_optimizer.py`)
+  - `fused_paged_kv_cache_scale_append_kernel` and its host binding performing
+    `out = clamp(in * scale, +/- limit)` in registers while merging into the
+    physical block table
+  - `PagedKVCacheManager.append_scaled(seq_id, new_kv, scale=1.0, clamp_limit=None)`
+    with a vectorised NumPy twin (`_append_scaled_numpy`) plus
+    `has_fused_kernel` / `stats()["fused_scale_append"]` diagnostics
+- **Enhanced voiceprint + emotion features**
+  - `MFCCExtractor(use_delta=..., cmvn=..., delta_window=...)`: Δ/ΔΔ expansion with
+    frame-axis mean-variance normalisation; `is_enhanced` and the widened `dim`
+  - `VOICEPRINT_BACKENDS` (`auto` / `onnx` / `mfcc`) and
+    `create_voiceprint_extractor(..., enhanced_mfcc=...)`; the ONNX fallback
+    inherits the same feature track
+  - `SpeakerVerifier(enhanced_mfcc=...)` (opt-in; legacy defaults unchanged)
+  - `AudioFeatures` gains pitch dynamics (`f0_range`), `voiced_ratio`,
+    `spectral_flux`, `spectral_flatness` and an `mfcc_summary` block pooled into
+    `as_vector()`; the rule engine now scores over that joint vector
+  - `Wav2Vec2EmotionEngine` fail-safe DL path: emotion-label normalisation
+    (the superb-er `neu`/`hap`/`ang`/`sad` codes and RAVDESS-style words),
+    rejection of non-emotion classifier heads (e.g. a bare `wav2vec2-base`) and a
+    per-call degradation to the rule engine whenever inference fails (such as a
+    buffer too short for the convolutional front-end)
+- **Fail-safe packaging** (`setup.py`, `MANIFEST.in`)
+  - `_build_cuda_extension()` guards the torch extension API and the extension
+    description; any failure prints
+    `Warning: CUDA build tools not found. Packaging/installing in pure Python mode
+    with runtime vectorized fallback.` and ships an empty `ext_modules`
+  - `MANIFEST.in` excludes development-period artefacts (`result.txt`,
+    `.clinerules`, logs, temporaries, scratch scripts) from the sdist while
+    keeping `vram_hacker.cu` for source builds
+
+### Tests
+- `tests/test_aec_ncc_barge_in.py` -- echo veto, NCC peak behaviour, latency budget
+- `tests/test_word_boundary_alignment.py` -- word spans, boundary snapping, regressions
+- `tests/test_fused_append_scaled.py` -- scale/clamp arithmetic, paging, backend parity
+- `tests/test_voiceprint_enhanced.py` -- enhanced MFCC, backend plumbing, joint emotion features
+
 ## [2.6.0] - 2026-10-08
 
 ### Highlights

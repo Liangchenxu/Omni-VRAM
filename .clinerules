@@ -1,0 +1,41 @@
+# Omni-VRAM 项目常驻规则 (Cline Rules)
+
+## 【常驻输出规范】
+
+**适用范围**：本项目内的每一次任务执行。
+
+**触发时机**：每次任务执行完毕、运行完测试、或完成 git 提交之后。
+
+**强制要求**：
+
+1. **禁止在聊天界面做冗长输出。** 聊天界面只允许回复一句话：
+   > 已完成，详细报告已写入 result.txt
+
+2. 必须将以下三项内容 **覆盖写入 (overwrite)** 到项目根目录 `result.txt`：
+   - ① 本次执行的核心测试结果（通过数 / 失败数 / 耗时 / 退出码）
+   - ② 修改的文件清单与功能摘要
+   - ③ 当前 Git 状态（Commit Hash、分支、是否有待暂存 / 未跟踪文件）
+
+3. `result.txt` 每次 **整体覆盖**，不追加、不保留历史；统一使用 UTF-8 编码。
+
+4. 若本次任务未涉及测试或提交，则在 `result.txt` 对应条目写 `N/A` 并说明原因。
+
+5. 生成的临时文件必须清理，不得留在仓库根目录；测试日志等中间产物写入系统临时目录
+   （如 `$env:TEMP`）。
+
+## 【版本管理】
+
+- 版本号以 `vram_core/__init__.py::__version__`、`pyproject.toml`、`setup.py` 为准，三者必须一致。
+- 历史版本号（CHANGELOG 历史小节、模块中的 "v2.5.0 behaviour" 之类来源注释）不得改写。
+
+## 【测试验收门禁】
+
+- 以下 7 个核心测试文件必须全绿（0 failed）后才允许提交：
+  - `tests/test_stream_processor.py`
+  - `tests/test_streaming_asr_alignment.py`
+  - `tests/test_full_duplex_barge_in.py`
+  - `tests/test_paged_kv_cache.py`
+  - `tests/test_voiceprint_modernization.py`
+  - `tests/test_speaker_diarization.py`
+  - `tests/test_multiband_denoiser.py`
+- 提交前工作区必须干净（`git status --porcelain` 为空）。

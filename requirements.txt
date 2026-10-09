@@ -1,4 +1,4 @@
-# Omni-VRAM v2.6.0 - Dependencies
+# Omni-VRAM v2.6.1 - Dependencies
 # ================================
 #
 # Install core dependencies:
