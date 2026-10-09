@@ -13,6 +13,7 @@ Endpoints:
     WebSocket /stream          - Real-time streaming ASR (16-bit PCM)
     WebSocket /ws/stream       - Real-time streaming ASR (Float32 PCM)
     WebSocket /ws/transcribe   - Enhanced real-time streaming ASR
+    WebSocket /v1/realtime     - OpenAI Realtime API compatible speech-to-speech
     GET  /health               - Health check
 
 Usage:
@@ -61,12 +62,43 @@ except ImportError as _error:  # pragma: no cover - optional dependency chain
 # ─── Constants ──────────────────────────────────────────────────────────────
 MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024  # 100 MB
 SUPPORTED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".webm", ".aac", ".wma"}
+# OpenAI Realtime voice names -> local (edge-tts) voice ids. A client speaking
+# the OpenAI catalogue selects a voice by name; anything that already looks like
+# an edge-tts voice id (or is unknown) is passed through untouched.
+REALTIME_VOICE_ALIASES = {
+    "alloy": "en-US-AriaNeural",
+    "echo": "en-US-GuyNeural",
+    "fable": "en-GB-RyanNeural",
+    "onyx": "en-US-EricNeural",
+    "nova": "en-US-JennyNeural",
+    "shimmer": "en-US-MichelleNeural",
+    "verse": "en-US-DavisNeural",
+}
+
 VALID_LANGUAGE_CODES = {
     "zh", "en", "ja", "ko", "fr", "de", "es", "ru", "pt", "it",
     "ar", "hi", "th", "vi", "nl", "pl", "sv", "tr", "uk", "cs",
     "ro", "hu", "el", "he", "id", "ms", "tl", "fi", "da", "nb",
     "auto", None,
 }
+
+
+# ─── Rate Limiter ───────────────────────────────────────────────────────────
+
+def _resolve_realtime_voice(name: Optional[str]) -> Optional[str]:
+    """
+    Translate an OpenAI Realtime voice name to the local TTS catalogue.
+
+    Args:
+        name: Voice requested by the client (``None`` picks the backend default).
+
+    Returns:
+        The edge-tts voice id to use, or the original value when it is not an
+        OpenAI alias (an explicit edge-tts id is honoured as-is).
+    """
+    if not name:
+        return None
+    return REALTIME_VOICE_ALIASES.get(str(name).lower(), name)
 
 
 # ─── Rate Limiter ───────────────────────────────────────────────────────────
@@ -340,6 +372,8 @@ def create_app(
     from pydantic import BaseModel
 
     from vram_core.streaming_asr import StreamASR, StreamASRConfig
+    from vram_core.tts_engine import TTSEngine
+    from vram_core.monitoring import LatencyProfiler
     from vram_core.config import config
 
     if WhisperBridge is None:  # pragma: no cover - optional dependency chain
@@ -365,6 +399,9 @@ def create_app(
 
     # Initialize async task queue
     task_queue = AsyncTaskQueue(whisper_bridge=whisper)
+
+    # End-to-end latency profiler shared by every Realtime session.
+    latency_profiler = LatencyProfiler()
 
     app = FastAPI(
         title="vram_core Transcription API",
@@ -1187,6 +1224,110 @@ def create_app(
 
     # ─── GET /health ─────────────────────────────────────────────────────────
 
+    # ─── WebSocket /v1/realtime (OpenAI Realtime API compatible) ─────────────
+
+    @app.websocket("/v1/realtime")
+    async def websocket_realtime(websocket: WebSocket):
+        """
+        OpenAI Realtime API-compatible speech-to-speech gateway.
+
+        The wire protocol follows ``wss://api.openai.com/v1/realtime``: the
+        client sends JSON events (``session.update``,
+        ``input_audio_buffer.append``, ``input_audio_buffer.commit``,
+        ``input_audio_buffer.clear``, ``response.cancel``) plus raw PCM16 binary
+        frames, and receives ``session.created``,
+        ``input_audio_buffer.speech_started|stopped``, ``response.created``,
+        ``response.audio_transcript.delta|done``, ``response.audio.delta`` and
+        ``response.done`` events.
+
+        Optional query parameters: ``voice`` (OpenAI name or an edge-tts id),
+        ``language``, ``input_audio_sample_rate``, ``output_audio_sample_rate``
+        and ``processing_sample_rate``.
+
+        Note:
+            The API-key middleware is HTTP-only, so expose this route behind a
+            reverse proxy whenever it is reachable from an untrusted network.
+        """
+        await websocket.accept()
+
+        from vram_core.realtime_server import RealtimeSession, RealtimeSessionConfig
+
+        config = RealtimeSessionConfig()
+        params = websocket.query_params
+        if params.get("voice"):
+            config.voice = params["voice"]
+        if params.get("language"):
+            config.language = params["language"]
+        for name, attr in (
+            ("input_audio_sample_rate", "input_sample_rate"),
+            ("output_audio_sample_rate", "output_sample_rate"),
+            ("processing_sample_rate", "processing_sample_rate"),
+        ):
+            raw = params.get(name)
+            if not raw:
+                continue
+            try:
+                setattr(config, attr, int(raw))
+            except ValueError:
+                logger.warning("Ignoring invalid %s=%r", name, raw)
+
+        tts_engine = None
+        try:
+            tts_engine = TTSEngine(voice=_resolve_realtime_voice(config.voice))
+        except Exception as error:  # pragma: no cover - optional TTS backends
+            logger.warning("Realtime TTS unavailable: %s", error)
+
+        events_sent = 0
+
+        async def send(event: dict):
+            nonlocal events_sent
+            await websocket.send_text(json.dumps(event, ensure_ascii=False))
+            events_sent += 1
+
+        session = RealtimeSession(
+            send=send,
+            config=config,
+            whisper_bridge=whisper,
+            tts_engine=tts_engine,
+            profiler=latency_profiler,
+        )
+        logger.info(
+            "WebSocket /v1/realtime client connected (session=%s, voice=%s)",
+            session.session_id, config.voice,
+        )
+
+        try:
+            await session.start()
+
+            while True:
+                message = await websocket.receive()
+
+                if message.get("type") == "websocket.disconnect":
+                    break
+                if message.get("bytes"):
+                    await session.handle_message(message["bytes"])
+                elif message.get("text") is not None:
+                    await session.handle_message(message["text"])
+
+        except WebSocketDisconnect:
+            logger.info("WebSocket /v1/realtime client disconnected")
+        except Exception as error:
+            logger.error("WebSocket /v1/realtime error: %s", error, exc_info=True)
+            try:
+                await websocket.send_text(json.dumps({
+                    "type": "error",
+                    "error": {"type": "server_error", "message": str(error)},
+                }))
+            except Exception:
+                pass
+        finally:
+            await session.close()
+            logger.info(
+                "WebSocket /v1/realtime session ended (%d events sent)", events_sent
+            )
+
+    # ─── GET /health ─────────────────────────────────────────────────────────
+
     @app.get("/health", response_model=HealthResponse)
     async def health_check():
         """
@@ -1230,6 +1371,7 @@ def create_app(
                 "WebSocket /stream": "Real-time streaming (16-bit PCM)",
                 "WebSocket /ws/stream": "Real-time streaming (Float32 PCM)",
                 "WebSocket /ws/transcribe": "Enhanced real-time streaming",
+                "WebSocket /v1/realtime": "OpenAI Realtime API compatible gateway",
                 "GET /health": "Health check",
             },
         }

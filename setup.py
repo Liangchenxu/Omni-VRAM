@@ -155,7 +155,7 @@ with open('README.md', encoding='utf-8') as _f:
 # Package Setup
 setup(
     name='vram_core',
-    version='2.7.0',
+    version='2.7.1',
     description='vram_core - LLM Voice Interaction Framework',
     long_description=_long_description,
     long_description_content_type='text/markdown',

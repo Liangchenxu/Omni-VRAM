@@ -5,6 +5,53 @@ All notable changes to **Omni-VRAM** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.1] - 2026-10-09
+
+### Highlights
+- **OpenAI Realtime API gateway**: Omni-VRAM now speaks the OpenAI Realtime wire
+  protocol over a WebSocket (`/v1/realtime`), chaining the existing
+  `StreamProcessor` (server VAD + barge-in), ASR and `TTSEngine` into a single
+  speech-to-speech turn — an existing OpenAI Realtime client can point at an
+  Omni-VRAM server without a protocol shim
+
+### Added
+- **`vram_core/realtime_server.py`** — transport-agnostic Realtime session
+  - `RealtimeSession` / `RealtimeSessionConfig`: one conversation per client,
+    with the `session.created` handshake, `session.update` (flat *and* nested),
+    `input_audio_buffer.append` / `commit` / `clear` and `response.cancel`
+  - Server events: `input_audio_buffer.speech_started|stopped`,
+    `response.created`, `response.audio_transcript.delta|done`,
+    `response.audio.delta` (base64 PCM16 @ 24 kHz) and `response.done`, plus
+    Realtime-shaped `error` events
+  - Two input modes: server endpointing (`server_vad`) driven by
+    `StreamProcessor`, and a push-to-talk path via `input_audio_buffer.commit`
+    that bypasses the VAD
+  - Instant barge-in: an interruption cancels the in-flight response, flushes the
+    outbound queue, clears the duplex playback state and emits
+    `response.cancelled` followed by `response.done` (`status="cancelled"`);
+    every emitted TTS chunk is registered as the playback reference, so the
+    v2.6.1 NCC echo veto can never mistake the speaker for the user
+  - Protocol helpers `pcm16_to_float32`, `float32_to_pcm16`, `pcm16_to_base64`,
+    `base64_to_pcm16` and `resample_pcm16` (delegating to
+    `AudioProcessor.resample`), plus the `REALTIME_MODEL`,
+    `SUPPORTED_TURN_DETECTION` and `WIRE_AUDIO_FORMAT` constants
+  - Latency profiling hooks (`LatencyProfiler`: `vad_cutoff`,
+    `asr_transcribed`, `tts_first_chunk`) and a bounded event history for
+    introspection
+- **`WebSocket /v1/realtime`** (`vram_core/api_server.py`) — thin adapter wiring
+  the route to the injected `WhisperBridge`, a per-connection `TTSEngine` and the
+  shared `LatencyProfiler`; OpenAI voice names (`alloy`, `echo`, `fable`,
+  `onyx`, `nova`, `shimmer`, `verse`) are aliased onto the edge-tts catalogue
+  (`REALTIME_VOICE_ALIASES`) and `voice`, `language`,
+  `input_audio_sample_rate`, `output_audio_sample_rate` and
+  `processing_sample_rate` are accepted as query parameters
+- **Tests**: `tests/test_realtime_protocol.py`
+
+### Changed
+- `vram_core/__init__.py` now exports `RealtimeSession`,
+  `RealtimeSessionConfig`, `REALTIME_MODEL`, `SUPPORTED_TURN_DETECTION` and
+  `WIRE_AUDIO_FORMAT`
+
 ## [2.7.0] - 2026-10-09
 
 ### Highlights

@@ -27,9 +27,10 @@ Modules:
     - wake_word: Wake word / keyword detection (energy-based / Whisper-based)
     - chinese: Chinese text processing (punctuation, normalization, tokenization, domain dicts)
     - meeting_summarizer: AI-powered meeting summarization with topic/decision/action extraction
+    - realtime_server: OpenAI Realtime API compatible WebSocket speech-to-speech gateway
 """
 
-__version__ = "2.7.0"
+__version__ = "2.7.1"
 
 # CUDA extension (built from vram_hacker.cu)
 try:
@@ -100,6 +101,10 @@ from vram_core.speaker_verification import SpeakerVerifier, Voiceprint, Verifica
 from vram_core.distributed_transcriber import DistributedTranscriber, DistributedResult
 from vram_core.monitoring import (
     MetricsCollector, SystemHealth, LatencyProfiler, LatencyTrace, PIPELINE_STAGES,
+)
+from vram_core.realtime_server import (
+    RealtimeSession, RealtimeSessionConfig, REALTIME_MODEL,
+    SUPPORTED_TURN_DETECTION, WIRE_AUDIO_FORMAT,
 )
 from vram_core.wake_word import WakeWordDetector, WakeWordEvent
 
@@ -185,6 +190,12 @@ __all__ = [
     "LatencyProfiler",
     "LatencyTrace",
     "PIPELINE_STAGES",
+    # OpenAI Realtime API gateway (v2.7.1)
+    "RealtimeSession",
+    "RealtimeSessionConfig",
+    "REALTIME_MODEL",
+    "SUPPORTED_TURN_DETECTION",
+    "WIRE_AUDIO_FORMAT",
     # Wake Word Detection
     "WakeWordDetector",
     "WakeWordEvent",

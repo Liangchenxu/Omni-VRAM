@@ -7,7 +7,7 @@
 ![Python: 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue.svg)
 [![Tests](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml/badge.svg)](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml)
 [![PyPI](https://img.shields.io/pypi/v/omni-vram.svg)](https://pypi.org/project/omni-vram/)
-[![Version](https://img.shields.io/badge/Version-2.7.0-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
+[![Version](https://img.shields.io/badge/Version-2.7.1-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
 
 [**English**](#english-documentation) | [**中文文档**](#chinese-documentation) | [**Docs**](docs/)
 
@@ -18,6 +18,8 @@
 
 **Omni-VRAM** is a production-ready **LLM voice interaction framework** that lets large language models hear and speak. Built on CUDA zero-copy technology, it provides **28 core modules** covering the entire audio AI pipeline — from speech recognition to synthesis, from single GPU to distributed clusters.
 
+> **v2.7.1**: OpenAI Realtime API compatibility — a drop-in **`/v1/realtime` WebSocket gateway** (`RealtimeSession`) that chains the server-side VAD / barge-in `StreamProcessor`, ASR and `TTSEngine` into one speech-to-speech turn: `session.update`, `input_audio_buffer.append|commit|clear`, `response.cancel`, base64 PCM16 `response.audio.delta` at 24 kHz, instant `response.cancelled` interrupts, OpenAI voice-name aliases (`alloy`/`echo`/`fable`/`onyx`/`nova`/`shimmer`/`verse`) and per-turn latency marks (`vad_cutoff → asr_transcribed → tts_first_chunk`) — point an existing OpenAI Realtime client at an Omni-VRAM server, no shim required.
+>
 > **v2.7.0**: Cluster-grade context reuse & genuinely streaming turns — ref-counted Paged KV-Cache **prefix caching** with copy-on-write (`register_prefix`, `block_ref_counts`, `free_prefix`), a **sentence-level streaming TTS pipeline** (`SentenceStreamBuffer` + `stream_synthesize(llm_token_stream())`) that starts speaking the first sentence before the LLM finishes and never splits a decimal like `3.14`, an **end-to-end microsecond latency profiler** (`LatencyProfiler`: `vad_cutoff → asr_transcribed → llm_first_token → tts_first_chunk`, waterfall + JSON export), and a fully green regression suite — the 10 legacy failures are resolved (LLM `provider` aliases & graceful init, string-transcript meeting analysis + `_detect_priority`, short-chunk mel padding, NumPy/torch STFT parity, pinned-upload CUDA stream ordering and WebSocket mock alignment).
 >
 > **v2.6.1**: Industrial hardening — acoustic-echo (NCC) veto for barge-in so the TTS speaker can no longer interrupt itself, word-boundary aware overlap alignment (`ChineseTokenizer` based), a fused paged KV-Cache scale+append CUDA kernel with a vectorised NumPy twin, enhanced voiceprint (Δ/ΔΔ + CMVN) and emotion (pitch dynamics, spectral flux/flatness, MFCC) features, plus fail-safe PyPI packaging that degrades to pure Python without a CUDA toolchain.
@@ -738,6 +740,8 @@ You are free to use, modify, and distribute this software in both commercial and
 
 **Omni-VRAM** 是一个生产级的 **LLM 语音交互框架**，让大模型长出耳朵和嘴巴。基于 CUDA 零拷贝技术构建，提供 **28 个核心模块**，覆盖完整的语音 AI 管线——从语音识别到语音合成，从单 GPU 到分布式集群。
 
+> **v2.7.1**：兼容 OpenAI Realtime API——提供开箱即用的 **`/v1/realtime` WebSocket 网关**（`RealtimeSession`），把服务端 VAD / 打断检测 `StreamProcessor`、ASR 与 `TTSEngine` 串成完整的一轮语音对话：支持 `session.update`、`input_audio_buffer.append|commit|clear`、`response.cancel`，以 base64 PCM16 / 24 kHz 下发 `response.audio.delta`，被打断时即时 `response.cancelled`，内置 OpenAI 音色名映射（`alloy` / `echo` / `fable` / `onyx` / `nova` / `shimmer` / `verse`）与每轮延迟打点（`vad_cutoff → asr_transcribed → tts_first_chunk`）——现有 OpenAI Realtime 客户端可直接指向 Omni-VRAM 服务端，无需任何协议适配层。
+>
 > **v2.7.0**：面向集群的上下文复用与真正流式的一轮对话——引用计数式 Paged KV-Cache **前缀缓存**（`register_prefix` / `block_ref_counts` / `free_prefix`，写入时复制 CoW）、**句级流式 TTS 管线**（`SentenceStreamBuffer` + `stream_synthesize(llm_token_stream())`：LLM 尚未生成完即开始朗读第一句，且绝不在 `3.14` 这类小数点上切分）、**端到端微秒级延迟剖析器**（`LatencyProfiler`：`vad_cutoff → asr_transcribed → llm_first_token → tts_first_chunk`，瀑布图 + JSON 导出），并将回归测试全部转绿——历史遗留的 10 项失败已修复（LLM `provider` 别名与优雅降级、纯文本会议分析与 `_detect_priority`、短块 Mel 填充、NumPy/torch STFT 数值对齐、锁页上传的 CUDA 流顺序、WebSocket Mock 对齐）。
 >
 > **v2.6.1**：工业级全维度强化——全双工 NCC 声学回音否决（TTS 扬声器不再自激打断）、词边界感知重叠对齐（基于 `ChineseTokenizer`）、融合算子的 Paged KV-Cache 缩放+追加 CUDA 核函数（含纯向量化 NumPy 双轨实现）、增强版声纹（Δ/ΔΔ + CMVN）与情感（音高起伏、谱通量/谱平坦度、MFCC）特征，以及无 CUDA 编译链时的 PyPI 纯 Python 优雅降级打包。
