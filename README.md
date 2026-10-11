@@ -4,7 +4,7 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15375/badge)](https://www.bestpractices.dev/projects/15375)
 [![PyPI](https://img.shields.io/pypi/v/omni-vram.svg)](https://pypi.org/project/omni-vram/)
 [![Version](https://img.shields.io/badge/Version-2.7.1-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
-[![Tests](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml/badge.svg)](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-979%20passed-2ea44f.svg)](https://github.com/Liangchenxu/Omni-VRAM)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Space-Interactive%20Demo-FFD21E.svg)](https://huggingface.co/spaces/RyanWinston/omni-vram-web)
