@@ -1,16 +1,18 @@
 # Omni-VRAM: LLM 语音交互框架
 ### 让大模型长出耳朵和嘴巴
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-![CUDA: 11.0+](https://img.shields.io/badge/CUDA-11.0%2B-green.svg)
-![Platform: Windows/Linux](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg)
-![Python: 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue.svg)
-[![Tests](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml/badge.svg)](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15375/badge)](https://www.bestpractices.dev/projects/15375)
 [![PyPI](https://img.shields.io/pypi/v/omni-vram.svg)](https://pypi.org/project/omni-vram/)
 [![Version](https://img.shields.io/badge/Version-2.7.1-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
+[![Tests](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml/badge.svg)](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-[**English**](#english-documentation) | [**中文文档**](#chinese-documentation) | [**Docs**](docs/)
+[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Space-Interactive%20Demo-FFD21E.svg)](https://huggingface.co/spaces/RyanWinston/omni-vram-web)
+![Python: 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue.svg)
+![CUDA: 11.0+](https://img.shields.io/badge/CUDA-11.0%2B-green.svg)
+![Platform: Windows/Linux](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg)
 
+[**English**](#english-documentation) | [**中文文档**](#chinese-documentation) | [**Docs**](docs/) | [**🚀 在线交互演示 (Hugging Face)**](https://huggingface.co/spaces/RyanWinston/omni-vram-web)
 ---
 
 <a id="english-documentation"></a>
