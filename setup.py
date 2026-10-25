@@ -1,4 +1,4 @@
-﻿"""
+"""
 vram_core Setup Configuration
 ==============================
 
@@ -155,7 +155,7 @@ with open('README.md', encoding='utf-8') as _f:
 # Package Setup
 setup(
     name='vram_core',
-    version='2.7.1',
+    version='2.6.0',
     description='vram_core - LLM Voice Interaction Framework',
     long_description=_long_description,
     long_description_content_type='text/markdown',
@@ -164,7 +164,8 @@ setup(
     license='MIT',
 
     # Python packages
-    packages=['vram_core', 'vram_core.whisper', 'vram_core.chinese', 'vram_core.backends'],
+    packages=['vram_core', 'vram_core.whisper', 'vram_core.chinese', 'vram_core.backends', 'wddm_bypass'],
+    package_dir={'wddm_bypass': 'wddm_bypass'},
     python_requires='>=3.8',
 
     # Dependencies

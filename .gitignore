@@ -6,6 +6,10 @@ dist/
 *.obj
 *.o
 *.whl
+*.exp
+*.lib
+*.ilk
+*.pdb
 
 # 忽略测试缓存
 .pytest_cache/

@@ -5,6 +5,65 @@ All notable changes to **Omni-VRAM** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-10-25
+
+### Highlights
+- **WDDM-Bypass execution subsystem merged in-tree.** The multi-graph CUDA
+  engine that used to live in its own repository is now part of Omni-VRAM, and
+  `vram_core` drives it through a real bridge instead of the two halves being
+  two unrelated folders. On the reference RTX 3060 that engine holds a **17.3x**
+  lower submission cost on a 64-kernel step (380.6 us eager -> 21.9 us graph).
+
+### Added
+- **`wddm_bypass/` at the repository root** — importable as `import wddm_bypass`
+  from a checkout: the `Engine` facade, `ShapeKey` / `BucketPolicy` /
+  `ShapeRouter` bucketing (pure Python) and the `wddm_bypass._wddm_bypass`
+  pybind11 extension built from `WDDM-Bypass/csrc/`
+- **`vram_core/wddm_bridge.py`** — the single seam between VRAM bookkeeping and
+  graph replay
+  - `WddmExecutionBridge.bind_paged_kv_cache()` registers a
+    `PagedKVCacheManager` pool as a WDDM-Bypass **static buffer** (capture-safe,
+    allocation-free replay) and returns a `BoundBuffer`
+  - `shape_key_for_cache()` derives `ShapeKey(num_blocks,
+    num_heads * block_size, head_dim)`, so one captured graph serves every
+    sequence that fits the pool; `key.elements * dtype_size` equals the pool
+    footprint exactly
+  - `bind_tensor()` / `upload()` / `zero()` / `release()` for non-pool
+    allocations; `device_pointer()` refuses host addresses instead of handing
+    them to `cudaMemcpyAsync`
+  - `budget_bytes=` plus an optional `VRAMOptimizer.can_allocate` gate raise
+    `InsufficientVRAMError` before the driver sees an allocation
+  - `stats()` merges engine counters (graphs, replays, shape hits/ misses) with
+    the vram_core view (`kv_pool_bytes`, used/free blocks, geometry)
+  - lazy backend import: `import vram_core` keeps working without the extension
+- **Joint tests** in `tests/test_engine_suite.py`: pool -> static buffer ->
+  routed replay, the budget/pressure gates plus hot update, and the helper
+  surface that measures buffers and resolves device pointers
+- `vram_core.__init__` exports `WddmExecutionBridge`, `BoundBuffer`,
+  `BridgeClosed`, `BridgeUnavailable`, `InsufficientVRAMError` and
+  `wddm_available`
+
+### Changed
+- The engine suite moved from `WDDM-Bypass/tests/test_engine_suite.py` to
+  `tests/test_engine_suite.py`, so one `pytest` run covers both halves; the CUDA
+  sources and their build script stay in `WDDM-Bypass/`
+- `WDDM-Bypass/setup.py` now builds `wddm_bypass._wddm_bypass` into the root
+  package (`package_dir={"wddm_bypass": "../wddm_bypass"}`)
+- root `setup.py` and `pyproject.toml` package metadata include `wddm_bypass`
+  and report `2.6.0`
+- removed the obsolete standalone-repository scaffolding (`WDDM-Bypass/.git`,
+  `WDDM-Bypass/.gitignore`, `WDDM-Bypass/pytest.ini`, the duplicate MIT
+  `WDDM-Bypass/LICENSE`) and the stale `test_run.py` / `run_tests.py` entries in
+  the documented project tree
+
+### Notes
+- The native extension keeps its own ABI version (`wddm_bypass.__version__ ==
+  "1.0.0"`, reported by `build_info()["version"]`); the project version is 2.6.0.
+- Version numbering: the merge release was requested as `2.6.0`, so
+  `vram_core.__version__`, `pyproject.toml` and `setup.py` all report `2.6.0`.
+  The earlier `[2.6.0] - 2026-10-08` section further down is kept verbatim as the
+  historical record and is not rewritten.
+
 ## [2.7.1] - 2026-10-09
 
 ### Highlights

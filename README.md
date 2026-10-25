@@ -72,8 +72,14 @@ Omni-VRAM/
 ├── setup.py                    # Build & install script
 ├── pyproject.toml              # Modern Python project configuration
 ├── requirements.txt            # Python dependencies
-├── test_run.py                 # Quick integration test
-├── run_tests.py                # Unified test runner
+├── wddm_bypass/                # WDDM-Bypass execution layer (v2.6.0)
+│   ├── __init__.py             # Engine facade: capture / replay / static buffers
+│   ├── bucketing.py            # ShapeKey / BucketPolicy / ShapeRouter (pure Python)
+│   └── backend.py              # Native extension loading + exact build hint
+├── WDDM-Bypass/                # Native CUDA-graph sources (v2.6.0)
+│   ├── csrc/                   # graph_engine.cu, bypass_core.cpp, graph_manager.h
+│   ├── setup.py                # Builds wddm_bypass._wddm_bypass into the root package
+│   └── README.md               # Subsystem deep dive: slots, hot update, benchmark
 ├── .env.example                # Configuration template
 ├── Dockerfile                  # GPU Docker image (CUDA + audio libs)
 ├── Dockerfile.cpu              # CPU-only Docker image
@@ -102,6 +108,7 @@ Omni-VRAM/
 │   ├── wake_word.py            # Wake word / keyword detection
 │   ├── multi_gpu.py            # Multi-GPU management & parallelism
 │   ├── vram_optimizer.py       # KV-Cache VRAM optimization & OOM recovery
+│   ├── wddm_bridge.py          # VRAM pools ⇄ CUDA-graph replay bridge (v2.6.0)
 │   ├── tts_engine.py           # Multi-backend text-to-speech
 │   ├── voice_translator.py     # Speech-to-speech translation pipeline
 │   ├── audio_event_detection.py # Audio event detection
@@ -257,6 +264,181 @@ python app.py --debug            # Debug mode
 | base | ~400ms | ~1200ms | ~2200ms |
 
 > Run `python examples/benchmark_suite.py` for automated benchmarks on your hardware.
+
+---
+
+## WDDM-Bypass Execution Subsystem (v2.6.0 New!)
+
+`wddm_bypass` is the **submission side** of Omni-VRAM. On Windows every kernel
+launch is a WDDM submission batch, so a decode step made of dozens of tiny
+kernels spends more time talking to the driver than on the GPU. The subsystem
+captures that step once (`cudaStreamBeginCapture`), instantiates it
+(`cudaGraphInstantiate`), and then replays the whole chain with a single
+`cudaGraphLaunch`. It is in-tree, not a side project: `vram_core` owns the
+memory, `wddm_bypass` owns the submission, and `vram_core.wddm_bridge` is the
+single seam between the two.
+
+```
+            user code
+                |  engine.capture(key) / engine.replay(key)
+                v
+  wddm_bypass.Engine            facade: lifecycle rules, buffer bookkeeping
+    |-- ShapeRouter ----------> BucketPolicy: shape -> bucket (octave / tile / exact)
+    |                              shape -> dense graph id, deterministic on first sight
+    `-- _wddm_bypass (pybind11)
+            |  begin_capture / end_capture / replay / update_graph / reset
+            v
+  WDDMBypassEngine              std::unordered_map<int, GraphSlot>
+    |-- GraphSlot[0]            GraphHandle + GraphExecHandle + shape_key + counters
+    |-- GraphSlot[1]            ... one slot per shape bucket, replayed in place
+    |-- StaticBuffer pool       cudaMalloc once, never inside a capture
+    `-- capture stream          private, non-blocking; RAII for every handle
+```
+
+### Multi-Graph Slots
+
+- **One slot per shape bucket.** A graph is replayable only for the exact
+  addresses and topology it was captured with, so each graph id owns a
+  `GraphSlot`: the `cudaGraph_t`, its `cudaGraphExec_t`, the bucket key, a
+  one-line topology summary and counters (captures, replays, updates, rebuilds).
+- **Deterministic routing.** `ShapeKey(batch, sequence, hidden, dtype)` is
+  rounded by a `BucketPolicy` (`step == 0` → next power of two, `step > 0` →
+  hardware tile, `step == -1` → `BucketPolicy.exact()`) and mapped to a dense,
+  first-seen integer id, so two runs that see the same shapes produce the same
+  ids and comparable logs.
+- **Static buffers only.** Every buffer a replay touches is registered *before*
+  the capture (`engine.register_buffer(name, bytes)`), which removes the most
+  common capture failure: a `cudaMalloc` inside the capture region.
+- **`reset` keeps routing.** Destroying a graph keeps its shape → id mapping, so
+  a re-capture reuses the slot instead of leaking a new id.
+
+### Hot Update (`cudaGraphExecUpdate`)
+
+Re-instantiating an executable graph is the expensive half of a shape change;
+capture is cheap. `end_capture` therefore has two paths:
+
+```
+with engine.capture(key, hot_update=True):   # 1. record into a staging graph
+    ...                                      #    topology may differ from the live one
+
+# 2. end_capture():
+#    a. cudaGraphExecUpdate(live_exec, staging_graph)   -> in-place merge
+#    b. on failure (topology too different, as CUDA reports it):
+#       destroy live_exec, cudaGraphInstantiate(staging_graph)
+```
+
+Both outcomes are counted (`stats()["updates"]`, `stats()["rebuilds"]`), so a
+workload that starts rebuilding on every step is visible instead of silent. On
+the reference box, re-capturing the same two-kernel topology yields `updates:
++1, rebuilds: +0`, while adding a third kernel yields `updates: +0, rebuilds:
++1` — `cudaGraphExecUpdate` cannot add nodes to an executable.
+
+### Benchmark on an RTX 3060
+
+Measured on the reference box: **NVIDIA GeForce RTX 3060 (12 GB), Windows 11,
+CUDA 12.1 runtime (12010), Release build, `with_torch: false`**. Three float32
+buffers, each step a chain of `scale`/`add`/`relu` kernels — 8 kernels for a
+decode step, 32 and 64 to show what happens when a step has more nodes — driven
+from CPython.
+
+Two different things are measured, because they answer different questions:
+**step latency** (issue the step, then `cudaDeviceSynchronize()` — what a serving
+loop experiences) and **submission cost** (issue the step, synchronise only at
+the end so the GPU runs concurrently — the CPU-side cost of talking to the
+driver, which is exactly the part WDDM batching inflates).
+
+| Buffer size | Kernels / step | Step latency: eager | Step latency: graph replay | Gain | Submission: eager | Submission: graph | Gain |
+|---|---|---|---|---|---|---|---|
+| 4,096 (16 KiB) | 8 | 83.3 us | 52.9 us | **1.57x** | 20.8 us | 8.9 us | **2.34x** |
+| 4,096 (16 KiB) | 32 | 151.2 us | 88.7 us | **1.70x** | 182.1 us | 15.1 us | **12.1x** |
+| 4,096 (16 KiB) | 64 | 406.0 us | 131.8 us | **3.08x** | 380.6 us | 21.9 us | **17.3x** |
+| 65,536 (256 KiB) | 8 | 107.4 us | 62.5 us | **1.72x** | 45.0 us | 14.4 us | **3.14x** |
+| 1,048,576 (4 MiB) | 8 | 318.8 us | 288.9 us | **1.10x** | 28.8 us | 9.7 us | **2.98x** |
+
+Median of 400 (8-kernel), 300 (32-kernel) and 200 (64-kernel) iterations after
+warm-up. Reading the table:
+
+- **Small kernels are where graphs pay.** 64 launches cost 381 us to *issue*
+  eagerly versus 22 us for one graph launch — a **17.3x** CPU-side saving — and
+  the caller never sees the queue-depth cliff that turns 2.6 us/launch into
+  5.9 us/launch.
+- **Big kernels are GPU-bound** (1.10x at 4 MiB): the memory system, not WDDM,
+  sets the pace, and a graph can only remove the gaps between submissions.
+- **Graph submission cost is flat** (8.9 → 21.9 us across 8 → 64 nodes) while
+  eager submission scales with the launch count — which is the whole argument
+  for capture.
+
+Capture-path costs on the same box (8-kernel graph over 65,536-element buffers):
+
+| Operation | Median |
+|---|---|
+| Cold capture + `cudaGraphInstantiate` (new graph id) | 78.7 us |
+| `cudaGraphExecUpdate` merge of an identical topology | 70.3 us |
+| `reset` + capture + `cudaGraphInstantiate` (rebuild) | 77.9 us |
+
+100 consecutive hot updates ran without a single rebuild (`updates: +100`,
+`rebuilds: +0`), so the merge path is exercised in practice, not just in tests.
+
+> Absolute numbers move with driver version and clock state; the ratios are the
+> durable part. The harness that produced them is deliberately not in the tree.
+
+### Build the native engine
+
+The Python layer (`wddm_bypass.bucketing`, the `Engine` facade,
+`wddm_bypass.backend`) imports on any machine; only `Engine()` and
+`load_backend()` need the compiled extension. The build script stays next to the
+CUDA sources and writes the `.pyd` into the root package, so a plain
+`import wddm_bypass` finds it from the repository root:
+
+```bash
+# Windows: CUDA 12.1 + MSVC 2022 build tools + the Windows 10/11 SDK
+cd WDDM-Bypass
+python setup.py build_ext --inplace     # -> ../wddm_bypass/_wddm_bypass*.pyd
+cd ..
+python -c "import wddm_bypass as wb; print(wb.build_info())"
+# {'version': '1.0.0', 'with_torch': False, 'cuda_runtime_version': 12010, ...}
+```
+
+`WDDM_BYPASS_WITH_TORCH=1` additionally links c10 so `replay()` follows torch's
+current stream natively. Without a toolkit the pure-Python layer still installs
+and the missing extension surfaces as `wddm_bypass.BackendUnavailable` with the
+exact command — never a silent fallback to eager launches.
+
+### Memory ↔ submission bridge
+
+`vram_core.wddm_bridge` is what makes the two halves one system instead of two
+folders: a vram_core pool becomes a static buffer (a capture may not allocate)
+and its *geometry* becomes the graph key, so one capture serves every sequence
+that fits the pool.
+
+```python
+from vram_core.vram_optimizer import PagedKVCacheManager
+from vram_core.wddm_bridge import WddmExecutionBridge
+
+cache = PagedKVCacheManager(num_blocks=256, block_size=16, num_heads=8, head_dim=64)
+cache.allocate_sequence("session-1")
+
+with WddmExecutionBridge() as bridge:            # one engine, one device
+    bound = bridge.bind_paged_kv_cache(cache)    # static buffer + ShapeKey
+    with bridge.capture(bound.shape_key):        # record the step once
+        launch_paged_append(bridge.engine.buffer_ptr(bound.name), ...)
+    bridge.replay(bound.shape_key)               # N kernels, one submission
+    bridge.synchronize()
+    print(bridge.stats())                        # graphs, replays, kv_used_blocks
+```
+
+`budget_bytes=` and an optional `VRAMOptimizer` gate raise
+`InsufficientVRAMError` *before* the driver ever sees an allocation, and
+`device_pointer()` refuses host addresses instead of handing them to
+`cudaMemcpyAsync`.
+
+### Testing both halves
+
+```bash
+# from the repository root - vram_core, wddm_bypass and the joint cases
+python -m pytest tests/test_engine_suite.py -q     # engine + bridge
+python -m pytest -q                                # whole tree
+```
 
 ---
 
@@ -794,8 +976,14 @@ Omni-VRAM/
 ├── setup.py                    # 编译安装脚本
 ├── pyproject.toml              # 现代 Python 项目配置
 ├── requirements.txt            # Python 依赖清单
-├── test_run.py                 # 快速集成测试
-├── run_tests.py                # 统一测试运行器
+├── wddm_bypass/                # WDDM-Bypass 执行层（v2.6.0）
+│   ├── __init__.py             # Engine 门面：capture / replay / 静态缓冲区
+│   ├── bucketing.py            # ShapeKey / BucketPolicy / ShapeRouter（纯 Python）
+│   └── backend.py              # 原生扩展加载 + 精确编译提示
+├── WDDM-Bypass/                # 原生 CUDA Graph 源码（v2.6.0）
+│   ├── csrc/                   # graph_engine.cu、bypass_core.cpp、graph_manager.h
+│   ├── setup.py                # 将 wddm_bypass._wddm_bypass 编译进根包
+│   └── README.md               # 子系统详解：多槽位、热更新、基准测试
 ├── .env.example                # 配置模板
 ├── Dockerfile                  # GPU Docker 镜像（CUDA + 音频库）
 ├── Dockerfile.cpu              # 纯 CPU Docker 镜像
@@ -824,6 +1012,7 @@ Omni-VRAM/
 │   ├── wake_word.py            # 唤醒词 / 关键词检测
 │   ├── multi_gpu.py            # 多 GPU 管理与并行
 │   ├── vram_optimizer.py       # KV-Cache 显存优化与 OOM 恢复
+│   ├── wddm_bridge.py          # 显存池 ⇄ CUDA Graph 回放桥接（v2.6.0）
 │   ├── tts_engine.py           # 多后端语音合成
 │   ├── voice_translator.py     # 语音到语音翻译管线
 │   ├── audio_event_detection.py # 音频事件检测

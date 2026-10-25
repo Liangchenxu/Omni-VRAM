@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omni-vram"
-version = "2.7.1"
+version = "2.6.0"
 description = "Production-ready audio AI platform — ASR, TTS, Translation, Speaker Verification, Multi-GPU, VRAM Optimization, LLM Meeting Assistant, Edge Deployment"
 readme = "README.md"
 license = {text = "MIT"}
@@ -79,7 +79,7 @@ Issues = "https://github.com/Liangchenxu/Omni-VRAM/issues"
 Changelog = "https://github.com/Liangchenxu/Omni-VRAM/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
-include = ["vram_core*"]
+include = ["vram_core*", "wddm_bypass*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

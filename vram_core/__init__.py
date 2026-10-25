@@ -1,4 +1,4 @@
-﻿"""
+"""
 vram_core Core: Zero-Copy CUDA Audio-to-LLM Bridge
 ====================================================
 
@@ -28,9 +28,10 @@ Modules:
     - chinese: Chinese text processing (punctuation, normalization, tokenization, domain dicts)
     - meeting_summarizer: AI-powered meeting summarization with topic/decision/action extraction
     - realtime_server: OpenAI Realtime API compatible WebSocket speech-to-speech gateway
+    - wddm_bridge: VRAM pool / CUDA-graph execution bridge (WDDM-Bypass, v2.6.0)
 """
 
-__version__ = "2.7.1"
+__version__ = "2.6.0"
 
 # CUDA extension (built from vram_hacker.cu)
 try:
@@ -107,6 +108,13 @@ from vram_core.realtime_server import (
     SUPPORTED_TURN_DETECTION, WIRE_AUDIO_FORMAT,
 )
 from vram_core.wake_word import WakeWordDetector, WakeWordEvent
+
+# WDDM-Bypass execution subsystem (v2.6.0): the bridge is the only seam between
+# VRAM bookkeeping and CUDA-graph replay, and it imports the native engine lazily.
+from vram_core.wddm_bridge import (
+    BoundBuffer, BridgeClosed, BridgeUnavailable, InsufficientVRAMError,
+    WddmExecutionBridge, wddm_available,
+)
 
 # gRPC server (optional, may fail if grpcio not installed)
 try:
@@ -199,6 +207,13 @@ __all__ = [
     # Wake Word Detection
     "WakeWordDetector",
     "WakeWordEvent",
+    # WDDM-Bypass execution subsystem (v2.6.0)
+    "BoundBuffer",
+    "BridgeClosed",
+    "BridgeUnavailable",
+    "InsufficientVRAMError",
+    "WddmExecutionBridge",
+    "wddm_available",
     # Meeting Summarization
     "MeetingSummarizer",
     "MeetingMinutes",
