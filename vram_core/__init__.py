@@ -31,7 +31,7 @@ Modules:
     - wddm_bridge: VRAM pool / CUDA-graph execution bridge (WDDM-Bypass, v2.6.0)
 """
 
-__version__ = "2.6.0"
+__version__ = "2.7.0"
 
 # CUDA extension (built from vram_hacker.cu)
 try:

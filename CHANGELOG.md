@@ -5,6 +5,49 @@ All notable changes to **Omni-VRAM** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0] - 2026-10-25
+
+### Highlights
+- **Transformer 解码层无感接管（POC）**：新增 `wddm_bypass/integration.py`，把一个 decode
+  step 的 N 次 kernel 提交压成 1 次 `cudaGraphLaunch`。`DecodeHook` 负责“预热 → 捕获 → 回放 →
+  降级”四种路径并全部计数，`HookedDecoder` 提供 HuggingFace 形状的
+  `forward(inputs) -> outputs` 挂载点（Llama / Qwen 的 decode step 只需提供 body）。
+- **《Omni-VRAM 底层架构与面试白皮书》**：`docs/architecture_masterclass.md`，
+  从 `with capture_context:` 到 `cudaGraphExecUpdate` 的完整指针流转、四个核心痛点的攻坚过程，
+  以及 15 个资深系统/ CUDA 面试题的逐条硬核解答（全部引用真实 `file:line`）。
+
+### Added
+- `wddm_bypass/integration.py`
+  - `BufferSpec` / `DecodePlan`：固定几何 + 命名静态缓冲 + 输入/输出声明，
+    形状与元素数不一致、重名、未知输入全部在构造期拒绝
+  - `DecodeBuffers`：捕获体唯一入口（`scale` / `add` / `relu` / `copy_in` / `copy_out`），
+    不提供任何分配 API，从结构上杜绝“捕获期 cudaMalloc”
+  - `DecodeHook`：`execute()` 首次调用执行 `warmup` 次 eager（完成一次性分配）→ 捕获
+    （只记录不执行）→ 回放一次产出真实结果；之后每次调用只回放。`max_graphs` 用尽后
+    显式退回 eager 并计入 `stats()["eager_fallbacks"]`
+  - `accelerate_decode(hook)`：装饰器形式（首调用捕获，后续只 replay，body 不再执行）
+  - `HookedDecoder`：`forward({name: tensor/array/pointer}) -> {name: ndarray}`，
+    `install(model)` 可直接替换 `forward`；输入字节数不匹配、bf16 输出无 numpy 对应物时给出明确异常
+  - `torch_stream(engine)` / `tensor_pointer()` / `data_pointer()`：torch 互操作，
+    保证 torch 算子落在捕获流上（落到别的流等于没录）
+  - 缓冲区注册以**引擎实际持有的大小**为准（查 `buffer_bytes`）：同名更大缓冲区才扩容，
+    避免“重复注册 → 旧图指针悬空”
+- `tests/test_transformer_integration.py`：41 个用例
+  - 纯 Python：计划/缓冲/路由/计数器/装饰器/HF 挂载（注入 fake backend，无需 GPU）
+  - GPU：12 层 × 4 launch + 3 次折叠 = **51 kernel/step** 的模拟 decode step，
+    对比 numpy float64 参考实现，并以 3 轮取最优 + 单次 synchronize 的方式断言
+    “图回放提交开销至少低 1.5×”，另测 `cudaGraphExecUpdate` 热更新不触发 rebuild
+- `docs/architecture_masterclass.md`：架构白皮书（数据流、痛点攻坚、面试 15 问、复现附录）
+
+### Changed
+- `vram_core.__version__`、`pyproject.toml`、根 `setup.py` 统一升到 `2.7.0`
+- 原生扩展版本保持 `wddm_bypass.__version__ == "1.0.0"`（ABI 独立，不随项目版本变化）
+
+### Notes
+- v2.7.0 的“加速”只指**提交面**：51 次提交变 1 次。GEMM / attention 的算力、显存带宽
+  不会因为用了 CUDA Graph 而变快；白皮书与测试都按这个边界表述。
+- 历史小节 `[2.7.1] - 2026-10-09` 按规则保持原样不改写。
+
 ## [2.6.0] - 2026-10-25
 
 ### Highlights
