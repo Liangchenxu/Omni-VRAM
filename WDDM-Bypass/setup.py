@@ -471,13 +471,16 @@ else:
 
 setup(
     name="wddm-bypass",
+    # Native extension ABI version, deliberately independent of the Omni-VRAM
+    # release (2.8.0): it must match "1.0.0" compiled into
+    # ``wddm_bypass._wddm_bypass.build_info()`` and ``wddm_bypass.__version__``.
     version="1.0.0",
     description="Pre-instantiated CUDA graph replay engine for Windows",
     long_description=_long_description,
     long_description_content_type="text/markdown",
     license="MIT",
     packages=["wddm_bypass"],
-    # v2.6.0: the Python package lives at the repository root, one level above
+    # v2.8.0: the Python package lives at the repository root, one level above
     # these native sources, so an in-place build drops the .pyd where a plain
     # ``import wddm_bypass`` from the repository root finds it.
     package_dir={"wddm_bypass": os.path.join("..", "wddm_bypass")},

@@ -1,4 +1,4 @@
-"""Tests for the v2.7.0 Transformer decode hook (``wddm_bypass.integration``).
+"""Tests for the v2.8.0 Transformer decode hook (``wddm_bypass.integration``).
 
 The suite has the same two halves as ``test_engine_suite.py``:
 

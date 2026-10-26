@@ -19,6 +19,14 @@ recursive-include vram_core/whisper *.py
 recursive-include vram_core/backends *.py
 recursive-include tests *.py
 
+# ---- WDDM-Bypass execution layer (v2.8.0) ----
+# The Python half ships as a package; the native half ships as sources so an
+# sdist install can still compile ``wddm_bypass._wddm_bypass`` locally.
+recursive-include wddm_bypass *.py
+include WDDM-Bypass/setup.py
+include WDDM-Bypass/README.md
+recursive-include WDDM-Bypass/csrc *.h *.hpp *.cuh *.cu *.cpp
+
 # ---- Never ship development period files ----
 exclude result.txt
 exclude .clinerules

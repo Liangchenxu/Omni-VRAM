@@ -1,7 +1,7 @@
 # Omni-VRAM 底层架构与面试白皮书
 
-> 版本：v2.7.0 ｜ 适用代码：`vram_core/wddm_bridge.py`、`wddm_bypass/`、`WDDM-Bypass/csrc/`
-> 本文所有结论都能回指到仓库里的具体文件行号；行号以 v2.7.0 提交为准。
+> 版本：v2.8.0 ｜ 适用代码：`vram_core/wddm_bridge.py`、`wddm_bypass/`、`WDDM-Bypass/csrc/`
+> 本文所有结论都能回指到仓库里的具体文件行号；行号以 v2.8.0 提交为准。
 > 文档本身不参与构建（纯 Markdown，位于 `docs/`），不影响 `setup.py` / `pyproject.toml` 打包。
 
 ---
@@ -35,7 +35,7 @@ Omni-VRAM/
 ├─ wddm_bypass/
 │  ├─ __init__.py                  # Engine 门面：capture / replay / buffer / stats
 │  ├─ bucketing.py                 # ShapeKey + BucketPolicy + ShapeRouter（纯 Python）
-│  ├─ integration.py               # v2.7.0：解码层无感接管（DecodeHook / HookedDecoder）
+│  ├─ integration.py               # v2.8.0：解码层无感接管（DecodeHook / HookedDecoder）
 │  └─ _wddm_bypass.cp310-win_amd64.pyd
 └─ WDDM-Bypass/
    ├─ csrc/graph_engine.cu         # 引擎实现：捕获、实例化、热更新、静态缓冲
@@ -102,7 +102,7 @@ bound = bridge.bind_tensor("hidden", hidden_tensor)
 
 `register_static_buffer` 内部先 `cudaMalloc` 再替换 map 表项（`graph_engine.cu:694` 起）。
 **结论：缓冲区一旦注册，其地址就是这张图的“身份”之一**；再次注册同名缓冲区会释放旧分配，
-旧图里的节点指针立即悬空。v2.7.0 的 `DecodeHook.register()` 因此先查
+旧图里的节点指针立即悬空。v2.8.0 的 `DecodeHook.register()` 因此先查
 `engine.buffer_bytes(name)`，只在“不存在或更小”时才分配（`wddm_bypass/integration.py`
 的 `_engine_buffer_bytes`），这是踩过坑之后的硬约束。
 
@@ -175,7 +175,7 @@ bridge.replay_for_cache(cache)           # :403 → 查 key → replay
 所以“输入变了”不需要重建图，只要在 replay 前把新数据 memcpy 进同一块静态缓冲。
 这就是 decode 循环（每步 token 都变、几何不变）能吃到收益的根本原因。
 
-### 1.5 v2.7.0 新增：解码层的无感挂载路径
+### 1.5 v2.8.0 新增：解码层的无感挂载路径
 
 ```
 HuggingFace 侧                             Omni-VRAM 侧
@@ -522,7 +522,7 @@ slot.capturing_into_staging = hot_update;
 （`wddm_bridge.py:161-164`）。**“能拿到整数”不等于“这个整数是设备地址”**，
 所以这里选择“明确拒绝”而不是“猜一个方向”。
 
-v2.7.0 的 `data_pointer()` 走的是另一条路：它允许 host 指针，因为引擎统一用
+v2.8.0 的 `data_pointer()` 走的是另一条路：它允许 host 指针，因为引擎统一用
 `cudaMemcpyDefault`（统一寻址下由指针自身决定方向，`graph_engine.cu:786` 的注释），
 但**同一函数绝不用于 kernel 参数**——kernel 只接受 `DecodeBuffers.ptr(name)`。
 
@@ -584,7 +584,7 @@ GPU 用例沿用了同一套方法（3 轮取最优、一次性 synchronize、�
 # 1) 全量引擎 + 桥接测试（GPU 用例需要已构建的扩展）
 python -m pytest tests/test_engine_suite.py -q --tb=short
 
-# 2) v2.7.0 解码层挂载测试（纯 Python 部分不需要 GPU）
+# 2) v2.8.0 解码层挂载测试（纯 Python 部分不需要 GPU）
 python -m pytest tests/test_transformer_integration.py -q --tb=short
 
 # 3) 重建扩展（需要 vcvars64 + softmax 环境）
@@ -592,7 +592,7 @@ cd WDDM-Bypass
 python setup.py build_ext --inplace
 ```
 
-v2.7.0 挂载 API 速查（`wddm_bypass/integration.py`）：
+v2.8.0 挂载 API 速查（`wddm_bypass/integration.py`）：
 
 | 名称 | 作用 |
 |---|---|

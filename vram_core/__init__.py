@@ -28,10 +28,10 @@ Modules:
     - chinese: Chinese text processing (punctuation, normalization, tokenization, domain dicts)
     - meeting_summarizer: AI-powered meeting summarization with topic/decision/action extraction
     - realtime_server: OpenAI Realtime API compatible WebSocket speech-to-speech gateway
-    - wddm_bridge: VRAM pool / CUDA-graph execution bridge (WDDM-Bypass, v2.6.0)
+    - wddm_bridge: VRAM pool / CUDA-graph execution bridge (WDDM-Bypass, v2.8.0)
 """
 
-__version__ = "2.7.0"
+__version__ = "2.8.0"
 
 # CUDA extension (built from vram_hacker.cu)
 try:

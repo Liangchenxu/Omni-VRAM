@@ -155,7 +155,7 @@ with open('README.md', encoding='utf-8') as _f:
 # Package Setup
 setup(
     name='vram_core',
-    version='2.7.0',
+    version='2.8.0',
     description='vram_core - LLM Voice Interaction Framework',
     long_description=_long_description,
     long_description_content_type='text/markdown',
@@ -163,8 +163,11 @@ setup(
     url='https://github.com/Liangchenxu/vram_core',
     license='MIT',
 
-    # Python packages
-    packages=['vram_core', 'vram_core.whisper', 'vram_core.chinese', 'vram_core.backends', 'wddm_bypass'],
+    # Python packages: vram_core and the in-tree WDDM-Bypass execution layer.
+    # Discovered instead of hard-coded so a new subpackage cannot be forgotten
+    # and left out of the wheel; the include patterns are the same two top-level
+    # packages ``pyproject.toml`` declares in ``[tool.setuptools.packages.find]``.
+    packages=find_packages(include=['vram_core', 'vram_core.*', 'wddm_bypass', 'wddm_bypass.*']),
     package_dir={'wddm_bypass': 'wddm_bypass'},
     python_requires='>=3.8',
 

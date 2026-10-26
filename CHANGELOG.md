@@ -5,9 +5,12 @@ All notable changes to **Omni-VRAM** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.7.0] - 2026-10-25
+## [2.8.0] - 2026-10-26
 
 ### Highlights
+- **v2.8.0 合并发布**：把原 `2.6.0`（WDDM-Bypass 执行子系统并入主干）与 `2.7.0`
+  （Transformer 解码层无感接管）两条记录整合为一次正式发布，版本号排在既有
+  `[2.7.1] - 2026-10-09` 之上，消除 PyPI 版本倒挂与上传冲突。
 - **Transformer 解码层无感接管（POC）**：新增 `wddm_bypass/integration.py`，把一个 decode
   step 的 N 次 kernel 提交压成 1 次 `cudaGraphLaunch`。`DecodeHook` 负责“预热 → 捕获 → 回放 →
   降级”四种路径并全部计数，`HookedDecoder` 提供 HuggingFace 形状的
@@ -40,24 +43,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `docs/architecture_masterclass.md`：架构白皮书（数据流、痛点攻坚、面试 15 问、复现附录）
 
 ### Changed
-- `vram_core.__version__`、`pyproject.toml`、根 `setup.py` 统一升到 `2.7.0`
+- `vram_core.__version__`、`pyproject.toml`、根 `setup.py`、`README.md` 版本徽章统一为 `2.8.0`
+- 根 `setup.py` 改用
+  `find_packages(include=['vram_core', 'vram_core.*', 'wddm_bypass', 'wddm_bypass.*'])`，
+  与 `pyproject.toml` 的 `[tool.setuptools.packages.find]` 共用同一份包范围，
+  `vram_core` 与 `wddm_bypass` 不会从 wheel 里漏掉
+- `MANIFEST.in` 补齐 `wddm_bypass/*.py`、`WDDM-Bypass/setup.py`、`WDDM-Bypass/README.md`
+  以及 `WDDM-Bypass/csrc/` 下的 `.h` / `.hpp` / `.cuh` / `.cu` / `.cpp`，sdist 可直接本地编译扩展
 - 原生扩展版本保持 `wddm_bypass.__version__ == "1.0.0"`（ABI 独立，不随项目版本变化）
 
 ### Notes
-- v2.7.0 的“加速”只指**提交面**：51 次提交变 1 次。GEMM / attention 的算力、显存带宽
+- `wddm_bypass.__version__` 与 `WDDM-Bypass/setup.py` 的 `version` 仍是 `1.0.0`：它是编译进
+  `build_info()["version"]` 的原生 ABI 版本，`tests/test_engine_suite.py` 会断言三者一致，
+  只有重编 C++ 才会变。对外发布版本一律以 `vram_core.__version__`（2.8.0）为准。
+- v2.8.0 的“加速”只指**提交面**：51 次提交变 1 次。GEMM / attention 的算力、显存带宽
   不会因为用了 CUDA Graph 而变快；白皮书与测试都按这个边界表述。
 - 历史小节 `[2.7.1] - 2026-10-09` 按规则保持原样不改写。
 
-## [2.6.0] - 2026-10-25
+### WDDM-Bypass 执行子系统（原 `[2.6.0]` 记录，随 2.8.0 一并发布）
 
-### Highlights
+#### Highlights
 - **WDDM-Bypass execution subsystem merged in-tree.** The multi-graph CUDA
   engine that used to live in its own repository is now part of Omni-VRAM, and
   `vram_core` drives it through a real bridge instead of the two halves being
   two unrelated folders. On the reference RTX 3060 that engine holds a **17.3x**
   lower submission cost on a 64-kernel step (380.6 us eager -> 21.9 us graph).
 
-### Added
+#### Added
 - **`wddm_bypass/` at the repository root** — importable as `import wddm_bypass`
   from a checkout: the `Engine` facade, `ShapeKey` / `BucketPolicy` /
   `ShapeRouter` bucketing (pure Python) and the `wddm_bypass._wddm_bypass`
@@ -86,26 +98,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BridgeClosed`, `BridgeUnavailable`, `InsufficientVRAMError` and
   `wddm_available`
 
-### Changed
+#### Changed
 - The engine suite moved from `WDDM-Bypass/tests/test_engine_suite.py` to
   `tests/test_engine_suite.py`, so one `pytest` run covers both halves; the CUDA
   sources and their build script stay in `WDDM-Bypass/`
 - `WDDM-Bypass/setup.py` now builds `wddm_bypass._wddm_bypass` into the root
   package (`package_dir={"wddm_bypass": "../wddm_bypass"}`)
 - root `setup.py` and `pyproject.toml` package metadata include `wddm_bypass`
-  and report `2.6.0`
+  and report `2.8.0`
 - removed the obsolete standalone-repository scaffolding (`WDDM-Bypass/.git`,
   `WDDM-Bypass/.gitignore`, `WDDM-Bypass/pytest.ini`, the duplicate MIT
   `WDDM-Bypass/LICENSE`) and the stale `test_run.py` / `run_tests.py` entries in
   the documented project tree
 
-### Notes
+#### Notes
 - The native extension keeps its own ABI version (`wddm_bypass.__version__ ==
-  "1.0.0"`, reported by `build_info()["version"]`); the project version is 2.6.0.
-- Version numbering: the merge release was requested as `2.6.0`, so
-  `vram_core.__version__`, `pyproject.toml` and `setup.py` all report `2.6.0`.
-  The earlier `[2.6.0] - 2026-10-08` section further down is kept verbatim as the
-  historical record and is not rewritten.
+  "1.0.0"`, reported by `build_info()["version"]`); the project version is 2.8.0.
+- This engine was merged under the number `2.6.0`; that number is now folded into
+  `[2.8.0]` so the release sits above the historical `[2.7.1] - 2026-10-09`
+  record. The earlier `[2.6.0] - 2026-10-08` section further down is kept
+  verbatim as the historical record and is not rewritten.
 
 ## [2.7.1] - 2026-10-09
 

@@ -48,6 +48,11 @@ from .backend import (
 )
 from .bucketing import BucketPolicy, ShapeKey, ShapeRouter, coerce_key
 
+#: Version of the native ``wddm_bypass._wddm_bypass`` extension - its ABI
+#: version, not the Omni-VRAM release version (that is ``vram_core.__version__``,
+#: currently 2.8.0). The string is compiled into ``build_info()["version"]`` and
+#: ``WDDM-Bypass/setup.py``, and ``tests/test_engine_suite.py`` asserts all three
+#: agree, so it only moves when the C++ side is rebuilt.
 __version__ = "1.0.0"
 
 __all__ = [

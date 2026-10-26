@@ -7,7 +7,7 @@
 ![Python: 3.8+](https://img.shields.io/badge/Python-3.8%2B-blue.svg)
 [![Tests](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml/badge.svg)](https://github.com/Liangchenxu/Omni-VRAM/actions/workflows/test.yml)
 [![PyPI](https://img.shields.io/pypi/v/omni-vram.svg)](https://pypi.org/project/omni-vram/)
-[![Version](https://img.shields.io/badge/Version-2.7.1-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
+[![Version](https://img.shields.io/badge/Version-2.8.0-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
 
 [**English**](#english-documentation) | [**中文文档**](#chinese-documentation) | [**Docs**](docs/)
 
@@ -18,6 +18,8 @@
 
 **Omni-VRAM** is a production-ready **LLM voice interaction framework** that lets large language models hear and speak. Built on CUDA zero-copy technology, it provides **28 core modules** covering the entire audio AI pipeline — from speech recognition to synthesis, from single GPU to distributed clusters.
 
+> **v2.8.0**: WDDM-Bypass merged in-tree and the decode layer taken over — the multi-graph CUDA-graph engine (`wddm_bypass` + `WDDM-Bypass/csrc/`) now lives in this repository and is driven from `vram_core` through `WddmExecutionBridge` (a Paged KV-Cache pool registered as a capture-safe static buffer, a VRAM budget gate, and **17.3× lower submission cost** on a 64-kernel step: 380.6 µs eager → 21.9 µs graph), while the new `wddm_bypass/integration.py` mounts any HuggingFace decode step as **one graph replay** (`DecodePlan` / `DecodeHook` / `accelerate_decode` / `HookedDecoder`): warm-up → capture → replay, eager fallback once the graph budget is exhausted, and every feed/fetch outside the capture so the token can change while the graph does not. Ships with `tests/test_transformer_integration.py` (41 cases, including a 51-kernel-per-step simulated Llama decode checked element-wise against NumPy and a submission-cost A/B) and `docs/architecture_masterclass.md`, a 608-line whitepaper on the pointer flow, the four Windows pain points and 15 senior CUDA/systems interview answers.
+>
 > **v2.7.1**: OpenAI Realtime API compatibility — a drop-in **`/v1/realtime` WebSocket gateway** (`RealtimeSession`) that chains the server-side VAD / barge-in `StreamProcessor`, ASR and `TTSEngine` into one speech-to-speech turn: `session.update`, `input_audio_buffer.append|commit|clear`, `response.cancel`, base64 PCM16 `response.audio.delta` at 24 kHz, instant `response.cancelled` interrupts, OpenAI voice-name aliases (`alloy`/`echo`/`fable`/`onyx`/`nova`/`shimmer`/`verse`) and per-turn latency marks (`vad_cutoff → asr_transcribed → tts_first_chunk`) — point an existing OpenAI Realtime client at an Omni-VRAM server, no shim required.
 >
 > **v2.7.0**: Cluster-grade context reuse & genuinely streaming turns — ref-counted Paged KV-Cache **prefix caching** with copy-on-write (`register_prefix`, `block_ref_counts`, `free_prefix`), a **sentence-level streaming TTS pipeline** (`SentenceStreamBuffer` + `stream_synthesize(llm_token_stream())`) that starts speaking the first sentence before the LLM finishes and never splits a decimal like `3.14`, an **end-to-end microsecond latency profiler** (`LatencyProfiler`: `vad_cutoff → asr_transcribed → llm_first_token → tts_first_chunk`, waterfall + JSON export), and a fully green regression suite — the 10 legacy failures are resolved (LLM `provider` aliases & graceful init, string-transcript meeting analysis + `_detect_priority`, short-chunk mel padding, NumPy/torch STFT parity, pinned-upload CUDA stream ordering and WebSocket mock alignment).
@@ -72,11 +74,11 @@ Omni-VRAM/
 ├── setup.py                    # Build & install script
 ├── pyproject.toml              # Modern Python project configuration
 ├── requirements.txt            # Python dependencies
-├── wddm_bypass/                # WDDM-Bypass execution layer (v2.6.0)
+├── wddm_bypass/                # WDDM-Bypass execution layer (v2.8.0)
 │   ├── __init__.py             # Engine facade: capture / replay / static buffers
 │   ├── bucketing.py            # ShapeKey / BucketPolicy / ShapeRouter (pure Python)
 │   └── backend.py              # Native extension loading + exact build hint
-├── WDDM-Bypass/                # Native CUDA-graph sources (v2.6.0)
+├── WDDM-Bypass/                # Native CUDA-graph sources (v2.8.0)
 │   ├── csrc/                   # graph_engine.cu, bypass_core.cpp, graph_manager.h
 │   ├── setup.py                # Builds wddm_bypass._wddm_bypass into the root package
 │   └── README.md               # Subsystem deep dive: slots, hot update, benchmark
@@ -108,7 +110,7 @@ Omni-VRAM/
 │   ├── wake_word.py            # Wake word / keyword detection
 │   ├── multi_gpu.py            # Multi-GPU management & parallelism
 │   ├── vram_optimizer.py       # KV-Cache VRAM optimization & OOM recovery
-│   ├── wddm_bridge.py          # VRAM pools ⇄ CUDA-graph replay bridge (v2.6.0)
+│   ├── wddm_bridge.py          # VRAM pools ⇄ CUDA-graph replay bridge (v2.8.0)
 │   ├── tts_engine.py           # Multi-backend text-to-speech
 │   ├── voice_translator.py     # Speech-to-speech translation pipeline
 │   ├── audio_event_detection.py # Audio event detection
@@ -267,7 +269,7 @@ python app.py --debug            # Debug mode
 
 ---
 
-## WDDM-Bypass Execution Subsystem (v2.6.0 New!)
+## WDDM-Bypass Execution Subsystem (v2.8.0 New!)
 
 `wddm_bypass` is the **submission side** of Omni-VRAM. On Windows every kernel
 launch is a WDDM submission batch, so a decode step made of dozens of tiny
@@ -922,6 +924,8 @@ You are free to use, modify, and distribute this software in both commercial and
 
 **Omni-VRAM** 是一个生产级的 **LLM 语音交互框架**，让大模型长出耳朵和嘴巴。基于 CUDA 零拷贝技术构建，提供 **28 个核心模块**，覆盖完整的语音 AI 管线——从语音识别到语音合成，从单 GPU 到分布式集群。
 
+> **v2.8.0**：WDDM-Bypass 并入主干 + 解码层无感接管——多图 CUDA Graph 引擎（`wddm_bypass` + `WDDM-Bypass/csrc/`）已进入本仓库，由 `vram_core` 经 `WddmExecutionBridge` 驱动（Paged KV-Cache 显存池注册为可捕获静态缓冲、显存预算闸门，64 kernel 步骤的提交开销降至 **17.3×**：380.6 µs eager → 21.9 µs graph）；新增 `wddm_bypass/integration.py`，把任意 HuggingFace decode step 挂成**一次图回放**（`DecodePlan` / `DecodeHook` / `accelerate_decode` / `HookedDecoder`）：预热 → 捕获 → 回放，图预算耗尽后退化为 eager，所有 feed / fetch 都在捕获体之外，因此每一步 token 可变而图不变。随包提供 `tests/test_transformer_integration.py`（41 个用例，含 51 kernel/step 的模拟 Llama decode 逐元素对齐 NumPy、以及提交开销 A/B）与 608 行《架构与面试白皮书》`docs/architecture_masterclass.md`。
+>
 > **v2.7.1**：兼容 OpenAI Realtime API——提供开箱即用的 **`/v1/realtime` WebSocket 网关**（`RealtimeSession`），把服务端 VAD / 打断检测 `StreamProcessor`、ASR 与 `TTSEngine` 串成完整的一轮语音对话：支持 `session.update`、`input_audio_buffer.append|commit|clear`、`response.cancel`，以 base64 PCM16 / 24 kHz 下发 `response.audio.delta`，被打断时即时 `response.cancelled`，内置 OpenAI 音色名映射（`alloy` / `echo` / `fable` / `onyx` / `nova` / `shimmer` / `verse`）与每轮延迟打点（`vad_cutoff → asr_transcribed → tts_first_chunk`）——现有 OpenAI Realtime 客户端可直接指向 Omni-VRAM 服务端，无需任何协议适配层。
 >
 > **v2.7.0**：面向集群的上下文复用与真正流式的一轮对话——引用计数式 Paged KV-Cache **前缀缓存**（`register_prefix` / `block_ref_counts` / `free_prefix`，写入时复制 CoW）、**句级流式 TTS 管线**（`SentenceStreamBuffer` + `stream_synthesize(llm_token_stream())`：LLM 尚未生成完即开始朗读第一句，且绝不在 `3.14` 这类小数点上切分）、**端到端微秒级延迟剖析器**（`LatencyProfiler`：`vad_cutoff → asr_transcribed → llm_first_token → tts_first_chunk`，瀑布图 + JSON 导出），并将回归测试全部转绿——历史遗留的 10 项失败已修复（LLM `provider` 别名与优雅降级、纯文本会议分析与 `_detect_priority`、短块 Mel 填充、NumPy/torch STFT 数值对齐、锁页上传的 CUDA 流顺序、WebSocket Mock 对齐）。
@@ -976,11 +980,11 @@ Omni-VRAM/
 ├── setup.py                    # 编译安装脚本
 ├── pyproject.toml              # 现代 Python 项目配置
 ├── requirements.txt            # Python 依赖清单
-├── wddm_bypass/                # WDDM-Bypass 执行层（v2.6.0）
+├── wddm_bypass/                # WDDM-Bypass 执行层（v2.8.0）
 │   ├── __init__.py             # Engine 门面：capture / replay / 静态缓冲区
 │   ├── bucketing.py            # ShapeKey / BucketPolicy / ShapeRouter（纯 Python）
 │   └── backend.py              # 原生扩展加载 + 精确编译提示
-├── WDDM-Bypass/                # 原生 CUDA Graph 源码（v2.6.0）
+├── WDDM-Bypass/                # 原生 CUDA Graph 源码（v2.8.0）
 │   ├── csrc/                   # graph_engine.cu、bypass_core.cpp、graph_manager.h
 │   ├── setup.py                # 将 wddm_bypass._wddm_bypass 编译进根包
 │   └── README.md               # 子系统详解：多槽位、热更新、基准测试
@@ -1012,7 +1016,7 @@ Omni-VRAM/
 │   ├── wake_word.py            # 唤醒词 / 关键词检测
 │   ├── multi_gpu.py            # 多 GPU 管理与并行
 │   ├── vram_optimizer.py       # KV-Cache 显存优化与 OOM 恢复
-│   ├── wddm_bridge.py          # 显存池 ⇄ CUDA Graph 回放桥接（v2.6.0）
+│   ├── wddm_bridge.py          # 显存池 ⇄ CUDA Graph 回放桥接（v2.8.0）
 │   ├── tts_engine.py           # 多后端语音合成
 │   ├── voice_translator.py     # 语音到语音翻译管线
 │   ├── audio_event_detection.py # 音频事件检测
