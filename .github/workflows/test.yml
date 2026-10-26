@@ -12,15 +12,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # ubuntu-latest 自 2026-10-19 起指向 Ubuntu 26.04，而 Python 3.9 在
+        # actions/python-versions 中只有 22.04 / 24.04 的构建产物，
+        # 钉死 ubuntu-24.04 才能让 3.9 / 3.10 / 3.11 三个版本同时可用。
+        os: [ubuntu-24.04, windows-latest]
         python-version: ['3.9', '3.10', '3.11']
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
 
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: ${{ matrix.python-version }}
         cache: 'pip'
@@ -56,13 +59,13 @@ jobs:
       continue-on-error: true
 
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
 
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: '3.10'
 
