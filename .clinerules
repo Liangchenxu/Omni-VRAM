@@ -20,8 +20,8 @@
 
 4. 若本次任务未涉及测试或提交，则在 `result.txt` 对应条目写 `N/A` 并说明原因。
 
-5. 生成的临时文件必须清理，不得留在仓库根目录；测试日志等中间产物写入系统临时目录
-   （如 `$env:TEMP`）。
+5. 生成的临时文件必须清理，不得留在仓库根目录；终端输出禁止落盘为临时日志
+   （见【输出纪律与反死循环】）。
 
 ## 【版本管理】
 
@@ -39,3 +39,31 @@
   - `tests/test_speaker_diarization.py`
   - `tests/test_multiband_denoiser.py`
 - 提交前工作区必须干净（`git status --porcelain` 为空）。
+
+## 【XERJ 优先检索铁律】
+
+- 检索代码段落、API 签名、定位符号或排查问题时，**必须第一优先级调用 `xerj`** 获取精确代码段：
+  MCP 工具 `xerj_search` / `xerj_def` / `xerj_plan` / `xerj_code_search`，
+  或 CLI `xerj search "<query>" --prefix project`、`xerj def <Symbol> --prefix project`。
+- 严禁盲目用 `read_files` 全量读取大文件，严禁全局乱搜（`grep` 全仓库、逐文件遍历）。
+- 只有在 xerj 无命中、或确实需要整文件上下文时，才回退到 `read_files`，且优先用行区间分页。
+- 本仓库索引命令：`xerj autoindex . --prefix project --yes`
+  （新增模块 / 大改代码后重新执行一次，保证索引不过期）。
+
+## 【输出纪律与反死循环】
+
+- 严禁将终端命令输出重定向到 `AppData/Local/Temp/*.log` 或任何临时 `.txt` 文件，
+  再通过 `read_files` 去读取命令结果。
+- 严禁对同一文件连续调用 `read_files` 超过 2 次；需要多段上下文时，一次调用内给出多段行区间。
+- 运行 pytest 必须带 `-q --tb=short`，直接在前台输出；不做后台轮询 / 日志中转脚本。
+
+## 【编译熔断与 Windows 编码铁律】
+
+- 同一编译错误连续出现 2 次 → 立即暂停并汇报，禁止无脑重试。
+- 所有 `.cpp` / `.cu` / `.h` 源码及注释强制纯 ASCII 英文，严禁出现任何非 ASCII 字符。
+- 构建 C++/CUDA 扩展必须先用 `vcvars64.bat` 初始化 MSVC 环境，并使用 `softmax` 环境。
+
+## 【零 Skip 测试标准】
+
+- 所有新增功能必须附带真实可执行的单元测试。
+- 禁止用 `pytest.skip` 掩盖环境缺失或编译失败；`skipped > 0` 视为未完成，必须定位并修复根因。
