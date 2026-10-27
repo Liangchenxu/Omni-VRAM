@@ -5,6 +5,62 @@ All notable changes to **Omni-VRAM** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.1] - 2026-10-26
+
+### Highlights
+- **全仓测试零失败**：`pytest tests/` 从 8 failed / 1096 passed 收敛到
+  **0 failed**（`1104 passed, 17 skipped`），且三处修复全部落在源码而非测试里。
+- **`pyttsx3` 模块级符号（6 个用例的根因）**：`vram_core/tts_engine.py` 在
+  `ImportError` 分支里什么都没绑，`pyttsx3` 这个名字在模块里根本不存在，
+  于是 `mock.patch("vram_core.tts_engine.pyttsx3")` 解析目标时直接
+  `AttributeError`（发生在测试体之前）。现在模块级先绑 `pyttsx3 = None`，
+  导入成功再覆盖；`_init_backend()` 里加运行时守卫
+  （`pyttsx3 is None` → `RuntimeError("pyttsx3 is not installed; ...")`，
+  由既有 `except (RuntimeError, OSError)` 兜住，退化为 `backend="none"`）。
+- **pydub 零依赖回退（1 个用例的根因）**：`vram_core/whisper/preprocessor.py`
+  的 `load_audio_pydub()` 原本在函数体内 `from pydub import AudioSegment`，
+  没装 pydub 的机器连纯 WAV 都无法转写。现在改为模块级可选导入 +
+  `_load_wave_fallback()`：标准库 `wave` 解码 8/16/32-bit PCM、多声道混音、
+  线性插值重采样至目标采样率、峰值归一化（与 pydub 路径同为 `×0.95`），
+  纯 Python + numpy，零外部依赖；模块级 `AudioSegment` 也让 mock 仍可拦截。
+- **Realtime 事件投递屏障（1 个用例的根因）**：`RealtimeSession._emit()` 先写
+  `_event_log`（`finished()` 读它）、再入队，而投递由 `_pump` 任务异步完成，
+  所以"日志里已有 `response.done`"时队列里可能还压着
+  `response.audio.delta` + `response.done` 两条——断言
+  `pending_events() == 0` 必然偶发失败。现在终态事件走
+  `_emit_delivered()`：先 `queue.join()` 排空已排队事件 → 入队并投递本事件 →
+  才写入 `_event_log`；`_pump`/`_flush_out_queue` 补上 `task_done()`，
+  `_drain()` 带 5 s 上限，死掉的 sink 不会把响应任务挂死。
+- **版本号锁定 Patch-Only + 每版独立档案**：`.clinerules` 新增两条最高优先级铁律，
+  大/次版本长期锁在 `2.9.x`，每个版本在 `docs/releases/v<版本>.md` 留复盘，
+  旧档案严禁覆盖。
+
+### Fixed
+- `vram_core/tts_engine.py`：`pyttsx3` 模块级绑定 + 初始化运行时守卫
+- `vram_core/whisper/preprocessor.py`：`AudioSegment` 可选导入 +
+  `_load_wave_fallback()`（标准库 wave 解码 / 混音 / 重采样 / 归一化）
+- `vram_core/realtime_server.py`：`_pump` 每次成功 `send` 后 `task_done()`；
+  `_flush_out_queue()` 对被丢弃事件同样 `task_done()`（否则 `join()` 永久等待）；
+  新增 `_drain()` 与 `_emit_delivered()`，`_run_response()` 的
+  `response.done`（完成 / 空转写 / 失败三条路径）改为投递后再记录
+
+### Changed
+- 对外版本号 `2.9.0` → **`2.9.1`**：`vram_core/__init__.py`、`pyproject.toml`、
+  根 `setup.py`、`README.md` 徽章与中英文亮点段
+- `wddm_bypass` 原生 ABI 版本**保持 `1.0.0` 不变**（C++ 侧未改动）
+- 新增 `docs/releases/`（受 Git 跟踪）：`v2.8.0.md`、`v2.9.0.md`、`v2.9.1.md`
+- `.clinerules`：新增【版本号递增铁律（Patch-Only）】与
+  【版本档案留存铁律（Per-Version Archive）】
+
+### Tests
+- 目标 4 文件：`tests/test_tts_engine.py tests/test_streaming_tts_pipeline.py
+  tests/test_whisper_bridge.py tests/test_realtime_protocol.py`
+  → **123 passed, 2 skipped, 0 failed**（8.23 s）
+- 全量：`pytest tests/ -q` → **1104 passed, 17 skipped, 0 failed**（81.98 s）
+  - 17 个 skip 是**既有**环境跳过，与本次改动无关：`test_websocket.py` 16 个
+    （`fastapi` / `httpx` 未安装）、`test_gpu_pipeline_ops.py` 1 个；
+    本次未新增任何 `pytest.skip`。
+
 ## [2.9.0] - 2026-10-26
 
 ### Highlights

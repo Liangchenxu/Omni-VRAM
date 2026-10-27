@@ -100,6 +100,11 @@ WIRE_AUDIO_FORMAT = "pcm16"
 #: Maximum number of server events retained in memory for introspection/tests.
 _EVENT_HISTORY_LIMIT = 2000
 
+#: Upper bound (seconds) on how long the *terminal* event of a turn waits for the
+#: outbound pump before it is recorded anyway. A dead or slow sink must never
+#: wedge the response task, so the barrier is bounded.
+_TERMINAL_DRAIN_TIMEOUT = 5.0
+
 #: Safety cap for the manual-commit input buffer (seconds at processing rate).
 _MANUAL_BUFFER_SECONDS = 60.0
 
@@ -540,6 +545,10 @@ class RealtimeSession:
                 self._out_queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+            # The queue's unfinished-task counter backs _drain(): an event that is
+            # dropped here is finished with, otherwise a later join() would block
+            # forever waiting for a delivery that is never going to happen.
+            self._out_queue.task_done()
             flushed += 1
         return flushed
 
@@ -561,7 +570,68 @@ class RealtimeSession:
                 raise
             except Exception as error:  # noqa: BLE001 - a dead sink must not hang
                 logger.warning("Realtime send sink failed: %s", error)
+                # Consumed but undeliverable: mark it finished so a pending
+                # _drain() returns instead of waiting for a send that will
+                # never happen.
+                self._out_queue.task_done()
                 return
+            self._out_queue.task_done()
+
+    async def _drain(self, timeout: float = _TERMINAL_DRAIN_TIMEOUT) -> bool:
+        """Wait until every queued event has been handed to ``send``.
+
+        Args:
+            timeout: Seconds to wait before giving up.
+
+        Returns:
+            True when the queue was fully delivered, False when the sink stalled
+            (logged; the caller carries on rather than wedging the turn).
+        """
+        try:
+            await asyncio.wait_for(self._out_queue.join(), timeout=timeout)
+        except asyncio.TimeoutError:  # pragma: no cover - a stalled sink
+            logger.warning(
+                "Realtime outbound queue did not drain within %.1fs", timeout
+            )
+            return False
+        return True
+
+    async def _emit_delivered(
+        self, event_type: str, **fields: Any
+    ) -> Dict[str, Any]:
+        """Emit an event and return only after ``send`` has been given it.
+
+        :meth:`_emit` records into ``_event_log`` and *then* queues, so a caller
+        that polls ``events`` can observe an event the client has not received
+        yet. For the last event of a turn that gap is directly visible: the turn
+        looks finished while ``pending_events()`` is still 2 (the trailing
+        ``response.audio.delta`` and ``response.done`` itself).
+
+        This variant closes the gap for terminal events only:
+        everything already queued is delivered first, then the event is queued
+        and delivered, and only then does it appear in ``events``. Emitting from
+        a single task keeps the log order identical to the delivery order.
+
+        Args:
+            event_type: OpenAI Realtime event ``type`` string.
+            **fields: Event payload.
+
+        Returns:
+            The complete event dict (already delivered).
+        """
+        await self._drain()
+        event: Dict[str, Any] = {
+            "event_id": f"evt_{uuid.uuid4().hex[:24]}",
+            "type": event_type,
+        }
+        event.update(fields)
+        self._out_queue.put_nowait(event)
+        await self._drain()
+        with self._lock:
+            self._event_log.append(event)
+            if len(self._event_log) > _EVENT_HISTORY_LIMIT:
+                del self._event_log[: len(self._event_log) - _EVENT_HISTORY_LIMIT]
+        return event
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -991,7 +1061,7 @@ class RealtimeSession:
                 transcript=transcript,
             )
             if not transcript:
-                self._emit(
+                await self._emit_delivered(
                     "response.done",
                     response={
                         "id": response_id,
@@ -1004,7 +1074,7 @@ class RealtimeSession:
             await self._stream_tts(transcript, response_id, item_id, trace)
             if self._response_cancelled:
                 return
-            self._emit(
+            await self._emit_delivered(
                 "response.done",
                 response={
                     "id": response_id,
@@ -1019,7 +1089,7 @@ class RealtimeSession:
         except Exception as error:  # noqa: BLE001 - one bad turn must not kill the socket
             logger.warning("Realtime response failed: %s", error)
             self._error("server_error", f"Response generation failed: {error}")
-            self._emit(
+            await self._emit_delivered(
                 "response.done",
                 response={"id": response_id, "status": "failed"},
             )

@@ -17,6 +17,14 @@ from vram_core.whisper.models import SUPPORTED_AUDIO_FORMATS
 
 logger = logging.getLogger("vram_core.whisper.preprocessor")
 
+#: Optional dependency. ``load_audio_pydub`` falls back to the stdlib ``wave``
+#: reader below when it is missing, so a WAV can always be loaded; the module-level
+#: symbol also lets ``unittest.mock.patch("...preprocessor.AudioSegment")`` work.
+try:  # pragma: no cover - depends on the environment
+    from pydub import AudioSegment  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - the fallback path is covered instead
+    AudioSegment = None
+
 
 class AudioPreprocessor:
     """Handle audio format conversion and preprocessing for Whisper."""
@@ -61,6 +69,90 @@ class AudioPreprocessor:
             return {"error": str(e)}
 
     @staticmethod
+    def _load_wave_fallback(
+        source,
+        target_sr: int = 16000,
+        mono: bool = True,
+    ) -> np.ndarray:
+        """Decode an uncompressed PCM WAV with the stdlib ``wave`` module.
+
+        Used when pydub is not installed, so a missing optional dependency no
+        longer breaks file transcription. Handles 8/16/32-bit integer PCM:
+        channel mixing, linear-interpolation resampling and float32 conversion.
+        The peak normalization matches :meth:`load_audio_pydub`, so switching
+        backends does not silently change the input scale.
+
+        Args:
+            source:     File path (str/Path), raw WAV bytes, or a seekable stream.
+            target_sr:  Target sample rate.
+            mono:       Mix down to one channel when True.
+
+        Returns:
+            Normalized float32 numpy array (``[n]`` when mono, ``[n, channels]``
+            otherwise).
+
+        Raises:
+            ValueError: The sample width is not 1/2/4 bytes (e.g. compressed
+                formats or IEEE float WAV), which still needs pydub + ffmpeg.
+        """
+        if isinstance(source, (bytes, bytearray)):
+            stream = io.BytesIO(bytes(source))
+        elif isinstance(source, io.BytesIO):
+            source.seek(0)
+            stream = source
+        else:
+            stream = str(source)
+
+        with wave.open(stream, "rb") as handle:
+            channels = handle.getnchannels()
+            sample_width = handle.getsampwidth()
+            source_rate = handle.getframerate()
+            frames = handle.readframes(handle.getnframes())
+
+        if sample_width == 1:
+            samples = (
+                np.frombuffer(frames, dtype=np.uint8).astype(np.float32) - 128.0
+            ) / 128.0
+        elif sample_width == 2:
+            samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        elif sample_width == 4:
+            samples = (
+                np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
+            )
+        else:
+            raise ValueError(
+                f"Unsupported PCM sample width: {sample_width} bytes; "
+                f"install pydub + ffmpeg for compressed or float WAV"
+            )
+
+        if channels > 1:
+            samples = samples.reshape(-1, channels)
+            if mono:
+                samples = samples.mean(axis=1)
+
+        if source_rate != target_sr and samples.shape[0] > 0:
+            duration = samples.shape[0] / float(source_rate)
+            target_length = max(1, int(round(duration * target_sr)))
+            old_axis = np.linspace(0.0, 1.0, num=samples.shape[0], endpoint=False)
+            new_axis = np.linspace(0.0, 1.0, num=target_length, endpoint=False)
+            if samples.ndim == 1:
+                samples = np.interp(new_axis, old_axis, samples)
+            else:
+                samples = np.stack(
+                    [
+                        np.interp(new_axis, old_axis, samples[:, channel])
+                        for channel in range(samples.shape[1])
+                    ],
+                    axis=1,
+                )
+
+        samples = samples.astype(np.float32, copy=False)
+        peak = float(np.max(np.abs(samples))) if samples.size else 0.0
+        if peak > 0:
+            samples = samples / peak * 0.95
+        return samples.astype(np.float32, copy=False)
+
+    @staticmethod
     def load_audio_pydub(
         source,
         target_sr: int = 16000,
@@ -77,7 +169,14 @@ class AudioPreprocessor:
         Returns:
             Normalized float32 numpy array in [-1, 1].
         """
-        from pydub import AudioSegment
+        if AudioSegment is None:
+            # pydub is optional (it also needs ffmpeg); a plain PCM WAV can be
+            # decoded with the stdlib, which keeps file transcription working on
+            # a minimal install instead of dying on an import.
+            logger.debug("pydub unavailable - decoding %r with the wave fallback", source)
+            return AudioPreprocessor._load_wave_fallback(
+                source, target_sr=target_sr, mono=mono
+            )
 
         if isinstance(source, bytes):
             audio = AudioSegment.from_file(io.BytesIO(source))

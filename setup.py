@@ -98,6 +98,103 @@ def _check_cuda_available():
         return False, f"CUDA check failed: {e}"
 
 
+#: nvcc / host-compiler flags for the CUDA extension.
+#:
+#: CUDA 12.1's host-compiler whitelist predates MSVC 19.40+, so nvcc aborts with
+#: "#error: -- unsupported Microsoft Visual Studio version". The documented escape
+#: hatch is ``-allow-unsupported-compiler``. The MSVC 14.4x STL then hard-errors
+#: when its own identity macro and the compiler disagree, which is exactly what
+#: ``_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH`` exists for. Both are Windows-only
+#: (the same pairing ``WDDM-Bypass/setup.py`` has always used).
+NVCC_FLAGS = ["-O3"]
+CXX_FLAGS = []
+if sys.platform == "win32":
+    NVCC_FLAGS.append("-allow-unsupported-compiler")
+    NVCC_FLAGS.append("-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH")
+    CXX_FLAGS.append("/D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH")
+
+
+def _windows_sdk_include_dirs():
+    """Locate the Windows SDK ``Include`` / ``Lib`` trees for x64, or ``([], [])``.
+
+    ``vcvars64.bat`` resolves the SDK through ``KitsRoot10`` in the registry. When
+    the kit was installed (or moved) onto another drive that key goes stale, and
+    vcvars hands back a valid ``cl.exe`` with an ``INCLUDE`` that has no ``ucrt``
+    - every ``<corecrt.h>`` include then fails with C1083. Resolution order:
+    environment, registry, then a drive scan.
+    """
+    if sys.platform != "win32":
+        return [], []
+
+    roots = []
+    for variable in ("WindowsSdkDir", "WindowsSDKDir"):
+        value = os.environ.get(variable)
+        if value:
+            roots.append(value)
+
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows Kits\Installed Roots",
+        ) as key:
+            roots.append(winreg.QueryValueEx(key, "KitsRoot10")[0])
+    except Exception:  # registry key absent on a machine without the SDK
+        pass
+
+    for drive in "CDEFGHIJ":
+        candidate = f"{drive}:\\Windows Kits\\10"
+        if os.path.isdir(candidate):
+            roots.append(candidate)
+
+    for root in roots:
+        include_root = os.path.join(root, "Include")
+        lib_root = os.path.join(root, "Lib")
+        if not os.path.isdir(include_root) or not os.path.isdir(lib_root):
+            continue
+        versions = sorted(
+            (
+                name
+                for name in os.listdir(include_root)
+                if os.path.isdir(os.path.join(include_root, name))
+            ),
+            reverse=True,
+        )
+        for version in versions:
+            includes = [
+                os.path.join(include_root, version, part)
+                for part in ("ucrt", "um", "shared", "winrt", "cppwinrt")
+            ]
+            if not (os.path.isdir(includes[0]) and os.path.isdir(includes[1])):
+                continue
+            libraries = [
+                os.path.join(lib_root, version, part, "x64")
+                for part in ("ucrt", "um")
+            ]
+            return includes, [path for path in libraries if os.path.isdir(path)]
+    return [], []
+
+
+def _ensure_windows_sdk_on_path():
+    """Splice the SDK onto ``INCLUDE`` / ``LIB`` when vcvars left them incomplete."""
+    include_dirs, lib_dirs = _windows_sdk_include_dirs()
+    if not include_dirs:
+        return
+    for variable, extra in (("INCLUDE", include_dirs), ("LIB", lib_dirs)):
+        current = os.environ.get(variable, "")
+        existing = [part for part in current.split(os.pathsep) if part]
+        seen = {os.path.normcase(os.path.normpath(part)) for part in existing}
+        missing = [
+            path
+            for path in extra
+            if os.path.normcase(os.path.normpath(path)) not in seen
+        ]
+        if missing:
+            os.environ[variable] = os.pathsep.join(missing + existing)
+            print(f"[setup] {variable}: added {len(missing)} Windows SDK path(s)")
+
+
 def _build_cuda_extension(cuda_msg):
     """
     Describe the optional CUDA extension, degrading to pure Python on failure.
@@ -112,6 +209,7 @@ def _build_cuda_extension(cuda_msg):
         Tuple ``(ext_modules, cmdclass)``; ``([], {})`` in pure-Python mode.
     """
     try:
+        _ensure_windows_sdk_on_path()
         from torch.utils.cpp_extension import BuildExtension, CUDAExtension
     except Exception as error:  # ImportError / OSError / missing compiler stack
         print(f"[setup] {CUDA_FALLBACK_WARNING}")
@@ -122,7 +220,10 @@ def _build_cuda_extension(cuda_msg):
         extension = CUDAExtension(
             name='vram_core._vram_hacker',
             sources=['vram_hacker.cu'],
-            extra_compile_args={'nvcc': ['-O3']},
+            extra_compile_args={
+                'nvcc': NVCC_FLAGS,
+                'cxx': CXX_FLAGS,
+            },
         )
     except Exception as error:  # compiler probing raised inside torch
         print(f"[setup] {CUDA_FALLBACK_WARNING}")
@@ -155,7 +256,7 @@ with open('README.md', encoding='utf-8') as _f:
 # Package Setup
 setup(
     name='vram_core',
-    version='2.9.0',
+    version='2.9.1',
     description='vram_core - LLM Voice Interaction Framework',
     long_description=_long_description,
     long_description_content_type='text/markdown',

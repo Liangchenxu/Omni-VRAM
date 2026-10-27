@@ -28,6 +28,30 @@
 - 版本号以 `vram_core/__init__.py::__version__`、`pyproject.toml`、`setup.py` 为准，三者必须一致。
 - 历史版本号（CHANGELOG 历史小节、模块中的 "v2.5.0 behaviour" 之类来源注释）不得改写。
 
+## 【版本号递增铁律（Patch-Only，最高优先级）】
+
+- 项目大版本与次版本号长期锁定为 **`2.9.x`**。
+- 后续任何功能更新、缺陷修复或重构，**只允许递增最后一位小版本号（Patch）**：
+  `2.9.0 → 2.9.1 → 2.9.2 → ...`
+- **绝对禁止**擅自把版本号升级为 `2.10.0` 或 `3.0.0`。若确实需要提升 Major / Minor，
+  必须由用户显式授权，并同步在 `docs/releases/` 对应档案里写明理由。
+- `wddm_bypass` 原生 ABI 版本（`wddm_bypass.__version__` = `WDDM-Bypass/setup.py`
+  = `build_info()["version"]`）与项目版本解耦，**不随 Patch 递增**。
+
+## 【版本档案留存铁律（Per-Version Archive，严禁覆盖，最高优先级）】
+
+- 每个版本完成后，必须在 `docs/releases/` 下新建 `docs/releases/v<版本号>.md`
+  （例如 `docs/releases/v2.9.1.md`）。
+- **绝对禁止覆盖、重写或删除旧版本的复盘文档**：`docs/releases/` 是只增不改的档案库，
+  新版本只能新增自己的文件。
+- 每篇档案必须用清晰的中文详细记录以下四块内容（供开发者日后学习与面试复盘）：
+  1. **做了什么（What Changed）**：新增 / 修改的文件、核心接口与架构演进。
+  2. **遇到了什么问题与踩坑剖析（Problems & Root Causes）**：开发、编译或测试中暴露的
+     真实报错与陷阱（分桶碰撞、环境缺失、死锁、带宽瓶颈等）及其底层原因。
+  3. **如何解决的（How It Was Solved）**：具体的算法、数学模型或代码级修复手法。
+  4. **验收与实测数据（Verification & Benchmarks）**：测试通过数与性能对比表。
+- `docs/releases/` 受 Git 正常跟踪，**不得**写入 `.gitignore`。
+
 ## 【测试验收门禁】
 
 - 以下 7 个核心测试文件必须全绿（0 failed）后才允许提交：

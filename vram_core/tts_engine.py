@@ -54,9 +54,15 @@ try:
 except ImportError:
     pass
 
+#: Module-level symbol on purpose: ``unittest.mock.patch()`` resolves a target by
+#: attribute lookup, so ``vram_core.tts_engine.pyttsx3`` has to exist even when the
+#: optional package is not installed. Binding it to None keeps the dependency
+#: optional and lets a test patch the backend without pyttsx3 present.
+pyttsx3 = None
 _PYTTSX3_AVAILABLE = False
 try:
-    import pyttsx3
+    import pyttsx3  # type: ignore[import-not-found,no-redef]
+
     _PYTTSX3_AVAILABLE = True
     if not _EDGE_TTS_AVAILABLE:
         logger.info("pyttsx3 detected 锟?offline TTS available")
@@ -294,6 +300,11 @@ class TTSEngine:
             logger.info("Using edge-tts backend, voice: %s", self._voice)
         elif backend in ("auto", "pyttsx3") and _PYTTSX3_AVAILABLE:
             try:
+                if pyttsx3 is None:  # patched flag, missing dependency
+                    raise RuntimeError(
+                        "pyttsx3 is not installed; install it or use "
+                        "backend='edge-tts'"
+                    )
                 self._pyttsx3_engine = pyttsx3.init()
                 self._pyttsx3_engine.setProperty('rate', 150)
                 self._pyttsx3_engine.setProperty('volume', 1.0)
