@@ -5,7 +5,73 @@ All notable changes to **Omni-VRAM** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.0] - 2026-10-26
+
+### Highlights
+- **击穿 4 MiB 带宽墙（1.10x → 1.78x）**：新增 `kernel_fused_affine_relu_f32`
+  （`WDDM-Bypass/csrc/graph_engine.cu`），把 `scale → add → relu` 三个 kernel 融合成
+  一个寄存器驻留的 fusion kernel，并用 128-bit `float4`（`LDG.E.128` / `STG.E.128`）访存：
+  每元素 HBM 流量从 **28 字节降到 12 字节**（2.33× 削减）。
+  RTX 3060 / 1,048,576 个 float32（4 MiB）实测：eager 三次独立算子 0.1004 ms →
+  融合图回放 0.0565 ms，**1.78×**；同一批三 kernel 已捕获成图时为 1.86×，
+  说明收益来自"少搬显存"而不只是"少提交几次"。
+- **外部 PyTorch CUDA Stream 非拥有式捕获**：`WDDMBypassEngine::begin_capture()` 新增
+  `stream_ptr` 参数（Python 侧 `Engine.begin_capture(key, stream_ptr=...)` / `Engine.capture(..., stream_ptr=...)`）。
+  传入外部裸流句柄时用 `cudaStreamCaptureModeRelaxed` 录制，aten / cuBLAS 在录制期
+  查询流与分配器状态不会再触发 `cudaErrorStreamCaptureUnsupported`；引擎析构时
+  只销毁自己的内部流，外部流一律不碰。原有内部流路径仍用 `cudaStreamCaptureModeThreadLocal`，
+  `stream_ptr=0` 的默认行为与 v2.8.0 完全一致（旧测试无需修改）。
+- **`TorchGraphModule`（`wddm_bypass/integration.py`）**：包装真实 `nn.Module`
+  （`nn.Linear` 的 cuBLAS GEMM、`nn.SiLU` 的 ATen kernel），按输入形状维护静态张量场，
+  走"预热 → 捕获一次 → 回放"三段式，`stats()` 汇报
+  `Warmups / Captures / Replays / EagerFallbacks`；形状预算耗尽或非 CUDA 张量时
+  退化为 eager。预热不是装饰：cuBLAS workspace、torch caching allocator 的块分配都发生在
+  首次调用，而捕获期分配正是捕获失败的经典原因。
+- **Windows DLL 自愈（`wddm_bypass/backend.py`）**：新增 `heal_windows_dll_environment()`，
+  用 `SetErrorMode(0x8003)` 关掉加载器的模态报错弹窗（把 `DLL load failed` 变成可捕获的
+  异常），并把 Conda / CUDA 的 `Library\bin`、`DLLs`、`Scripts` 注册到 `os.add_dll_directory`
+  与 `PATH`；`load_backend()` 顶部与 `vram_core` 导入时自动调用，幂等且只注册新增目录。
+
+### Added
+- `WDDM-Bypass/csrc/graph_engine.cu`
+  - `kernel_fused_affine_relu_f32`（对齐走 `float4`，非对齐回落标量，含尾部 1~3 元素处理）
+  - `ops::launch_fused_affine_relu(dst, a, b, scale, count, stream_token)`
+  - `WDDMBypassEngine::launch_fused_affine_relu(dst, a, b, scale, count, stream_token=0)`
+    （按名字解析三个静态缓冲、校验容量；捕获中 `stream_token=0` 表示"正在录制的流"）
+  - `WDDMBypassEngine::resolve_stream()` 与 `active_capture_stream_` / `capture_uses_external_stream_`
+  - `stats()["fused_launches"]`
+- `WDDM-Bypass/csrc/bypass_core.cpp`：绑定 `begin_capture(..., stream_ptr=0)`、
+  引擎级与模块级 `launch_fused_affine_relu`
+- `wddm_bypass/__init__.py`：`Engine.launch_fused_affine_relu()`；`begin_capture()` / `capture()`
+  新增 `stream_ptr`；后端缺少该方法时给出重建扩展的明确提示
+- `wddm_bypass/integration.py`：`TorchGraphModule`、`DecodeBuffers.fused_affine_relu()`、`slot_keys()`
+- `wddm_bypass/backend.py`：`heal_windows_dll_environment()`
+- `tests/test_engine_suite.py`：融合算子数值/尾部/默认长度/错误路径/单节点捕获 5 例 +
+  4 MiB 带宽对比 1 例 + DLL 自愈 4 例
+- `tests/test_transformer_integration.py`：`TestTorchGraphModuleOnGPU` 5 例
+  （真实 `nn.Sequential(Linear, SiLU, Linear)` 的 Warmup → Capture → Replay、
+  回放跟随新输入、形状独立槽位、eager 回退、`close()` 释放槽位）
+- `docs/architecture_masterclass.md`：v2.9.0 章节（HBM 流量数学模型、外部流捕获原理、
+  4 MiB 实测数据）
+
+### Changed
+- 对外版本号统一升到 `2.9.0`：`vram_core/__init__.py`、`pyproject.toml`、根 `setup.py`、README 徽章。
+- `wddm_bypass` 原生 ABI 版本保持 `1.0.0`（`wddm_bypass.__version__` = `WDDM-Bypass/setup.py`
+  = `build_info()["version"]`），新增符号属于向后兼容扩展，不改变已有调用约定。
+- `TorchGraphModule` 的槽位用 `ShapeKey(1, 1, 1, "slot-<id>")` 作为路由键：`BucketPolicy`
+  默认对三个整数维度做 2 的幂归并，若把槽位编号塞进整数维度，`slot 320` 与 `slot 321`
+  会落进同一个桶（同一个图）；`dtype` 字段在分桶中不被改写，因此用它承载唯一性。
+
+### Tests
+- `tests/test_engine_suite.py` + `tests/test_transformer_integration.py`：141 passed / 0 failed（11.04 s）
+- 新增用例覆盖：`launch_fused_affine_relu` 数值等价、非 4 的倍数尾部、默认长度、
+  未知/过小缓冲拒绝、单图节点捕获；4 MiB 下 `fused/replay` 快于 `eager`（>1.10×）且快于三 kernel 图；
+  `TorchGraphModule` 的 `Captures == 1` / `Replays > 0` 与逐元素对齐；DLL 自愈幂等性与平台守卫。
+
+
+
 ## [2.8.0] - 2026-10-26
+
 
 ### Highlights
 - **v2.8.0 合并发布**：把原 `2.6.0`（WDDM-Bypass 执行子系统并入主干）与 `2.7.0`

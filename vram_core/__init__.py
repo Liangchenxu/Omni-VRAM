@@ -28,10 +28,21 @@ Modules:
     - chinese: Chinese text processing (punctuation, normalization, tokenization, domain dicts)
     - meeting_summarizer: AI-powered meeting summarization with topic/decision/action extraction
     - realtime_server: OpenAI Realtime API compatible WebSocket speech-to-speech gateway
-    - wddm_bridge: VRAM pool / CUDA-graph execution bridge (WDDM-Bypass, v2.8.0)
+    - wddm_bridge: VRAM pool / CUDA-graph execution bridge (WDDM-Bypass, v2.9.0)
 """
 
-__version__ = "2.8.0"
+__version__ = "2.9.0"
+
+# Windows self-healing (v2.9.0): register the Conda / CUDA DLL directories and
+# turn the loader's modal "DLL load failed" dialog into an ordinary exception
+# before the first extension import. Best effort only - vram_core must stay
+# importable on a machine without the optional wddm_bypass package.
+try:
+    from wddm_bypass.backend import heal_windows_dll_environment as _heal_dlls
+
+    _heal_dlls()
+except Exception:  # pragma: no cover - optional dependency, never fatal
+    pass
 
 # CUDA extension (built from vram_hacker.cu)
 try:

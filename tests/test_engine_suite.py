@@ -811,6 +811,7 @@ NATIVE_SURFACE = (
     "copy_to_static_input",
     "zero_static_buffer",
     "copy_from_static",
+    "launch_fused_affine_relu",
     "describe",
     "capture_stream_ptr",
     "stats",
@@ -885,7 +886,13 @@ def test_extension_exposes_the_documented_surface():
         name for name in NATIVE_SURFACE if not hasattr(NATIVE_BACKEND.WDDMBypassEngine, name)
     ]
     assert not missing, missing
-    for name in ("launch_scale", "launch_add", "launch_relu", "build_info"):
+    for name in (
+        "launch_scale",
+        "launch_add",
+        "launch_relu",
+        "launch_fused_affine_relu",
+        "build_info",
+    ):
         assert hasattr(NATIVE_BACKEND, name), name
     assert NATIVE_BACKEND.build_info()["version"] == __version__
     assert NATIVE_BACKEND.__version__ == __version__
@@ -1164,3 +1171,250 @@ def test_bridge_helpers_measure_buffers_and_refuse_host_pointers():
     with pytest.raises(TypeError):
         nbytes_of(None)
     assert isinstance(wddm_available(), bool)
+
+
+# ---------------------------------------------------------------------------
+# v2.9.0: vectorised fused affine + ReLU (one kernel, 12 bytes per element)
+# ---------------------------------------------------------------------------
+
+
+def fused_reference(a, b, scale):
+    """``max(0, a * scale + b)`` in float32 - the definition of the fused op."""
+    return np.maximum(np.float32(0.0), a * np.float32(scale) + b)
+
+
+@requires_gpu
+def test_fused_affine_relu_matches_the_reference(native_engine):
+    rng = np.random.default_rng(7)
+    # 4099 is deliberately not a multiple of 4: it exercises the float4 tail.
+    count = 4099
+    scale = 1.75
+    a = rng.standard_normal(count).astype(np.float32)
+    b = rng.standard_normal(count).astype(np.float32)
+    upload(native_engine, "a", a)
+    upload(native_engine, "b", b)
+    upload(native_engine, "out", np.zeros(count, dtype=np.float32))
+
+    native_engine.launch_fused_affine_relu("out", "a", "b", scale, count)
+    native_engine.synchronize()
+
+    assert native_engine.stats()["fused_launches"] == 1
+    np.testing.assert_allclose(
+        download(native_engine, "out", count),
+        fused_reference(a, b, scale),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
+
+@requires_gpu
+def test_fused_affine_relu_defaults_to_the_shared_buffer_length(native_engine):
+    values = np.arange(1, 257, dtype=np.float32)
+    offsets = np.full(256, 0.5, dtype=np.float32)
+    upload(native_engine, "a", values)
+    upload(native_engine, "b", offsets)
+    upload(native_engine, "out", np.zeros(256, dtype=np.float32))
+
+    native_engine.launch_fused_affine_relu("out", "a", "b", 2.0)
+
+    native_engine.synchronize()
+    np.testing.assert_allclose(
+        download(native_engine, "out", 256),
+        fused_reference(values, offsets, 2.0),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
+
+@requires_gpu
+def test_fused_affine_relu_rejects_unknown_or_too_small_buffers(native_engine):
+    upload(native_engine, "a", np.ones(8, dtype=np.float32))
+    upload(native_engine, "b", np.ones(8, dtype=np.float32))
+    upload(native_engine, "out", np.ones(8, dtype=np.float32))
+
+    with pytest.raises(native_engine_error()):
+        native_engine.launch_fused_affine_relu("out", "a", "missing", 1.0, 8)
+    with pytest.raises(native_engine_error()):
+        native_engine.launch_fused_affine_relu("out", "a", "b", 1.0, 9)  # 36 > 32 bytes
+    with pytest.raises(ValueError):
+        native_engine.launch_fused_affine_relu("out", "a", "b", 1.0, 0)
+
+
+@requires_gpu
+def test_fused_affine_relu_is_captured_as_a_single_graph_node(native_engine):
+    count = 1024
+    a = np.linspace(-1.0, 1.0, count, dtype=np.float32)
+    b = np.full(count, 0.25, dtype=np.float32)
+    upload(native_engine, "a", a)
+    upload(native_engine, "b", b)
+    upload(native_engine, "out", np.zeros(count, dtype=np.float32))
+    key = (1, count, 1)
+
+    # No stream token: inside a capture, 0 means the stream being recorded.
+    with native_engine.capture(key):
+        native_engine.launch_fused_affine_relu("out", "a", "b", 3.0, count)
+
+    description = json.loads(native_engine.describe(key))
+    assert description["node_count"] == 1
+    assert description["has_exec"] is True
+
+    native_engine.zero_buffer("out")
+    native_engine.replay(key)
+    native_engine.synchronize()
+    np.testing.assert_allclose(
+        download(native_engine, "out", count),
+        fused_reference(a, b, 3.0),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
+
+def _median_ms(call, iters=40, warmup=10):
+    """Wall-clock milliseconds per call, device-synchronised every round.
+
+    CUDA events are not used on purpose: an event recorded on the default stream
+    does not order against work submitted to another stream, so it would measure
+    submission only and report a few microseconds for a 4 MiB kernel.
+    """
+    torch = pytest.importorskip("torch")
+    for _ in range(warmup):
+        call()
+    torch.cuda.synchronize()
+    samples = []
+    for _ in range(5):
+        torch.cuda.synchronize()
+        started = time.perf_counter()
+        for _ in range(iters):
+            call()
+        torch.cuda.synchronize()
+        samples.append((time.perf_counter() - started) * 1e3 / iters)
+    samples.sort()
+    return samples[len(samples) // 2]
+
+
+@requires_gpu
+def test_fused_kernel_breaks_the_4mib_bandwidth_wall(native_engine):
+    """1,048,576 float32 (4 MiB): one fused kernel against three eager kernels.
+
+    The v2.8.0 measurement for this size was 1.10x, because cutting the launch
+    count alone does not move the HBM traffic. Fusing the three ops into one
+    register-resident kernel drops the traffic from 28 to 12 bytes per element,
+    so the same bandwidth carries 2.33x more work and the measured speedup
+    leaves 1.10x behind.
+    """
+    torch = pytest.importorskip("torch")
+    count = 1 << 20
+    nbytes = count * 4
+    scale = 1.75
+
+    a = torch.randn(count, device="cuda", dtype=torch.float32)
+    b = torch.randn(count, device="cuda", dtype=torch.float32)
+    for name in ("a", "b", "out"):
+        native_engine.register_buffer(name, nbytes)
+    native_engine.copy_into("a", a.data_ptr())
+    native_engine.copy_into("b", b.data_ptr())
+    native_engine.synchronize()
+
+    def eager_three():
+        """Three independent launches: 28 bytes per element through HBM."""
+        return torch.relu(torch.add(torch.mul(a, scale), b))
+
+    stream = torch.cuda.Stream()
+    stream_ptr = int(stream.cuda_stream)
+
+    # Same three kernels, captured: this isolates the launch-count win only.
+    three_key = (1, count, 2)
+    with torch.cuda.stream(stream):
+        native_engine.begin_capture(three_key, stream_ptr=stream_ptr)
+        eager_three()
+        native_engine.end_capture(three_key)
+    torch.cuda.synchronize()
+
+    # One fused kernel, captured: 12 bytes per element.
+    fused_key = (1, count, 3)
+    with torch.cuda.stream(stream):
+        native_engine.begin_capture(fused_key, stream_ptr=stream_ptr)
+        native_engine.launch_fused_affine_relu(
+            "out", "a", "b", scale, count, stream_token=stream_ptr
+        )
+        native_engine.end_capture(fused_key)
+    torch.cuda.synchronize()
+
+    eager_ms = _median_ms(eager_three)
+    three_ms = _median_ms(lambda: native_engine.replay(three_key, stream_token=stream_ptr))
+    fused_ms = _median_ms(lambda: native_engine.replay(fused_key, stream_token=stream_ptr))
+
+    # > 1.10x against the unfused eager path: the old ceiling is broken.
+    assert fused_ms * 1.10 < eager_ms, (fused_ms, eager_ms)
+    # ... and the win survives when the launch count is already amortised.
+    assert fused_ms < three_ms, (fused_ms, three_ms)
+
+    native_engine.replay(fused_key, stream_token=stream_ptr)
+    native_engine.synchronize()
+    np.testing.assert_allclose(
+        download(native_engine, "out", count),
+        torch.relu(a * scale + b).cpu().numpy(),
+        rtol=1e-4,
+        atol=1e-4,
+    )
+
+
+# ---------------------------------------------------------------------------
+# v2.9.0: Windows DLL self-healing
+# ---------------------------------------------------------------------------
+
+
+class TestWindowsDllHealing:
+    """The import surface is repaired once, before the first extension import."""
+
+    def test_returns_a_list_and_never_repeats_itself(self):
+        from wddm_bypass.backend import heal_windows_dll_environment
+
+        first = heal_windows_dll_environment()
+        assert isinstance(first, list)
+        assert heal_windows_dll_environment() == []
+
+    def test_platform_guard_is_a_no_op_off_windows(self, monkeypatch):
+        from wddm_bypass import backend as backend_module
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        assert backend_module.heal_windows_dll_environment() == []
+
+    def test_registers_existing_prefixes_and_puts_them_on_path(self, monkeypatch):
+        import os
+
+        from wddm_bypass import backend as backend_module
+
+        # Fresh "never healed" state; the handles stay in the real list so the
+        # registered directories outlive this test.
+        monkeypatch.setattr(backend_module, "_HEALED_DIRS", set())
+
+        added = backend_module.heal_windows_dll_environment()
+        if sys.platform != "win32":      # that branch is covered above
+            assert added == []
+            return
+
+        assert added, "a Windows Conda prefix exposes at least one existing directory"
+        assert all(os.path.isdir(directory) for directory in added)
+        path_parts = {
+            os.path.normcase(os.path.normpath(part))
+            for part in os.environ.get("PATH", "").split(os.pathsep)
+            if part
+        }
+        for directory in added:
+            assert os.path.normcase(os.path.abspath(directory)) in path_parts
+        assert backend_module.heal_windows_dll_environment() == []
+
+    def test_load_backend_heals_before_importing(self, monkeypatch):
+        from wddm_bypass import backend as backend_module
+
+        calls = []
+        monkeypatch.setattr(
+            backend_module,
+            "heal_windows_dll_environment",
+            lambda: calls.append(1) or [],
+        )
+        backend_module.load_backend("wddm_bypass.bucketing")
+        assert calls, "load_backend() must heal the DLL surface first"
+
+

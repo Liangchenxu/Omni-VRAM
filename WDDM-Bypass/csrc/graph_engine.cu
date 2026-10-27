@@ -134,6 +134,62 @@ __global__ void relu_kernel(float* dst, long long count) {
     }
 }
 
+// Vectorized 128-bit (float4) fused affine + ReLU kernel:
+//     out[i] = max(0.0f, a[i] * scale + b[i])
+//
+// HBM traffic per element:
+//   unfused (scale -> add -> relu) : 28 bytes (read a, write tmp1, read tmp1+b,
+//                                    write tmp2, read tmp2, write out)
+//   fused (this kernel)            : 12 bytes (read a, read b, write out)
+// so the same bandwidth carries 2.33x more elements. Every access is a merged
+// 128-bit transaction (LDG.E.128 / STG.E.128) when the three pointers share
+// 16-byte alignment, which is what removes the 4 MiB bandwidth wall.
+__global__ void kernel_fused_affine_relu_f32(float* __restrict__ out,
+                                             const float* __restrict__ a,
+                                             const float* __restrict__ b,
+                                             float scale,
+                                             long long n) {
+    const long long idx =
+        static_cast<long long>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const long long stride =
+        static_cast<long long>(gridDim.x) * static_cast<long long>(blockDim.x);
+
+    const bool aligned =
+        ((reinterpret_cast<std::uintptr_t>(out) |
+          reinterpret_cast<std::uintptr_t>(a) |
+          reinterpret_cast<std::uintptr_t>(b)) & 0xF) == 0;
+
+    if (aligned) {
+        const long long vector_count = n >> 2;  // n / 4
+        float4* __restrict__ out4 = reinterpret_cast<float4*>(out);
+        const float4* __restrict__ a4 = reinterpret_cast<const float4*>(a);
+        const float4* __restrict__ b4 = reinterpret_cast<const float4*>(b);
+
+        for (long long i = idx; i < vector_count; i += stride) {
+            const float4 va = a4[i];
+            const float4 vb = b4[i];
+            float4 result;
+            result.x = fmaxf(0.0f, fmaf(va.x, scale, vb.x));
+            result.y = fmaxf(0.0f, fmaf(va.y, scale, vb.y));
+            result.z = fmaxf(0.0f, fmaf(va.z, scale, vb.z));
+            result.w = fmaxf(0.0f, fmaf(va.w, scale, vb.w));
+            out4[i] = result;
+        }
+
+        // Tail: at most three elements that did not fill a float4.
+        const long long tail_start = vector_count << 2;
+        for (long long i = tail_start + idx; i < n; i += stride) {
+            out[i] = fmaxf(0.0f, fmaf(a[i], scale, b[i]));
+        }
+        return;
+    }
+
+    // Unaligned fallback: scalar accesses, identical arithmetic.
+    for (long long i = idx; i < n; i += stride) {
+        out[i] = fmaxf(0.0f, fmaf(a[i], scale, b[i]));
+    }
+}
+
 void require_pointer(std::uintptr_t pointer, const char* what) {
     if (pointer == 0) {
         std::string message("WDDM-Bypass: null device pointer passed to ");
@@ -188,6 +244,28 @@ void launch_relu(std::uintptr_t dst,
     const cudaStream_t stream = detail::stream_from_token(stream_token);
     relu_kernel<<<block_count(count), kThreadsPerBlock, 0, stream>>>(
         reinterpret_cast<float*>(dst), static_cast<long long>(count));
+}
+
+void launch_fused_affine_relu(std::uintptr_t dst,
+                              std::uintptr_t a,
+                              std::uintptr_t b,
+                              float scale,
+                              std::int64_t count,
+                              std::uintptr_t stream_token) {
+    require_pointer(dst, "launch_fused_affine_relu");
+    require_pointer(a, "launch_fused_affine_relu");
+    require_pointer(b, "launch_fused_affine_relu");
+    if (count <= 0) {
+        return;
+    }
+    const cudaStream_t stream = detail::stream_from_token(stream_token);
+    kernel_fused_affine_relu_f32<<<block_count(count), kThreadsPerBlock, 0,
+                                   stream>>>(
+        reinterpret_cast<float*>(dst),
+        reinterpret_cast<const float*>(a),
+        reinterpret_cast<const float*>(b),
+        scale,
+        static_cast<long long>(count));
 }
 
 }  // namespace ops
@@ -378,9 +456,22 @@ void WDDMBypassEngine::activate_device() {
     }
 }
 
+cudaStream_t WDDMBypassEngine::resolve_stream(
+    std::uintptr_t external_stream_ptr) const noexcept {
+    if (external_stream_ptr != 0) {
+        // Borrowed, never owned: PyTorch created it and only PyTorch may
+        // destroy it.
+        return reinterpret_cast<cudaStream_t>(external_stream_ptr);
+    }
+    // const method over a mutable-by-capture-lifetime handle; the value is only
+    // read here and no CUDA call is issued.
+    return const_cast<WDDMBypassEngine*>(this)->capture_stream_;
+}
+
 void WDDMBypassEngine::begin_capture(int graph_id,
                                      const std::string& shape_key,
-                                     bool hot_update) {
+                                     bool hot_update,
+                                     std::uintptr_t stream_ptr) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     if (capture_broken_) {
@@ -408,11 +499,22 @@ void WDDMBypassEngine::begin_capture(int graph_id,
     slot.staging.reset();
     slot.capturing_into_staging = hot_update;
 
-    // The capture stream must be idle before capture begins.
-    CUDA_CHECK(cudaStreamSynchronize(capture_stream_));
-    CUDA_CHECK(cudaStreamBeginCapture(capture_stream_,
-                                      cudaStreamCaptureModeThreadLocal));
+    const cudaStream_t cap_stream = resolve_stream(stream_ptr);
 
+    // The capture stream must be idle before capture begins.
+    CUDA_CHECK(cudaStreamSynchronize(cap_stream));
+
+    // An external (PyTorch) stream is captured in Relaxed mode: while recording,
+    // aten and cuBLAS query stream and allocator state, and those queries are
+    // refused under cudaStreamCaptureModeGlobal/ThreadLocal. The engine's own
+    // stream keeps the stricter ThreadLocal mode it has always used.
+    const cudaStreamCaptureMode mode = (stream_ptr != 0)
+                                           ? cudaStreamCaptureModeRelaxed
+                                           : cudaStreamCaptureModeThreadLocal;
+    CUDA_CHECK(cudaStreamBeginCapture(cap_stream, mode));
+
+    active_capture_stream_ = cap_stream;
+    capture_uses_external_stream_ = (stream_ptr != 0);
     slot.capturing = true;
     active_capture_id_ = graph_id;
 }
@@ -428,17 +530,26 @@ void WDDMBypassEngine::end_capture(int graph_id) {
         throw EngineError(message.str());
     }
 
+    // Close the stream the capture was opened on: the engine's own stream unless
+    // the caller passed an external (PyTorch) one to begin_capture(). The stream
+    // is only borrowed - end_capture() never destroys it.
+    const cudaStream_t closing_stream =
+        (active_capture_stream_ != nullptr) ? active_capture_stream_
+                                            : capture_stream_;
+
     cudaGraph_t captured = nullptr;
-    const cudaError_t status = cudaStreamEndCapture(capture_stream_, &captured);
+    const cudaError_t status = cudaStreamEndCapture(closing_stream, &captured);
 
     // Clear capture bookkeeping before any throw so the engine stays coherent.
     slot.capturing = false;
     active_capture_id_ = -1;
+    active_capture_stream_ = nullptr;
+    capture_uses_external_stream_ = false;
 
     if (status != cudaSuccess) {
         capture_broken_ = true;
         detail::throw_cuda_error(status,
-                                 "cudaStreamEndCapture(capture_stream_, ...)",
+                                 "cudaStreamEndCapture(active_capture_stream_, ...)",
                                  __FILE__,
                                  __LINE__);
     }
@@ -847,6 +958,65 @@ void WDDMBypassEngine::zero_static_buffer(const std::string& name,
                                stream));
 }
 
+void WDDMBypassEngine::launch_fused_affine_relu(const std::string& dst,
+                                                const std::string& a,
+                                                const std::string& b,
+                                                float scale,
+                                                std::int64_t count,
+                                                std::uintptr_t stream_token) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    activate_device();
+
+    auto require_buffer = [this](const std::string& name) -> const StaticBuffer& {
+        auto iterator = buffers_.find(name);
+        if (iterator == buffers_.end()) {
+            std::string message("WDDM-Bypass: unknown static buffer '");
+            message.append(name);
+            message.append("'");
+            throw EngineError(message);
+        }
+        return iterator->second;
+    };
+
+    if (count <= 0) {
+        std::ostringstream message;
+        message << "WDDM-Bypass: launch_fused_affine_relu needs a positive "
+                   "element count, got "
+                << count;
+        throw EngineError(message.str());
+    }
+
+    const StaticBuffer& destination = require_buffer(dst);
+    const StaticBuffer& lhs = require_buffer(a);
+    const StaticBuffer& rhs = require_buffer(b);
+
+    const std::size_t needed = static_cast<std::size_t>(count) * sizeof(float);
+    if (destination.bytes < needed || lhs.bytes < needed || rhs.bytes < needed) {
+        std::ostringstream message;
+        message << "WDDM-Bypass: launch_fused_affine_relu overflows a static "
+                   "buffer ("
+                << count << " floats = " << needed << " bytes)";
+        throw EngineError(message.str());
+    }
+
+    // Inside an open capture a token of 0 means "the stream being recorded", so
+    // a plain engine-level launch is captured instead of running eagerly.
+    std::uintptr_t token = stream_token;
+    if (token == 0 && active_capture_id_ >= 0 &&
+        active_capture_stream_ != nullptr) {
+        token = reinterpret_cast<std::uintptr_t>(active_capture_stream_);
+    }
+
+    ops::launch_fused_affine_relu(
+        reinterpret_cast<std::uintptr_t>(destination.ptr()),
+        reinterpret_cast<std::uintptr_t>(lhs.ptr()),
+        reinterpret_cast<std::uintptr_t>(rhs.ptr()),
+        scale,
+        count,
+        token);
+    ++total_fused_launches_;
+}
+
 // ---------------------------------------------------------------------------
 // Introspection
 // ---------------------------------------------------------------------------
@@ -887,6 +1057,7 @@ std::map<std::string, std::uint64_t> WDDMBypassEngine::stats() const {
     values["updates"] = total_updates_;
     values["rebuilds"] = total_rebuilds_;
     values["allocations"] = total_allocations_;
+    values["fused_launches"] = total_fused_launches_;
     values["capturing"] = active_capture_id_ >= 0 ? 1u : 0u;
     values["device_index"] = static_cast<std::uint64_t>(device_index_);
     values["torch_interop"] = detail::built_with_torch() ? 1u : 0u;

@@ -37,6 +37,7 @@ from wddm_bypass.integration import (  # noqa: E402
     DecodePlan,
     HookClosed,
     HookedDecoder,
+    TorchGraphModule,
     accelerate_decode,
     data_pointer,
     dtype_size,
@@ -842,3 +843,145 @@ class TestTransformerDecodeOnGPU:
             )
         finally:
             hook.close()
+
+
+# ---------------------------------------------------------------------------
+# v2.9.0: real nn.Module capture through an external PyTorch stream
+# ---------------------------------------------------------------------------
+
+
+def _torch_cuda_ready():
+    """True when torch is importable and sees a CUDA device."""
+    try:
+        import torch
+    except ImportError:
+        return False
+    return bool(torch.cuda.is_available())
+
+
+requires_torch_cuda = pytest.mark.skipif(
+    not (BACKEND_PRESENT and _torch_cuda_ready()),
+    reason="needs the built engine and a CUDA device torch can see",
+)
+
+
+def small_mlp(hidden: int = 128, width: int = 256):
+    """Linear + SiLU + Linear: two cuBLAS GEMMs and one ATen elementwise kernel."""
+    torch = pytest.importorskip("torch")
+    model = torch.nn.Sequential(
+        torch.nn.Linear(hidden, width),
+        torch.nn.SiLU(),
+        torch.nn.Linear(width, hidden),
+    )
+    return model.cuda().eval()
+
+
+@requires_torch_cuda
+class TestTorchGraphModuleOnGPU:
+    def test_warmup_capture_replay_round_trip(self, gpu_engine):
+        torch = pytest.importorskip("torch")
+        model = small_mlp()
+        wrapped = TorchGraphModule(model, gpu_engine, warmup_steps=2, base_slot_id=300)
+        x = torch.randn(8, 128, device="cuda", dtype=torch.float32)
+        try:
+            with torch.no_grad():
+                expected = model(x)
+
+                # Phase 1: eager warm-ups on the capture stream.
+                first = wrapped(x)
+                second = wrapped(x)
+                assert wrapped.stats["Warmups"] == 2
+                assert wrapped.stats["Captures"] == 0
+                torch.testing.assert_close(first, expected, rtol=1e-4, atol=1e-4)
+                torch.testing.assert_close(second, expected, rtol=1e-4, atol=1e-4)
+
+                # Phase 2: the module's real kernels are recorded once.
+                captured = wrapped(x)
+                assert wrapped.stats["Captures"] == 1
+                assert wrapped.stats["Replays"] == 0
+                torch.testing.assert_close(captured, expected, rtol=1e-4, atol=1e-4)
+                assert len(gpu_engine.graphs()) == 1
+                description = json.loads(gpu_engine.describe(wrapped.slot_keys()[0]))
+                assert description["node_count"] >= 2, "cuBLAS + ATen kernels recorded"
+
+                # Phase 3: every later call is one graph launch.
+                replayed = wrapped(x)
+                assert wrapped.stats["Replays"] == 1
+                torch.testing.assert_close(replayed, expected, rtol=1e-4, atol=1e-4)
+        finally:
+            wrapped.close()
+
+    def test_replay_follows_the_new_input(self, gpu_engine):
+        torch = pytest.importorskip("torch")
+        model = small_mlp()
+        wrapped = TorchGraphModule(model, gpu_engine, warmup_steps=1, base_slot_id=310)
+        first_input = torch.randn(4, 128, device="cuda", dtype=torch.float32)
+        second_input = torch.randn(4, 128, device="cuda", dtype=torch.float32)
+        try:
+            with torch.no_grad():
+                wrapped(first_input)          # warm-up
+                wrapped(first_input)          # capture
+                for _ in range(3):
+                    graph_output = wrapped(second_input)
+                expected = model(second_input)
+            assert wrapped.stats["Replays"] == 3
+            torch.testing.assert_close(graph_output, expected, rtol=1e-4, atol=1e-4)
+        finally:
+            wrapped.close()
+
+    def test_each_shape_gets_its_own_slot(self, gpu_engine):
+        torch = pytest.importorskip("torch")
+        model = small_mlp()
+        wrapped = TorchGraphModule(model, gpu_engine, warmup_steps=1, base_slot_id=320)
+        try:
+            with torch.no_grad():
+                wrapped(torch.randn(2, 128, device="cuda"))
+                wrapped(torch.randn(2, 128, device="cuda"))
+                wrapped(torch.randn(3, 128, device="cuda"))
+                wrapped(torch.randn(3, 128, device="cuda"))
+            assert len(wrapped) == 2
+            assert wrapped.stats["Captures"] == 2
+            assert len(gpu_engine.graphs()) == 2
+        finally:
+            wrapped.close()
+
+    def test_cpu_tensors_and_exhausted_slots_fall_back_eagerly(self, gpu_engine):
+        torch = pytest.importorskip("torch")
+
+        class Doubler(torch.nn.Module):
+            """Stateless, so the same module accepts CPU and CUDA tensors."""
+
+            def forward(self, value):
+                return value * 2.0
+
+        model = Doubler()
+        wrapped = TorchGraphModule(model, gpu_engine, warmup_steps=1, max_slots=1)
+        try:
+            with torch.no_grad():
+                host = torch.randn(2, 128)
+                torch.testing.assert_close(wrapped(host), model(host))
+                assert wrapped.stats["EagerFallbacks"] == 1
+
+                first = torch.randn(2, 128, device="cuda")
+                wrapped(first)                      # warm-up
+                torch.testing.assert_close(wrapped(first), model(first))
+                # The slot budget is spent: a second shape must not allocate one.
+                wider = torch.randn(5, 128, device="cuda")
+                torch.testing.assert_close(wrapped(wider), model(wider))
+                assert wrapped.stats["EagerFallbacks"] == 2
+                assert len(gpu_engine.graphs()) == 1
+        finally:
+            wrapped.close()
+
+    def test_close_releases_every_slot(self, gpu_engine):
+        torch = pytest.importorskip("torch")
+        wrapped = TorchGraphModule(small_mlp(), gpu_engine, warmup_steps=1, base_slot_id=330)
+        with torch.no_grad():
+            sample = torch.randn(2, 128, device="cuda")
+            wrapped(sample)      # warm-up
+            wrapped(sample)      # capture
+        assert len(gpu_engine.graphs()) == 1
+        wrapped.close()
+        assert gpu_engine.graphs() == []
+        assert len(wrapped) == 0
+

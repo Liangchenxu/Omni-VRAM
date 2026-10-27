@@ -43,6 +43,14 @@ Typical use::
     hook = DecodeHook(Engine(), plan=plan)
     hook.execute(decode_body)   # warm-up, capture, replay
     hook.execute(decode_body)   # one graph launch per step from here on
+
+v2.9.0 additions
+----------------
+* :meth:`DecodeBuffers.fused_affine_relu` - ``max(0, a * scale + b)`` in one
+  vectorised kernel (12 bytes per element instead of 28).
+* :class:`TorchGraphModule` - captures a real ``nn.Module`` (cuBLAS / ATen
+  kernels) through an external PyTorch stream, which is what makes the hook
+  usable on a model that does not call ``DecodeBuffers`` helpers.
 """
 
 from __future__ import annotations
@@ -62,6 +70,7 @@ __all__ = [
     "DecodePlan",
     "HookClosed",
     "HookedDecoder",
+    "TorchGraphModule",
     "accelerate_decode",
     "data_pointer",
     "dtype_size",
@@ -372,6 +381,40 @@ class DecodeBuffers:
         self.launches += 1
         return self
 
+    def fused_affine_relu(
+        self,
+        destination: str,
+        lhs: str,
+        rhs: str,
+        scale: float = 1.0,
+    ) -> "DecodeBuffers":
+        """``destination = max(0, lhs * scale + rhs)`` in one vectorised kernel.
+
+        Replaces ``scale`` + ``add`` + ``relu`` - three launches, 28 bytes per
+        element through HBM - with one register-resident kernel that moves 12
+        bytes per element and issues 128-bit ``float4`` accesses. That 2.33x
+        traffic cut is what removes the 4 MiB bandwidth wall where cutting the
+        launch count alone only reaches 1.10x.
+        """
+        spec = self.spec(destination)
+        second = self.spec(lhs)
+        third = self.spec(rhs)
+        if not (spec.count == second.count == third.count):
+            raise ValueError(
+                f"fused_affine_relu needs equal element counts, got "
+                f"{destination}={spec.count}, {lhs}={second.count}, {rhs}={third.count}"
+            )
+        self._launcher("launch_fused_affine_relu")(
+            self.ptr(destination),
+            self.ptr(lhs),
+            self.ptr(rhs),
+            float(scale),
+            spec.count,
+            self._stream_token,
+        )
+        self.launches += 1
+        return self
+
     def zero(self, name: str) -> "DecodeBuffers":
         """Asynchronously zero a static buffer (a memset, not a kernel)."""
         self._engine.zero_buffer(name, self._stream_token)
@@ -403,7 +446,8 @@ class DecodeBuffers:
         if not callable(function):
             raise BackendUnavailable(
                 f"the backend module has no {attribute}() launcher; the decode "
-                f"hook needs launch_scale, launch_add and launch_relu"
+                f"hook needs launch_scale, launch_add, launch_relu and, for the "
+                f"fused path, launch_fused_affine_relu"
             )
         return function
 
@@ -1072,6 +1116,204 @@ class HookedDecoder:
 
     def __repr__(self) -> str:  # pragma: no cover - diagnostics only
         return f"HookedDecoder({self._plan.name}, outputs={list(self._plan.outputs)})"
+
+
+class TorchGraphModule:
+    """Wraps a real ``nn.Module`` and captures its real CUDA kernels.
+
+    ``DecodeHook`` captures the engine's own three reference kernels; this class
+    captures whatever a PyTorch module actually launches - cuBLAS GEMMs from
+    ``nn.Linear``, ATen elementwise kernels from ``nn.SiLU``, and so on - by
+    binding the capture to a PyTorch stream it creates:
+
+    * warm-up: ``warmup_steps`` calls run eagerly on a private
+      ``torch.cuda.Stream``. That is not padding. cuBLAS allocates its workspace,
+      torch's caching allocator builds the block, and the kernels pick their
+      launch configuration on the first call - and an allocation inside a capture
+      is exactly what makes a capture fail.
+    * capture: the engine is told to record *that stream* by handle
+      (``stream.cuda_stream``) and captures it in
+      ``cudaStreamCaptureModeRelaxed``, because aten and cuBLAS query stream and
+      allocator state while recording. The engine borrows the stream and never
+      destroys it.
+    * replay: one ``cudaGraphLaunch`` on the same stream, so the input copy, the
+      module's N kernels and the output copy are submitted as one unit.
+
+    Each input shape gets its own static input arena and graph slot, up to
+    ``max_slots``; beyond that (and for non-CUDA tensors) the module runs eagerly
+    and is counted in ``stats()["EagerFallbacks"]``.
+
+    Replay returns the static output arena rather than a copy, so the tensor is
+    overwritten by the next call; clone it to keep a result.
+    """
+
+    _STAT_KEYS = ("Warmups", "Captures", "Replays", "EagerFallbacks")
+
+    def __init__(
+        self,
+        module: "Any",
+        engine: "Any",
+        *,
+        warmup_steps: int = 3,
+        max_slots: int = 8,
+        base_slot_id: int = 200,
+    ) -> None:
+        if not callable(module):
+            raise TypeError(
+                f"TorchGraphModule needs a callable module, got {type(module).__name__}"
+            )
+        self.module = module
+        self.engine = engine
+        self.warmup_steps = max(1, int(warmup_steps))
+        self.max_slots = max(1, int(max_slots))
+        self.base_slot_id = int(base_slot_id)
+        self._capture_stream: Optional[Any] = None
+        self._arenas: Dict[Tuple[int, ...], Dict[str, Any]] = {}
+        self._next_offset = 0
+        self._stats: Dict[str, int] = {name: 0 for name in self._STAT_KEYS}
+
+    # -- introspection -----------------------------------------------------
+    @property
+    def stats(self) -> Dict[str, int]:
+        """Copy of the Warmups / Captures / Replays / EagerFallbacks counters."""
+        return dict(self._stats)
+
+    @property
+    def shapes(self) -> Tuple[Tuple[int, ...], ...]:
+        """Input shapes that own a graph slot, in registration order."""
+        return tuple(self._arenas)
+
+    def slot_keys(self) -> Tuple[ShapeKey, ...]:
+        """Router keys that back the captured slots, in registration order."""
+        return tuple(entry["slot"] for entry in self._arenas.values())
+
+    def __len__(self) -> int:
+        return len(self._arenas)
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostics only
+        return (
+            f"<TorchGraphModule slots={len(self._arenas)} "
+            f"captures={self._stats['Captures']} replays={self._stats['Replays']}>"
+        )
+
+    def close(self) -> None:
+        """Drop every captured graph. The streams belong to PyTorch, not here."""
+        for entry in self._arenas.values():
+            with contextlib.suppress(Exception):
+                self.engine.reset(entry["slot"])
+        self._arenas.clear()
+        self._capture_stream = None
+
+    def _stream(self) -> Any:
+        """The private PyTorch stream, created on first use."""
+        if self._capture_stream is None:
+            try:
+                import torch
+            except ImportError as error:  # pragma: no cover - torch is present here
+                raise BackendUnavailable(
+                    "TorchGraphModule needs PyTorch to create a capture stream"
+                ) from error
+            if not torch.cuda.is_available():
+                raise BackendUnavailable(
+                    "TorchGraphModule needs a usable CUDA device; "
+                    "torch.cuda.is_available() is False"
+                )
+            self._capture_stream = torch.cuda.Stream()
+        return self._capture_stream
+
+    def _slot_key(self) -> ShapeKey:
+        """Router key for the next slot.
+
+        Uniqueness lives in the ``dtype`` field on purpose: a ``BucketPolicy``
+        rounds the three integer dimensions (powers of two by default), so
+        ``1x1x320`` and ``1x1x321`` collapse into the same bucket - and would
+        then share one graph. The dtype string is carried through bucketing
+        untouched, so every slot keeps its own native graph id.
+        """
+        slot_id = self.base_slot_id + self._next_offset
+        return ShapeKey(1, 1, 1, f"slot-{slot_id}")
+
+    def _abandon(self, slot: ShapeKey) -> None:
+        """Best-effort cleanup after a failed capture; never masks the cause."""
+        with contextlib.suppress(Exception):
+            self.engine.end_capture(slot)
+        with contextlib.suppress(Exception):
+            self.engine.reset(slot)
+
+
+    def __call__(self, x: "Any") -> "Any":
+        """Run ``x`` through the module: warm up, capture once, then replay."""
+        import torch
+
+        if not isinstance(x, torch.Tensor) or not x.is_cuda:
+            self._stats["EagerFallbacks"] += 1
+            return self.module(x)
+
+        shape_key = tuple(int(dim) for dim in x.shape)
+        entry = self._arenas.get(shape_key)
+
+        if entry is None:
+            if len(self._arenas) >= self.max_slots:
+                self._stats["EagerFallbacks"] += 1
+                return self.module(x)
+            slot = self._slot_key()
+            self._next_offset += 1
+            entry = {
+                "slot": slot,
+                "static_in": torch.empty_like(x, memory_format=torch.contiguous_format),
+                "static_out": None,
+                "steps": 0,
+                "captured": False,
+            }
+            self._arenas[shape_key] = entry
+
+        stream = self._stream()
+        current = torch.cuda.current_stream()
+
+        # Phase 1 - warm-up: eager, but on the stream that will be captured.
+        if entry["steps"] < self.warmup_steps:
+            entry["steps"] += 1
+            self._stats["Warmups"] += 1
+            stream.wait_stream(current)
+            with torch.cuda.stream(stream):
+                entry["static_in"].copy_(x, non_blocking=True)
+                output = self.module(entry["static_in"])
+                if entry["static_out"] is None:
+                    entry["static_out"] = torch.empty_like(
+                        output, memory_format=torch.contiguous_format
+                    )
+                entry["static_out"].copy_(output, non_blocking=True)
+            current.wait_stream(stream)
+            return entry["static_out"].clone()
+
+        stream_ptr = int(stream.cuda_stream)
+
+        # Phase 2 - capture the module's real kernels into an engine slot.
+        if not entry["captured"]:
+            stream.wait_stream(current)
+            with torch.cuda.stream(stream):
+                entry["static_in"].copy_(x, non_blocking=True)
+                self.engine.begin_capture(entry["slot"], stream_ptr=stream_ptr)
+                try:
+                    output = self.module(entry["static_in"])
+                    entry["static_out"].copy_(output, non_blocking=True)
+                except BaseException:
+                    self._abandon(entry["slot"])
+                    raise
+                self.engine.end_capture(entry["slot"])
+            current.wait_stream(stream)
+            entry["captured"] = True
+            self._stats["Captures"] += 1
+            return entry["static_out"].clone()
+
+        # Phase 3 - one graph launch for input copy + N kernels + output copy.
+        stream.wait_stream(current)
+        with torch.cuda.stream(stream):
+            entry["static_in"].copy_(x, non_blocking=True)
+            self.engine.replay(entry["slot"], stream_token=stream_ptr)
+        current.wait_stream(stream)
+        self._stats["Replays"] += 1
+        return entry["static_out"]
 
 
 def data_pointer(source: Any) -> int:

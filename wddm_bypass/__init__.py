@@ -152,17 +152,32 @@ class Engine:
         )
 
     # -- capture -----------------------------------------------------------
-    def begin_capture(self, key: Any, hot_update: bool = False) -> int:
+    def begin_capture(
+        self, key: Any, hot_update: bool = False, stream_ptr: int = 0
+    ) -> int:
         """Start capturing GPU work for ``key``; returns the graph id.
 
         Every kernel launched between this call and :meth:`end_capture` becomes
         one node of the graph. With ``hot_update=True`` and an already
         instantiated graph, :meth:`end_capture` merges the new capture into the
         existing executable instead of re-instantiating it.
+
+        ``stream_ptr`` is a raw ``cudaStream_t`` as an integer - in practice
+        ``torch.cuda.Stream().cuda_stream``. ``0`` keeps the engine's own
+        internal stream. An external stream is recorded in
+        ``cudaStreamCaptureModeRelaxed`` (aten and cuBLAS query stream and
+        allocator state while recording, which the strict modes refuse), is
+        only borrowed, and is never destroyed by the engine. That is what lets
+        real ``nn.Module`` work - cuBLAS GEMMs, ATen elementwise kernels - be
+        captured instead of only the engine's own reference kernels.
         """
         self._ensure_open()
         graph_id = self._router.graph_id(key)
-        self._raw.begin_capture(graph_id, str(self._router.bucket(key)), bool(hot_update))
+        bucket = str(self._router.bucket(key))
+        if stream_ptr:
+            self._raw.begin_capture(graph_id, bucket, bool(hot_update), int(stream_ptr))
+        else:
+            self._raw.begin_capture(graph_id, bucket, bool(hot_update))
         return graph_id
 
     def end_capture(self, key: Any) -> int:
@@ -191,7 +206,9 @@ class Engine:
 
 
     @contextlib.contextmanager
-    def capture(self, key: Any, hot_update: bool = False) -> Iterator[int]:
+    def capture(
+        self, key: Any, hot_update: bool = False, stream_ptr: int = 0
+    ) -> Iterator[int]:
         """Context manager form of :meth:`begin_capture` / :meth:`end_capture`.
 
         If the body raises, the pending capture is finished and discarded so the
@@ -203,7 +220,7 @@ class Engine:
         The native slot for ``graph_id`` is erased, so the next capture for the
         same key starts clean.
         """
-        graph_id = self.begin_capture(key, hot_update=hot_update)
+        graph_id = self.begin_capture(key, hot_update=hot_update, stream_ptr=stream_ptr)
         try:
             yield graph_id
         except BaseException:
@@ -330,6 +347,41 @@ class Engine:
         """Fill a buffer with zeros asynchronously."""
         self._ensure_open()
         self._raw.zero_static_buffer(name, int(stream_token))
+
+    def launch_fused_affine_relu(
+        self,
+        dst: str,
+        a: str,
+        b: str,
+        scale: float = 1.0,
+        count: Optional[int] = None,
+        stream_token: int = 0,
+    ) -> None:
+        """Launch ``dst = max(0, a * scale + b)`` over three static buffers.
+
+        One fused kernel instead of three: the intermediate results stay in
+        registers, so HBM traffic drops from 28 bytes per element
+        (``scale`` -> ``add`` -> ``relu``) to 12, and 128-bit ``float4``
+        accesses keep every transaction merged. That is the difference between
+        the 1.10x launch-count win and a bandwidth-bound win at 4 MiB.
+
+        ``count`` defaults to the largest element count the three buffers share
+        (their smallest byte size divided by 4). Inside :meth:`capture` a token
+        of ``0`` means the stream being recorded, so the kernel becomes a graph
+        node instead of running eagerly.
+        """
+        self._ensure_open()
+        launcher = getattr(self._raw, "launch_fused_affine_relu", None)
+        if not callable(launcher):
+            raise BackendUnavailable(
+                "this backend has no launch_fused_affine_relu(); rebuild the "
+                "extension from WDDM-Bypass/ to get the vectorised fused kernel"
+            )
+        if count is None:
+            count = min(self._buffers[name] for name in (dst, a, b)) // 4
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+            raise ValueError(f"count must be a positive int, got {count!r}")
+        launcher(dst, a, b, float(scale), int(count), int(stream_token))
 
     def release_buffer(self, name: str) -> None:
         """Free a buffer; a name this engine never registered is ignored."""

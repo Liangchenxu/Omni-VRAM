@@ -87,10 +87,13 @@ void bind_module(py::module_& module) {
              py::arg("graph_id"),
              py::arg("shape_key") = std::string(),
              py::arg("hot_update") = false,
-             "Start capturing GPU work into the engine's internal stream. "
-             "With hot_update=True and an existing executable, end_capture() "
-             "merges the result with cudaGraphExecUpdate instead of "
-             "re-instantiating.")
+             py::arg("stream_ptr") = 0,
+             "Start capturing GPU work. stream_ptr=0 captures on the engine's "
+             "internal stream; a non-zero token is a caller-owned "
+             "cudaStream_t (torch.cuda.Stream().cuda_stream) that is captured "
+             "in Relaxed mode and never destroyed by the engine. With "
+             "hot_update=True and an existing executable, end_capture() merges "
+             "the result with cudaGraphExecUpdate instead of re-instantiating.")
         .def("end_capture",
              &WDDMBypassEngine::end_capture,
              py::arg("graph_id"),
@@ -103,7 +106,9 @@ void bind_module(py::module_& module) {
              py::arg("graph_id"),
              py::arg("stream_token") = 0,
              "Launch the graph's executable. stream_token=0 means the current "
-             "stream (the current PyTorch stream when built with torch).")
+             "stream (the current PyTorch stream when built with torch); a "
+             "non-zero token is any cudaStream_t, including a caller-owned "
+             "PyTorch stream.")
         .def("update_graph",
              &WDDMBypassEngine::update_graph,
              py::arg("graph_id"),
@@ -142,6 +147,18 @@ void bind_module(py::module_& module) {
              &WDDMBypassEngine::zero_static_buffer,
              py::arg("name"),
              py::arg("stream_token") = 0)
+        .def("launch_fused_affine_relu",
+             &WDDMBypassEngine::launch_fused_affine_relu,
+             py::arg("dst"),
+             py::arg("a"),
+             py::arg("b"),
+             py::arg("scale"),
+             py::arg("count"),
+             py::arg("stream_token") = 0,
+             "Launch dst = max(0, a * scale + b) over three registered static "
+             "buffers, count floats each. Inside an open capture a token of 0 "
+             "means the active capture stream, so the kernel becomes a graph "
+             "node instead of running eagerly.")
         .def("copy_from_static",
              &WDDMBypassEngine::copy_from_static,
              py::arg("name"),
@@ -185,6 +202,14 @@ void bind_module(py::module_& module) {
     module.def("launch_relu",
                &wddm_bypass::ops::launch_relu,
                py::arg("dst"),
+               py::arg("count"),
+               py::arg("stream_token") = 0);
+    module.def("launch_fused_affine_relu",
+               &wddm_bypass::ops::launch_fused_affine_relu,
+               py::arg("dst"),
+               py::arg("a"),
+               py::arg("b"),
+               py::arg("scale"),
                py::arg("count"),
                py::arg("stream_token") = 0);
 

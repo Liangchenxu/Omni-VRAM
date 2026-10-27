@@ -248,6 +248,21 @@ void launch_relu(std::uintptr_t dst,
                  std::int64_t count,
                  std::uintptr_t stream_token);
 
+/// Fused affine + ReLU: `dst = max(0, a * scale + b)` over `count` floats.
+///
+/// Three unfused kernels move 28 bytes per element through HBM (scale: read a,
+/// write tmp1; add: read tmp1 + b, write tmp2; relu: read tmp2, write dst).
+/// Fusing them into one register-resident kernel moves 12 bytes per element, a
+/// 2.33x traffic reduction, and 128-bit float4 accesses (LDG.E.128 /
+/// STG.E.128) keep every transaction merged. This is what breaks the 4 MiB
+/// bandwidth wall where the launch-count win alone only reaches 1.10x.
+void launch_fused_affine_relu(std::uintptr_t dst,
+                              std::uintptr_t a,
+                              std::uintptr_t b,
+                              float scale,
+                              std::int64_t count,
+                              std::uintptr_t stream_token);
+
 }  // namespace ops
 
 /// Capability probes; all are cheap and cache nothing across CUDA errors.
@@ -277,12 +292,19 @@ public:
     WDDMBypassEngine& operator=(const WDDMBypassEngine&) = delete;
 
     // -- capture lifecycle --------------------------------------------------
-    /// Starts capturing into the engine's internal non-blocking stream.
-    /// With `hot_update` and an existing executable the capture goes to the
-    /// staging graph and end_capture() merges it instead of rebuilding.
+    /// Starts capturing into `stream_ptr` when it is non-zero, otherwise into
+    /// the engine's internal non-blocking stream.
+    ///
+    /// An external stream (typically `torch.cuda.Stream().cuda_stream`) is never
+    /// owned, never destroyed here, and is captured in
+    /// cudaStreamCaptureModeRelaxed: PyTorch and cuBLAS query stream/allocator
+    /// state while recording, and those queries are rejected in the strict
+    /// modes. With `hot_update` and an existing executable the capture goes to
+    /// the staging graph and end_capture() merges it instead of rebuilding.
     void begin_capture(int graph_id,
                        const std::string& shape_key = std::string(),
-                       bool hot_update = false);
+                       bool hot_update = false,
+                       std::uintptr_t stream_ptr = 0);
 
     /// Ends the capture and instantiates or hot-updates the executable.
     void end_capture(int graph_id);
@@ -327,6 +349,17 @@ public:
     void zero_static_buffer(const std::string& name,
                             std::uintptr_t stream_token = 0);
 
+    /// Launches `dst = max(0, a * scale + b)` over three registered static
+    /// buffers, `count` floats each. Inside an open capture a token of 0 means
+    /// the active capture stream, so the kernel is recorded instead of running
+    /// eagerly. Counters: `stats()["fused_launches"]`.
+    void launch_fused_affine_relu(const std::string& dst,
+                                  const std::string& a,
+                                  const std::string& b,
+                                  float scale,
+                                  std::int64_t count,
+                                  std::uintptr_t stream_token = 0);
+
     // -- introspection ------------------------------------------------------
     std::string describe(int graph_id) const;
     std::uintptr_t capture_stream_ptr() const;
@@ -343,9 +376,21 @@ private:
     void describe_topology(GraphSlot& slot) const;
     static const char* node_type_name(cudaGraphNodeType type) noexcept;
 
+    /// Stream a capture or a replay runs on: `external_stream_ptr` when it is
+    /// non-zero, the engine's own stream otherwise. The returned stream is only
+    /// ever borrowed - the engine destroys `capture_stream_` and nothing else.
+    cudaStream_t resolve_stream(std::uintptr_t external_stream_ptr) const noexcept;
+
     mutable std::mutex mutex_;
     int device_index_ = 0;
     cudaStream_t capture_stream_ = nullptr;
+
+    /// Stream the open capture was started on; end_capture() must close the
+    /// same one. Equal to `capture_stream_` for engine-owned captures.
+    cudaStream_t active_capture_stream_ = nullptr;
+    /// True while `active_capture_stream_` is a caller-owned stream. The
+    /// destructor never destroys it.
+    bool capture_uses_external_stream_ = false;
 
     std::unordered_map<int, GraphSlot> slots_;
     std::unordered_map<std::string, StaticBuffer> buffers_;
@@ -358,6 +403,7 @@ private:
     std::uint64_t total_updates_ = 0;
     std::uint64_t total_rebuilds_ = 0;
     std::uint64_t total_allocations_ = 0;
+    std::uint64_t total_fused_launches_ = 0;
     std::size_t total_allocated_bytes_ = 0;
 };
 

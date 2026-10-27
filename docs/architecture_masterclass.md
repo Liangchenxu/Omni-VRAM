@@ -1,7 +1,7 @@
 # Omni-VRAM 底层架构与面试白皮书
 
-> 版本：v2.8.0 ｜ 适用代码：`vram_core/wddm_bridge.py`、`wddm_bypass/`、`WDDM-Bypass/csrc/`
-> 本文所有结论都能回指到仓库里的具体文件行号；行号以 v2.8.0 提交为准。
+> 版本：v2.9.0 ｜ 适用代码：`vram_core/wddm_bridge.py`、`wddm_bypass/`、`WDDM-Bypass/csrc/`
+> 本文所有结论都能回指到仓库里的具体文件行号；行号以 v2.9.0 提交为准（第 12 章为 v2.9.0 新增）。
 > 文档本身不参与构建（纯 Markdown，位于 `docs/`），不影响 `setup.py` / `pyproject.toml` 打包。
 
 ---
@@ -608,5 +608,161 @@ v2.8.0 挂载 API 速查（`wddm_bypass/integration.py`）：
 
 
 
+
+
+
+---
+
+## 12. v2.9.0：4 MiB 带宽墙、外部流捕获与真实 `nn.Module` 接管
+
+### 12.1 先把边界钉死：图不变快，融合才变快
+
+第 0 节的三条硬边界在 v2.9.0 里一条都没被推翻：**CUDA Graph 只压缩提交次数，不改变
+kernel 本身的算力和访存**。v2.9.0 的提速来自另一条完全不同的路径——**把三个 kernel 合成一个、
+并把访存升到 128-bit**。这两件事必须分开讲：把"用了图所以变快"和"少搬显存所以变快"混为一谈，
+和把项目说成"绕过驱动"一样是错的。
+
+### 12.2 HBM 流量数学模型
+
+未融合（`scale` → `add` → `relu`，三个 kernel）：
+
+```text
+Kernel 1  scale:  tmp1 = a * s          1 Read (a)        + 1 Write (tmp1) = 8  B/elem
+Kernel 2  add:    tmp2 = tmp1 + b       2 Reads (tmp1,b)  + 1 Write (tmp2) = 12 B/elem
+Kernel 3  relu:   out  = max(0, tmp2)   1 Read (tmp2)     + 1 Write (out)  = 8  B/elem
+-------------------------------------------------------------------------------
+Total_HBM_Traffic_Unfused = 28 B/elem
+N = 1,048,576 float32 (4 MiB):  1,048,576 * 28 B = 28 MiB per call
+Arithmetic_Intensity = 3 FLOPs / 28 B = 0.107 FLOP/Byte    <- 完全受限于显存带宽
+```
+
+寄存器融合 + `float4`（128-bit）向量化：
+
+```text
+单 kernel：out = max(0.0f, a * scale + b)，中间结果只活在寄存器 (RF) 里
+1 Read (a) + 1 Read (b) + 1 Write (out) = 12 B/elem      (原地写回则为 8 B/elem)
+-------------------------------------------------------------------------------
+Total_HBM_Traffic_Fused = 12 B/elem  ->  12 MiB per call
+Bandwidth_Reduction_Ratio = 28 / 12 = 2.33x
+Arithmetic_Intensity = 3 FLOPs / 12 B = 0.250 FLOP/Byte
+```
+
+4 MiB 恰好是一个尴尬尺寸：数据小到提交开销仍占一定比例，又大到已经撞上带宽墙。
+所以 v2.8.0 在那个尺寸上只剩 **1.10x**——提交次数砍掉了，流量一点没少。
+
+### 12.3 实现要点（可回指源码）
+
+| 要点 | 做法 | 位置 |
+|---|---|---|
+| 融合内核 | `out4[i]` 四个分量各做 `fmaxf(0, fmaf(a, s, b))`，一次 LDG.128 + 一次 STG.128 | `WDDM-Bypass/csrc/graph_engine.cu:147` |
+| 对齐判定 | 三个指针按位或后 `& 0xF`；不齐则回落标量路径，算术完全等价 | `graph_engine.cu:157` |
+| 尾部元素 | `vector_count = n >> 2`，剩下 1~3 个走 `tail_start + idx` 的标量循环 | `graph_engine.cu:180` |
+| 模块级发射器 | `ops::launch_fused_affine_relu(dst, a, b, scale, count, stream_token)` | `graph_engine.cu:249` |
+| 引擎级发射器 | 按名字解析三个静态缓冲、校验 `count * 4 <= bytes`，`count<=0` 直接拒绝 | `graph_engine.cu:961` |
+| 捕获内默认真流 | 捕获中 `stream_token=0` 表示"正在录制的那条流"，不写 token 也能录进图 | `graph_engine.cu:1002` |
+| 计数 | `stats()["fused_launches"]` | `graph_engine.cu:1060` |
+| Python 门面 | `Engine.launch_fused_affine_relu()` / `DecodeBuffers.fused_affine_relu()` | `wddm_bypass/__init__.py:351`、`wddm_bypass/integration.py:375` |
+
+### 12.4 实测（RTX 3060 / compute capability 8.6 / 1,048,576 float32 = 4 MiB）
+
+计时方式：每轮 40 次迭代、5 轮取中位数，**每轮前后 `torch.cuda.synchronize()`**。
+不用 CUDA event——记录在默认流上的 event 不会被另一条流上的工作排序，那样量到的只是提交时间
+（早期版本就踩过这个坑，读到 0.00005 ms 这种明显不可能的数字）。
+
+| 路径 | 每元素 HBM 流量 | 中位耗时 | 相对 fused |
+|---|---|---|---|
+| eager：`relu(add(mul(a,s), b))` 三次独立发射 | 28 B | 0.1004 ms | 1.78x 慢 |
+| 三次 kernel 已捕获成图（只砍提交次数） | 28 B | 0.1049 ms | 1.86x 慢 |
+| **融合 1 个 kernel（图回放）** | **12 B** | **0.0565 ms** | 1.00x |
+
+两行对照很关键：把三 kernel 捕获成图，在 4 MiB 上几乎没有收益（0.1049 vs 0.1004 ms，
+提交开销已经被数据量摊薄）；换成融合 kernel 后直接掉到 0.0565 ms。
+**收益来自流量，不来自图。**
+
+### 12.5 外部 PyTorch CUDA Stream 的非拥有式捕获
+
+PyTorch 的算子（`torch.mm`、`nn.Linear`、`F.silu`）发射在
+`torch.cuda.current_stream().cuda_stream` 上。v2.8.0 的引擎只会捕获自己创建的内部流，
+于是"真实模型的 kernel"永远进不了图。v2.9.0 的改动：
+
+```cpp
+cudaStream_t WDDMBypassEngine::resolve_stream(std::uintptr_t external_stream_ptr) const noexcept {
+    if (external_stream_ptr != 0) {
+        return reinterpret_cast<cudaStream_t>(external_stream_ptr);  // 借用，不拥有
+    }
+    return capture_stream_;                                          // 引擎自己的流
+}
+```
+
+- `begin_capture(graph_id, shape_key, hot_update, stream_ptr)`：`stream_ptr != 0` 时用
+  **`cudaStreamCaptureModeRelaxed`** 录制（`graph_engine.cu:511`）。
+  这是关键点：录制期间 aten / cuBLAS 会查询流与分配器状态，严格模式
+  （`Global` / `ThreadLocal`）会把这类查询判成 `cudaErrorStreamCaptureUnsupported`，Relaxed 放行。
+- 内部流路径仍用 `ThreadLocal`，`stream_ptr=0` 的行为与 v2.8.0 完全一致，
+  所以原有引擎用例不需要改一行（这也是默认参数的唯一目的）。
+- `end_capture()` 关闭的是 `active_capture_stream_`（`graph_engine.cu:537`），
+  而不是"当前内部流"——否则外部流永远停在捕获态。
+- 析构函数只 `cudaStreamDestroy(capture_stream_)`；外部流归 PyTorch 所有，引擎连引用都不碰。
+
+### 12.6 为什么必须先预热（最容易踩的一条）
+
+```python
+entry["static_in"].copy_(x, non_blocking=True)
+self.engine.begin_capture(entry["slot"], stream_ptr=stream_ptr)
+output = self.module(entry["static_in"])      # cuBLAS GEMM + ATen kernel
+entry["static_out"].copy_(output, non_blocking=True)
+self.engine.end_capture(entry["slot"])
+```
+
+首次调用会做三件"分配类"的事：cuBLAS 建 workspace、torch caching allocator 为中间张量建块、
+kernel 选择 launch 配置。**捕获期间分配正是捕获失败的经典原因**，所以
+`TorchGraphModule` 先在同一私有流上跑 `warmup_steps` 次 eager（默认 3），
+把这些一次性开销挪到捕获之外。
+
+### 12.7 `TorchGraphModule` 三段式
+
+| 阶段 | 触发条件 | 做了什么 | stats 计数 |
+|---|---|---|---|
+| Warm-up | 该形状调用次数 < `warmup_steps` | eager 跑在私有流上，分配 `static_out` 场 | `Warmups` |
+| Capture | 预热结束且未捕获 | 绑定外部流 → `begin_capture` → 前向 → 拷出 → `end_capture` | `Captures` |
+| Replay | 已捕获 | 拷入 + 一次 `cudaGraphLaunch` 跑完整步 | `Replays` |
+| Eager 回退 | 非 CUDA 张量 / 槽位预算耗尽 | 直接调用原模块 | `EagerFallbacks` |
+
+回放返回的是**静态输出场本身**，下一次回放会覆盖它；需要留存就 `clone()`。
+这是刻意的：回放路径上不允许再分配，否则"零重建"就名不副实。
+入口在 `wddm_bypass/integration.py:1121`，槽位键在 `integration.py:1224`。
+
+### 12.8 一个真实踩坑：`BucketPolicy` 会把槽位编号并桶
+
+第一版把槽位编号塞进 `ShapeKey` 的整数维度（`ShapeKey(1, 1, 320)`），结果两个不同形状
+只产生了 1 个图。原因在 `wddm_bypass/bucketing.py:161`：`BucketPolicy()` 的三个 step 默认是 0，
+`_round()` 走 `power_of_two_at_least()`——320 和 321 都归到 512，落进同一个桶，共用一个 graph id。
+测试里表现为 `Captures == 2` 但 `engine.graphs() == [0]`，很容易误判成"第二次捕获没生效"。
+
+修正：唯一性放进 **`dtype`** 字段（`ShapeKey(1, 1, 1, "slot-320")`），因为 `bucket()` 会把
+`dtype` 原样带过（`bucketing.py:175`），不参与取整。
+
+### 12.9 Windows DLL 自愈
+
+直接跑 `python.exe` 导入链接 cudart 的扩展时，有两个坑：
+
+1. 依赖缺失会弹出**模态**对话框，进程卡住等用户点确定。`SetErrorMode(0x8003)`
+   = `SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX`
+   把它变成可捕获异常。
+2. Python 3.8+ 用受限搜索标志加载扩展，`PATH` 不再生效；必须
+   `os.add_dll_directory()` 注册 Conda 的 `Library\bin`、`DLLs`、`Scripts` 与 CUDA 的 `bin`。
+
+`wddm_bypass/backend.py:42` 的 `heal_windows_dll_environment()` 一次做这两件事，
+`load_backend()` 顶部调用，`vram_core/__init__.py` 导入时也调一次。
+幂等：内部记 `_DLL_HEALED` / `_HEALED_DIRS`，第二次调用返回空列表且不重复注册。
+
+### 12.10 复述边界（v2.9.0 版）
+
+- **图**：只压提交次数。4 MiB 数据量下，三 kernel 捕获成图几乎没有收益（0.1049 vs 0.1004 ms）。
+- **融合**：压 HBM 流量，28 → 12 B/elem，实测 1.78x（对比 eager 三发射）、1.86x（对比三 kernel 图）。
+- **外部流捕获**：让真实 cuBLAS / ATen kernel 能被录进图，**它本身不产生任何加速**；
+  加速仍来自"这些 kernel 原本要提交 N 次"。
+- 一句话：v2.9.0 的 1.78x 是**算子融合 + 向量化访存**的功劳；
+  CUDA Graph 的功劳仍然是那 17.3x 的提交开销削减，两者不能互相冒充。
 
 

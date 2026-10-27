@@ -23,11 +23,113 @@ __all__ = [
     "EXTENSION_NAME",
     "BackendUnavailable",
     "backend_available",
+    "heal_windows_dll_environment",
     "load_backend",
 ]
 
 #: Importable name of the pybind11 module.
 EXTENSION_NAME = "wddm_bypass._wddm_bypass"
+
+#: Set once SetErrorMode() has been applied. The heal function is idempotent.
+_DLL_HEALED = False
+#: Handles returned by ``os.add_dll_directory``. They have to outlive the import
+#: of any CUDA-linking extension, so they are kept here instead of being closed.
+_DLL_HANDLES: list = []
+#: Directories already registered by :func:`heal_windows_dll_environment`.
+_HEALED_DIRS: set = set()
+
+
+def heal_windows_dll_environment() -> list:
+    """Repair the Windows DLL search path and suppress modal loader dialogs.
+
+    Two problems show up when a plain ``python.exe`` imports a CUDA-linking
+    extension out of a Conda environment:
+
+    * A missing dependency raises a *modal* "DLL load failed" dialog from the
+      loader, which blocks an unattended process forever. ``SetErrorMode`` with
+      ``SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX``
+      (``0x8003``) turns it into a normal exception instead.
+    * Since Python 3.8 the extension is loaded with the restricted search flags,
+      so ``PATH`` alone does not resolve ``cudart64_*.dll`` or the Conda
+      ``Library\\bin`` dependencies: the directories have to be registered with
+      ``os.add_dll_directory``.
+
+    Idempotent: the second and every later call registers nothing and returns an
+    empty list. On any platform other than Windows it does nothing and returns
+    an empty list.
+
+    Returns:
+        The directories registered by *this* call, in registration order.
+    """
+    global _DLL_HEALED
+
+    added_dirs: list = []
+    if sys.platform != "win32":
+        return added_dirs
+
+    if not _DLL_HEALED:
+        try:
+            import ctypes
+
+            ctypes.windll.kernel32.SetErrorMode(0x8003)
+        except Exception:  # pragma: no cover - always available on Windows
+            pass
+        _DLL_HEALED = True
+
+    prefixes = {sys.prefix, sys.exec_prefix}
+    for variable in ("CONDA_PREFIX", "CUDA_HOME"):
+        value = os.environ.get(variable)
+        if value:
+            prefixes.add(value)
+
+    candidate_subdirs = [
+        "",
+        os.path.join("Library", "bin"),
+        os.path.join("Library", "mingw-w64", "bin"),
+        "DLLs",
+        "Scripts",
+    ]
+
+    candidates = []
+    for prefix in sorted(prefixes):
+        for sub in candidate_subdirs:
+            directory = os.path.join(prefix, sub) if sub else prefix
+            if os.path.isdir(directory):
+                candidates.append(directory)
+
+    for variable in ("CUDA_PATH", "CUDA_HOME"):
+        home = os.environ.get(variable)
+        if home:
+            cuda_bin = os.path.join(home, "bin")
+            if os.path.isdir(cuda_bin):
+                candidates.append(cuda_bin)
+
+    current_path = os.environ.get("PATH", "")
+    path_parts = {
+        os.path.normcase(os.path.normpath(part))
+        for part in current_path.split(os.pathsep)
+        if part
+    }
+
+    for directory in candidates:
+        key = os.path.normcase(os.path.abspath(directory))
+        if key in _HEALED_DIRS:
+            continue
+        _HEALED_DIRS.add(key)
+
+        if hasattr(os, "add_dll_directory"):
+            try:
+                _DLL_HANDLES.append(os.add_dll_directory(directory))
+            except OSError:  # pragma: no cover - non-directory or already gone
+                pass
+        added_dirs.append(directory)
+
+        if key not in path_parts:
+            current_path = directory + os.pathsep + current_path
+            path_parts.add(key)
+
+    os.environ["PATH"] = current_path
+    return added_dirs
 
 BUILD_HINT = (
     "Build the extension from the WDDM-Bypass folder:\n"
@@ -96,6 +198,10 @@ def load_backend(module_name: str = EXTENSION_NAME) -> ModuleType:
     Raises:
         BackendUnavailable: The extension is missing or failed to load.
     """
+    # Register Conda/CUDA DLL directories and switch the loader out of its modal
+    # error mode before the import, so a missing dependency raises an exception
+    # instead of opening a dialog that blocks the process.
+    heal_windows_dll_environment()
     try:
         with _dll_directories():
             return importlib.import_module(module_name)
