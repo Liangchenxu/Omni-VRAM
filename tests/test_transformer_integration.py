@@ -985,3 +985,91 @@ class TestTorchGraphModuleOnGPU:
         assert gpu_engine.graphs() == []
         assert len(wrapped) == 0
 
+
+# ---------------------------------------------------------------------------
+# v2.9.2: fused warp-shuffle RMSNorm through the decode-buffer view
+# ---------------------------------------------------------------------------
+
+
+@requires_torch_cuda
+class TestFusedRmsNormOnGPU:
+    """``DecodeBuffers.fused_rmsnorm`` - the decode-layer face of the kernel."""
+
+    @staticmethod
+    def _expected(hidden, gain, eps=1e-6):
+        values = hidden.astype(np.float64)
+        mean_square = float(np.mean(values * values))
+        return (values * (1.0 / np.sqrt(mean_square + eps)) * gain).astype(np.float32)
+
+    def test_buffer_view_matches_numpy(self, gpu_engine):
+        plan = DecodePlan.build(
+            (1, 1, 4096),
+            {"x": 4096, "w": 4096, "out": 4096},
+            inputs=("x",),
+            outputs=("out",),
+            name="rmsnorm-row",
+        )
+        for name in ("x", "w", "out"):
+            gpu_engine.register_buffer(name, 4096 * 4)
+
+        rng = np.random.default_rng(23)
+        hidden = rng.standard_normal(4096).astype(np.float32)
+        gain = np.linspace(0.5, 1.5, 4096, dtype=np.float32)
+
+        buffers = DecodeBuffers(gpu_engine, plan)
+        buffers.copy_in("x", hidden).copy_in("w", gain).zero("out")
+        buffers.fused_rmsnorm("out", "x", "w")
+
+        gpu_engine.synchronize()
+        out = np.zeros(4096, dtype=np.float32)
+        buffers.copy_out("out", out)
+        gpu_engine.synchronize()
+
+        assert buffers.launches == 1
+        np.testing.assert_allclose(
+            out, self._expected(hidden, gain), rtol=1e-5, atol=1e-6
+        )
+
+    def test_captured_step_replays_the_same_normalisation(self, gpu_engine):
+        hidden_size = 2048
+        plan = DecodePlan.build(
+            (1, 1, hidden_size),
+            {"x": hidden_size, "w": hidden_size, "out": hidden_size},
+            inputs=("x",),
+            outputs=("out",),
+            name="rmsnorm-step",
+        )
+        for name in ("x", "w", "out"):
+            gpu_engine.register_buffer(name, hidden_size * 4)
+
+        rng = np.random.default_rng(29)
+        hidden = rng.standard_normal(hidden_size).astype(np.float32)
+        gain = np.linspace(0.5, 1.5, hidden_size, dtype=np.float32)
+
+        buffers = DecodeBuffers(gpu_engine, plan)
+        buffers.copy_in("x", hidden).copy_in("w", gain).zero("out")
+
+        # The launches must go to the stream being recorded, otherwise the graph
+        # captures nothing and the replay is a silent no-op.
+        capturing = DecodeBuffers(
+            gpu_engine, plan, stream_token=gpu_engine.capture_stream()
+        )
+        with gpu_engine.capture(plan.key):
+            capturing.fused_rmsnorm("out", "x", "w")
+
+        description = json.loads(gpu_engine.describe(plan.key))
+        assert description["node_count"] == 1
+
+        gpu_engine.zero_buffer("out")
+        gpu_engine.replay(plan.key)
+        gpu_engine.synchronize()
+
+        out = np.zeros(hidden_size, dtype=np.float32)
+        buffers.copy_out("out", out)
+        gpu_engine.synchronize()
+
+        np.testing.assert_allclose(
+            out, self._expected(hidden, gain), rtol=1e-5, atol=1e-6
+        )
+
+

@@ -1418,3 +1418,165 @@ class TestWindowsDllHealing:
         assert calls, "load_backend() must heal the DLL surface first"
 
 
+# ---------------------------------------------------------------------------
+# v2.9.2: warp-shuffle fused RMSNorm (one kernel, 12 bytes per element)
+# ---------------------------------------------------------------------------
+
+
+def rmsnorm_reference(x, weight, eps=1e-6):
+    """``x * rsqrt(mean(x^2) + eps) * weight`` evaluated in float64."""
+    values = np.asarray(x, dtype=np.float64)
+    scale = np.asarray(weight, dtype=np.float64)
+    mean_square = float(np.mean(values * values))
+    return (values * (1.0 / np.sqrt(mean_square + eps)) * scale).astype(np.float32)
+
+
+@requires_gpu
+def test_fused_rmsnorm_matches_the_reference(native_engine):
+    rng = np.random.default_rng(11)
+    count = 4096  # a real hidden dimension (Llama-7B / Qwen-7B)
+    x = rng.standard_normal(count).astype(np.float32)
+    weight = rng.standard_normal(count).astype(np.float32)
+    upload(native_engine, "x", x)
+    upload(native_engine, "w", weight)
+    upload(native_engine, "out", np.zeros(count, dtype=np.float32))
+
+    native_engine.launch_fused_rmsnorm("out", "x", "w", 1e-6, count)
+    native_engine.synchronize()
+
+    assert native_engine.stats()["rmsnorm_launches"] == 1
+    np.testing.assert_allclose(
+        download(native_engine, "out", count),
+        rmsnorm_reference(x, weight),
+        rtol=1e-5,
+        atol=1e-6,
+    )
+
+
+@requires_gpu
+def test_fused_rmsnorm_handles_short_and_unaligned_rows(native_engine):
+    """n below one warp, and n with a tail past the block, both stay exact."""
+    for count in (7, 33, 1000, 4099):
+        rng = np.random.default_rng(count)
+        x = rng.standard_normal(count).astype(np.float32)
+        weight = np.linspace(0.5, 1.5, count, dtype=np.float32)
+        upload(native_engine, "x", x)
+        upload(native_engine, "w", weight)
+        upload(native_engine, "out", np.zeros(count, dtype=np.float32))
+
+        native_engine.launch_fused_rmsnorm("out", "x", "w", 1e-6, count)
+        native_engine.synchronize()
+
+        np.testing.assert_allclose(
+            download(native_engine, "out", count),
+            rmsnorm_reference(x, weight),
+            rtol=1e-5,
+            atol=1e-6,
+            err_msg=f"count={count}",
+        )
+
+
+@requires_gpu
+def test_fused_rmsnorm_defaults_to_the_shared_buffer_length(native_engine):
+    x = np.arange(1, 257, dtype=np.float32)
+    weight = np.full(256, 0.75, dtype=np.float32)
+    upload(native_engine, "x", x)
+    upload(native_engine, "w", weight)
+    upload(native_engine, "out", np.zeros(256, dtype=np.float32))
+
+    native_engine.launch_fused_rmsnorm("out", "x", "w", 1e-6)
+
+    native_engine.synchronize()
+    np.testing.assert_allclose(
+        download(native_engine, "out", 256),
+        rmsnorm_reference(x, weight),
+        rtol=1e-5,
+        atol=1e-6,
+    )
+
+
+@requires_gpu
+def test_fused_rmsnorm_rejects_unknown_or_too_small_buffers(native_engine):
+    upload(native_engine, "x", np.ones(8, dtype=np.float32))
+    upload(native_engine, "w", np.ones(8, dtype=np.float32))
+    upload(native_engine, "out", np.ones(8, dtype=np.float32))
+
+    with pytest.raises(native_engine_error()):
+        native_engine.launch_fused_rmsnorm("out", "x", "missing", 1e-6, 8)
+    with pytest.raises(native_engine_error()):
+        native_engine.launch_fused_rmsnorm("out", "x", "w", 1e-6, 9)  # 36 > 32 bytes
+    with pytest.raises(ValueError):
+        native_engine.launch_fused_rmsnorm("out", "x", "w", 1e-6, 0)
+
+
+@requires_gpu
+def test_fused_rmsnorm_is_captured_as_a_single_graph_node(native_engine):
+    count = 2048
+    x = np.linspace(-1.0, 1.0, count, dtype=np.float32)
+    weight = np.linspace(0.5, 1.5, count, dtype=np.float32)
+    upload(native_engine, "x", x)
+    upload(native_engine, "w", weight)
+    upload(native_engine, "out", np.zeros(count, dtype=np.float32))
+    key = (1, count, 7)
+
+    with native_engine.capture(key):
+        native_engine.launch_fused_rmsnorm("out", "x", "w", 1e-6, count)
+
+    description = json.loads(native_engine.describe(key))
+    assert description["node_count"] == 1
+    assert description["has_exec"] is True
+
+    native_engine.zero_buffer("out")
+    native_engine.replay(key)
+    native_engine.synchronize()
+    np.testing.assert_allclose(
+        download(native_engine, "out", count),
+        rmsnorm_reference(x, weight),
+        rtol=1e-5,
+        atol=1e-6,
+    )
+
+
+@requires_gpu
+def test_fused_rmsnorm_cuts_the_eager_chain_latency(native_engine):
+    """Hidden=4096: one fused launch against the eager four-launch chain.
+
+    The eager chain is launch-bound at this size (four submissions for 16 KB of
+    data), which is exactly the shape every transformer block pays twice.
+    """
+    torch = pytest.importorskip("torch")
+    count = 4096
+    nbytes = count * 4
+    eps = 1e-6
+
+    x = torch.randn(count, device="cuda", dtype=torch.float32)
+    weight = torch.randn(count, device="cuda", dtype=torch.float32)
+    for name in ("x", "w", "out"):
+        native_engine.register_buffer(name, nbytes)
+    native_engine.copy_into("x", x.data_ptr())
+    native_engine.copy_into("w", weight.data_ptr())
+    native_engine.synchronize()
+
+    def eager_chain():
+        return (x * torch.rsqrt(x.pow(2).mean() + eps)) * weight
+
+    fused_key = (1, count, 8)
+    with native_engine.capture(fused_key):
+        native_engine.launch_fused_rmsnorm("out", "x", "w", eps, count)
+
+    eager_ms = _median_ms(eager_chain)
+    fused_ms = _median_ms(lambda: native_engine.replay(fused_key))
+
+    assert fused_ms * 1.2 < eager_ms, (fused_ms, eager_ms)
+
+    native_engine.replay(fused_key)
+    native_engine.synchronize()
+    np.testing.assert_allclose(
+        download(native_engine, "out", count),
+        rmsnorm_reference(x.cpu().numpy(), weight.cpu().numpy(), eps),
+        rtol=1e-4,
+        atol=1e-5,
+    )
+
+
+

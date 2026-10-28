@@ -383,6 +383,40 @@ class Engine:
             raise ValueError(f"count must be a positive int, got {count!r}")
         launcher(dst, a, b, float(scale), int(count), int(stream_token))
 
+    def launch_fused_rmsnorm(
+        self,
+        dst: str,
+        x: str,
+        weight: str,
+        eps: float = 1e-6,
+        count: Optional[int] = None,
+        stream_token: int = 0,
+    ) -> None:
+        """Launch ``dst = x * rsqrt(mean(x^2) + eps) * weight`` over static buffers.
+
+        One fused kernel in place of the eager ``pow2 -> mean -> rsqrt -> mul ->
+        mul weight`` chain: the sum of squares is reduced inside the register file
+        with ``__shfl_down_sync`` (one float per warp crosses through shared
+        memory), so a row costs two reads and one write - 12 bytes per element
+        instead of 24 - and one submission instead of three.
+
+        ``count`` is the element count of one normalised row (the hidden
+        dimension); it defaults to the shared element count of the three buffers.
+        For a ``[rows, hidden]`` tensor call this once per row.
+        """
+        self._ensure_open()
+        launcher = getattr(self._raw, "launch_fused_rmsnorm", None)
+        if not callable(launcher):
+            raise BackendUnavailable(
+                "this backend has no launch_fused_rmsnorm(); rebuild the "
+                "extension from WDDM-Bypass/ to get the warp-shuffle kernel"
+            )
+        if count is None:
+            count = min(self._buffers[name] for name in (dst, x, weight)) // 4
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+            raise ValueError(f"count must be a positive int, got {count!r}")
+        launcher(dst, x, weight, float(eps), int(count), int(stream_token))
+
     def release_buffer(self, name: str) -> None:
         """Free a buffer; a name this engine never registered is ignored."""
         self._ensure_open()

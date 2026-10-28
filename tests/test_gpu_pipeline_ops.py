@@ -105,9 +105,16 @@ class TestFrontendGraph:
         assert status.hop_length == 256
         assert isinstance(status.captured, bool)
 
-    def test_cpu_only_reports_reason_instead_of_raising(self):
-        if cuda_available():
-            pytest.skip("CUDA device present; degradation path not applicable")
+    def test_cpu_only_reports_reason_instead_of_raising(self, monkeypatch):
+        """The degradation contract must hold on a CUDA machine too.
+
+        Skipping whenever a device exists would leave "a failed capture is
+        reported, never raised" unverified exactly where it can regress, so the
+        device probe is patched to False and the no-CUDA branch really executes.
+        """
+        import torch
+
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
         optimizer = WhisperOptimizer(model_name="base", device="cpu")
         status = optimizer.capture_frontend_graph(1600)
         assert status.captured is False

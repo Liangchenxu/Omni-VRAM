@@ -263,6 +263,24 @@ void launch_fused_affine_relu(std::uintptr_t dst,
                               std::int64_t count,
                               std::uintptr_t stream_token);
 
+/// Fused RMSNorm: `dst = x * rsqrt(mean(x^2) + eps) * weight`, `count` floats.
+///
+/// The eager chain (pow2 + mean -> rsqrt + mul -> mul weight) is three kernels
+/// and 24 bytes per element through HBM. This one keeps the sum of squares in
+/// registers, reduces it with `__shfl_down_sync` inside each warp and hands one
+/// partial per warp through shared memory, so the whole normalisation costs two
+/// reads and one write (12 B/elem) in a single submission.
+///
+/// The launch uses exactly one block: the reduction is block-wide, so the
+/// block must be the whole reduction domain. `count` is the row length (the
+/// hidden dimension) for a 2D `[rows, hidden]` tensor normalised per row.
+void launch_fused_rmsnorm(std::uintptr_t dst,
+                          std::uintptr_t x,
+                          std::uintptr_t weight,
+                          float eps,
+                          std::int64_t count,
+                          std::uintptr_t stream_token);
+
 }  // namespace ops
 
 /// Capability probes; all are cheap and cache nothing across CUDA errors.
@@ -360,6 +378,16 @@ public:
                                   std::int64_t count,
                                   std::uintptr_t stream_token = 0);
 
+    /// Launches the fused RMSNorm over three registered static buffers.
+    /// `count` is the element count of one normalised row. Counters:
+    /// `stats()["rmsnorm_launches"]`.
+    void launch_fused_rmsnorm(const std::string& dst,
+                              const std::string& x,
+                              const std::string& weight,
+                              float eps,
+                              std::int64_t count,
+                              std::uintptr_t stream_token = 0);
+
     // -- introspection ------------------------------------------------------
     std::string describe(int graph_id) const;
     std::uintptr_t capture_stream_ptr() const;
@@ -404,6 +432,7 @@ private:
     std::uint64_t total_rebuilds_ = 0;
     std::uint64_t total_allocations_ = 0;
     std::uint64_t total_fused_launches_ = 0;
+    std::uint64_t total_rmsnorm_launches_ = 0;
     std::size_t total_allocated_bytes_ = 0;
 };
 

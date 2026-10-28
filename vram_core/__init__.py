@@ -31,7 +31,7 @@ Modules:
     - wddm_bridge: VRAM pool / CUDA-graph execution bridge (WDDM-Bypass, v2.9.0)
 """
 
-__version__ = "2.9.1"
+__version__ = "2.9.2"
 
 # Windows self-healing (v2.9.0): register the Conda / CUDA DLL directories and
 # turn the loader's modal "DLL load failed" dialog into an ordinary exception

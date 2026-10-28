@@ -159,6 +159,17 @@ void bind_module(py::module_& module) {
              "buffers, count floats each. Inside an open capture a token of 0 "
              "means the active capture stream, so the kernel becomes a graph "
              "node instead of running eagerly.")
+        .def("launch_fused_rmsnorm",
+             &WDDMBypassEngine::launch_fused_rmsnorm,
+             py::arg("dst"),
+             py::arg("x"),
+             py::arg("weight"),
+             py::arg("eps"),
+             py::arg("count"),
+             py::arg("stream_token") = 0,
+             "Launch dst = x * rsqrt(mean(x^2) + eps) * weight over three "
+             "registered static buffers. One block, warp-shuffle reduction, one "
+             "submission; count is the element count of one normalised row.")
         .def("copy_from_static",
              &WDDMBypassEngine::copy_from_static,
              py::arg("name"),
@@ -210,6 +221,14 @@ void bind_module(py::module_& module) {
                py::arg("a"),
                py::arg("b"),
                py::arg("scale"),
+               py::arg("count"),
+               py::arg("stream_token") = 0);
+    module.def("launch_fused_rmsnorm",
+               &wddm_bypass::ops::launch_fused_rmsnorm,
+               py::arg("dst"),
+               py::arg("x"),
+               py::arg("weight"),
+               py::arg("eps"),
                py::arg("count"),
                py::arg("stream_token") = 0);
 

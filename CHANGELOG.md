@@ -5,6 +5,64 @@ All notable changes to **Omni-VRAM** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.2] - 2026-10-26
+
+### Highlights
+- **Warp-Shuffle 融合 RMSNorm（`kernel_fused_rmsnorm_f32`）**：
+  `out = x * rsqrtf(mean(x^2) + eps) * weight` 从 eager 的 4 个算子
+  （pow2+reduce → rsqrt+mul → mul weight）压成 **1 个 kernel、1 次提交**。
+  平方和在**寄存器**里用 `__shfl_down_sync(0xffffffff, v, offset)`（16→8→4→2→1 五步）
+  warp 内折叠，每个 warp 只把 1 个 float 交 shared memory，warp 0 再做一次 5 步折叠
+  得到 `rsqrtf(mean + eps)`；HBM 流量 **24 B/elem → 12 B/elem（2.0x）**。
+  RTX 3060 实测：hidden=2048/4096/8192 时 eager 0.06297/0.06137/0.05999 ms →
+  fused **0.01257/0.01255/0.01297 ms**，即 **5.01x / 4.89x / 4.62x**，
+  最大误差 ≤ 9.54e-07。
+- **全仓零 Skip**（1129 passed / **0 skipped** / 0 failed）：
+  - `tests/test_gpu_pipeline_ops.py` 的 1 个 skip 原本是
+    `if cuda_available(): pytest.skip("CUDA device present; degradation path not applicable")`
+    —— 在 RTX 3060 上等于永远不验证"捕获失败只报告不抛异常"这条契约。
+    改为 `monkeypatch.setattr(torch.cuda, "is_available", lambda: False)` 后**真正执行**
+    无 CUDA 降级分支（4 条断言全部生效）。
+  - `tests/test_websocket.py` 的 16 个 skip 根因是 softmax 环境缺 fastapi/httpx/uvicorn/
+    python-multipart（本机两处 PyPI 源均 SSL EOF，无法在线安装）。改为从同级 conda 环境
+    `lora`（同为 CPython 3.10）**离线补齐**依赖后，17 个 WebSocket 用例全部跑在真实
+    `fastapi.testclient.TestClient` 上：17 passed。
+
+### Added
+- `WDDM-Bypass/csrc/graph_engine.cu`
+  - `warp_reduce_sum_f32()`：`#pragma unroll` 的 5 步 `__shfl_down_sync` 归约
+  - `kernel_fused_rmsnorm_f32`：单 block，pass1 归约 + pass2 归一化
+  - `rmsnorm_block_size()`：2 的幂、界于 [32, 1024] 的单 block 配置
+  - `ops::launch_fused_rmsnorm()` 与 `WDDMBypassEngine::launch_fused_rmsnorm()`
+  - `stats()["rmsnorm_launches"]`
+- `WDDM-Bypass/csrc/bypass_core.cpp`：引擎级与模块级 `launch_fused_rmsnorm` 绑定
+- `wddm_bypass/__init__.py`：`Engine.launch_fused_rmsnorm(dst, x, weight, eps=1e-6, count=None)`
+- `wddm_bypass/integration.py`：`DecodeBuffers.fused_rmsnorm(destination, source, weight, eps=1e-6)`
+- `tests/test_engine_suite.py`：RMSNorm 6 例（数值对齐、短/非对齐行、默认长度、
+  错误路径、单节点捕获、延迟对比）
+- `tests/test_transformer_integration.py`：`TestFusedRmsNormOnGPU` 2 例
+  （`DecodeBuffers` 视图对齐 numpy、捕获进图后回放一致）
+- `docs/architecture_masterclass.md`：第 13 章（RMSNorm 数学、24→12 B 流量模型、
+  为什么单 block + warp shuffle、边界）
+
+### Fixed
+- `tests/test_gpu_pipeline_ops.py`：CUDA 降级用例由"跳过"改为"patch 设备探测后真跑"
+- 环境：softmax 补齐 fastapi/starlette/httpx/httpcore/h11/anyio/sniffio/pydantic/
+  pydantic_core/annotated_types/typing_inspection/uvicorn/multipart/python_multipart/click/websockets
+  （离线自 `lora` 环境复制）
+
+### Changed
+- 对外版本号 `2.9.1` → **`2.9.2`**：`vram_core/__init__.py`、`pyproject.toml`、根 `setup.py`、
+  README 徽章与中英文亮点段
+- `wddm_bypass` 原生 ABI 版本**保持 `1.0.0` 不变**（新增符号向后兼容）
+- 新增 `docs/releases/v2.9.2.md`（旧档案 v2.8.0 / v2.9.0 / v2.9.1 一律未动）
+
+### Tests
+- 全量：`pytest tests/ -q` → **1129 passed, 0 skipped, 0 failed**（85.04 s）
+  - 较 v2.9.1：+8 个新用例（RMSNorm），17 个 skip 全部消除
+- `tests/test_websocket.py`：17 passed（修复前 3 passed + 16 skipped）
+- `tests/test_gpu_pipeline_ops.py`：31 passed（修复前 30 passed + 1 skipped）
+
 ## [2.9.1] - 2026-10-26
 
 ### Highlights

@@ -766,3 +766,80 @@ kernel 选择 launch 配置。**捕获期间分配正是捕获失败的经典原
   CUDA Graph 的功劳仍然是那 17.3x 的提交开销削减，两者不能互相冒充。
 
 
+
+---
+
+## 13. v2.9.2：Warp-Shuffle 寄存器归约的融合 RMSNorm
+
+### 13.1 数学定义与解码层的位置
+
+RMSNorm 是 Llama / Qwen 每个 Transformer 层的**前置归一化**，每层算两次
+（attention 前、MLP 前），所以它是解码路径上调用次数最多的归一化算子：
+
+```text
+out[i] = (x[i] * rsqrtf( (1/N) * sum_{j=0}^{N-1} x[j]^2 + eps )) * weight[i]
+                          \_______________/
+                          只需要一个标量
+```
+
+关键在于：**整个算子只需要一个标量**（所有元素的平方均值），剩下全是逐元素乘。
+把它拆成 PyTorch eager 的四个算子是历史包袱，不是数学需要。
+
+### 13.2 HBM 流量模型
+
+```text
+[1] 原生 PyTorch Eager 未融合（pow2 -> mean -> rsqrt -> mul(x) -> mul(w)）：
+    Kernel 1  pow2 + reduce : 1 Read(x)             + 1 Write(var)  =  4 B/elem
+    Kernel 2  rsqrt + mul x : 1 Read(x)             + 1 Write(norm) =  8 B/elem
+    Kernel 3  mul weight    : 2 Reads(norm, w)      + 1 Write(out)  = 12 B/elem
+    ---------------------------------------------------------------------------
+    Total = 24 B/elem，3~4 次提交
+
+[2] Warp-Shuffle 单 Block 融合（kernel_fused_rmsnorm_f32）：
+    Pass 1  归约  ：1 Read(x)（只读，不写回）
+    Pass 2  归一化：1 Read(x) + 1 Read(w) + 1 Write(out)
+    ---------------------------------------------------------------------------
+    Total = 12 B/elem，1 次提交，流量削减 2.0x
+```
+
+比 v2.9.0 的 affine+ReLU 融合更划算：那个是三合一（28 → 12 B），
+这个是**四合一**（24 → 12 B）且少 3 次提交——而 RMSNorm 在每个 layer 里出现两次。
+
+### 13.3 为什么是"单 block + warp shuffle"
+
+一次归约要跨整个行（hidden=4096）。三种写法：
+
+| 写法 | 代价 | 结论 |
+|---|---|---|
+| 两个 kernel（reduction + apply） | 归约结果要落显存再读回来；2 次提交 | 回到 eager 的老路 |
+| 多 block + atomicAdd | 需要清零目标、原子竞争，结果非确定性 | 捕获进图后仍是多次提交 |
+| **单 block + warp shuffle** | 块内顺序归约，寄存器内完成 | 1 次提交、12 B/elem |
+
+`__shfl_down_sync(0xffffffffu, value, offset)` 在 warp 内把 32 个 lane 的部分和
+两两折半（offset 16 → 8 → 4 → 2 → 1，共 5 步），全部在**寄存器**里完成，
+不需要 shared memory，也不会出现 bank conflict；每个 warp 只把 1 个 float
+交给 shared memory，再由 warp 0 做最后一次 5 步折叠。
+
+### 13.4 实现要点（可回指源码）
+
+| 要点 | 做法 | 位置 |
+|---|---|---|
+| warp 内归约 | `warp_reduce_sum_f32`：`#pragma unroll` 的 5 步 `__shfl_down_sync` | `WDDM-Bypass/csrc/graph_engine.cu:195` |
+| 融合内核 | pass1 累加 `fmaf(v, v, sum)`；pass2 写 `x[i] * inv_rms * weight[i]` | `graph_engine.cu:214` |
+| 块级收尾 | 每个 warp 的 lane0 写 `warp_sums[warp]`，warp 0 折叠后 `rsqrtf(mean + eps)` | `graph_engine.cu:236` |
+| 发射配置 | `<<<1, rmsnorm_block_size(count)>>>`：2 的幂、界于 [32, 1024] | `graph_engine.cu:266` |
+| 模块级发射器 | `ops::launch_fused_rmsnorm(dst, x, weight, eps, count, stream_token)` | `graph_engine.cu:352` |
+| 引擎级发射器 | 按名字解析三个静态缓冲 + 容量校验 + 捕获中 token=0 → 正在录制的流 | `graph_engine.cu:1123` |
+| 计数 | `stats()["rmsnorm_launches"]` | `graph_engine.cu:1222` |
+| Python 门面 | `Engine.launch_fused_rmsnorm()` / `DecodeBuffers.fused_rmsnorm()` | `wddm_bypass/__init__.py:386`、`wddm_bypass/integration.py:418` |
+
+### 13.5 边界：什么时候不该用这个 kernel
+
+单 block 意味着**只有一个 SM 在干活**。hidden=4096（16 KB）时这是优势——
+数据量小、提交开销占比高，1 个 block 足够；但若把它当成通用的"1M 元素归一化"使用，
+它会被 30 个 SM 的并行版本碾压。这个 kernel 的目标是**解码层的单行归一化**，
+不是大张量吞吐；把两者混为一谈，就是第 0 节要打的"夸大"。
+
+对 `[rows, hidden]` 的二维张量，正确用法是**每行发射一次**，并把 N 次发射一起捕获进
+同一个 CUDA Graph——提交仍然是 1 次，而每个 block 只碰一行。
+

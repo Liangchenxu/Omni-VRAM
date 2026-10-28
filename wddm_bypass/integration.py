@@ -415,6 +415,41 @@ class DecodeBuffers:
         self.launches += 1
         return self
 
+    def fused_rmsnorm(
+        self,
+        destination: str,
+        source: str,
+        weight: str,
+        eps: float = 1e-6,
+    ) -> "DecodeBuffers":
+        """``destination = rmsnorm(source) * weight`` in one warp-shuffle kernel.
+
+        Replaces ``pow2 -> mean -> rsqrt -> mul -> mul weight`` (three launches,
+        24 bytes per element through HBM) with one register-resident kernel that
+        moves 12 bytes per element and reduces the sum of squares with
+        ``__shfl_down_sync``. Every transformer block calls RMSNorm twice, so this
+        is one of the two hot fusions in the decode path.
+        """
+        spec = self.spec(destination)
+        origin = self.spec(source)
+        scale = self.spec(weight)
+        if not (spec.count == origin.count == scale.count):
+            raise ValueError(
+                f"fused_rmsnorm needs equal element counts, got "
+                f"{destination}={spec.count}, {source}={origin.count}, "
+                f"{weight}={scale.count}"
+            )
+        self._launcher("launch_fused_rmsnorm")(
+            self.ptr(destination),
+            self.ptr(source),
+            self.ptr(weight),
+            float(eps),
+            spec.count,
+            self._stream_token,
+        )
+        self.launches += 1
+        return self
+
     def zero(self, name: str) -> "DecodeBuffers":
         """Asynchronously zero a static buffer (a memset, not a kernel)."""
         self._engine.zero_buffer(name, self._stream_token)

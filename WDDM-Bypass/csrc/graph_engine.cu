@@ -190,6 +190,87 @@ __global__ void kernel_fused_affine_relu_f32(float* __restrict__ out,
     }
 }
 
+// Warp-level reduction through register shuffles: every partial travels in the
+// register file, so the only shared memory touched is one float per warp.
+__device__ __forceinline__ float warp_reduce_sum_f32(float value) {
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        value += __shfl_down_sync(0xffffffffu, value, offset);
+    }
+    return value;
+}
+
+// Single-kernel fused RMSNorm over one row of n elements:
+//     out[i] = x[i] * rsqrtf(mean(x^2) + eps) * weight[i]
+//
+// HBM traffic per element:
+//   eager (pow2+mean -> rsqrt+mul -> mul weight): 24 bytes, 3 submissions
+//   fused (this kernel)                        : 12 bytes, 1 submission
+//
+// One block normalises the whole row, so the block is the reduction domain.
+// Pass 1 accumulates the squares in registers, __shfl_down_sync reduces them
+// inside each warp, one shared slot per warp collects the partials, warp 0
+// finishes the block reduction into rsqrt(mean + eps), and pass 2 rescales.
+__global__ void kernel_fused_rmsnorm_f32(float* __restrict__ out,
+                                         const float* __restrict__ x,
+                                         const float* __restrict__ weight,
+                                         float eps,
+                                         long long n) {
+    __shared__ float warp_sums[32];  // at most 1024 threads = 32 warps
+    __shared__ float shared_inv_rms;
+
+    const unsigned int tid = threadIdx.x;
+    const unsigned int block_size = blockDim.x;
+    const unsigned int lane = tid & 31u;
+    const unsigned int warp = tid >> 5u;
+
+    // Pass 1: sum of squares, accumulated in a register.
+    float local_sum_sq = 0.0f;
+    for (long long i = static_cast<long long>(tid); i < n;
+         i += static_cast<long long>(block_size)) {
+        const float value = x[i];
+        local_sum_sq = fmaf(value, value, local_sum_sq);
+    }
+
+    local_sum_sq = warp_reduce_sum_f32(local_sum_sq);
+    if (lane == 0u) {
+        warp_sums[warp] = local_sum_sq;
+    }
+    __syncthreads();
+
+    // First warp finishes the block reduction: every lane of warp 0 stays active
+    // (lanes beyond the warp count contribute zero) because a shuffle needs the
+    // full mask.
+    const unsigned int warp_count = (block_size + 31u) >> 5u;
+    float block_sum = (tid < warp_count) ? warp_sums[tid] : 0.0f;
+    if (warp == 0u) {
+        block_sum = warp_reduce_sum_f32(block_sum);
+        if (tid == 0u) {
+            shared_inv_rms = rsqrtf(block_sum / static_cast<float>(n) + eps);
+        }
+    }
+    __syncthreads();
+
+    const float inv_rms = shared_inv_rms;
+
+    // Pass 2: rescale and apply the learned weight.
+    for (long long i = static_cast<long long>(tid); i < n;
+         i += static_cast<long long>(block_size)) {
+        out[i] = x[i] * inv_rms * weight[i];
+    }
+}
+
+// One block, and the block has to cover the whole reduction domain: a power of
+// two between 32 and 1024 keeps every lane of every warp active for the shuffle
+// and never exceeds the shared-memory slot table.
+int rmsnorm_block_size(std::int64_t count) {
+    std::int64_t size = 32;
+    while (size < count && size < 1024) {
+        size <<= 1;
+    }
+    return static_cast<int>(size);
+}
+
 void require_pointer(std::uintptr_t pointer, const char* what) {
     if (pointer == 0) {
         std::string message("WDDM-Bypass: null device pointer passed to ");
@@ -265,6 +346,28 @@ void launch_fused_affine_relu(std::uintptr_t dst,
         reinterpret_cast<const float*>(a),
         reinterpret_cast<const float*>(b),
         scale,
+        static_cast<long long>(count));
+}
+
+void launch_fused_rmsnorm(std::uintptr_t dst,
+                          std::uintptr_t x,
+                          std::uintptr_t weight,
+                          float eps,
+                          std::int64_t count,
+                          std::uintptr_t stream_token) {
+    require_pointer(dst, "launch_fused_rmsnorm");
+    require_pointer(x, "launch_fused_rmsnorm");
+    require_pointer(weight, "launch_fused_rmsnorm");
+    if (count <= 0) {
+        return;
+    }
+    const cudaStream_t stream = detail::stream_from_token(stream_token);
+    // Exactly one block: the block reduction is the whole reduction domain.
+    kernel_fused_rmsnorm_f32<<<1, rmsnorm_block_size(count), 0, stream>>>(
+        reinterpret_cast<float*>(dst),
+        reinterpret_cast<const float*>(x),
+        reinterpret_cast<const float*>(weight),
+        eps,
         static_cast<long long>(count));
 }
 
@@ -1017,6 +1120,64 @@ void WDDMBypassEngine::launch_fused_affine_relu(const std::string& dst,
     ++total_fused_launches_;
 }
 
+void WDDMBypassEngine::launch_fused_rmsnorm(const std::string& dst,
+                                            const std::string& x,
+                                            const std::string& weight,
+                                            float eps,
+                                            std::int64_t count,
+                                            std::uintptr_t stream_token) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    activate_device();
+
+    auto require_buffer = [this](const std::string& name) -> const StaticBuffer& {
+        auto iterator = buffers_.find(name);
+        if (iterator == buffers_.end()) {
+            std::string message("WDDM-Bypass: unknown static buffer '");
+            message.append(name);
+            message.append("'");
+            throw EngineError(message);
+        }
+        return iterator->second;
+    };
+
+    if (count <= 0) {
+        std::ostringstream message;
+        message << "WDDM-Bypass: launch_fused_rmsnorm needs a positive element "
+                   "count, got "
+                << count;
+        throw EngineError(message.str());
+    }
+
+    const StaticBuffer& destination = require_buffer(dst);
+    const StaticBuffer& source = require_buffer(x);
+    const StaticBuffer& scale_buffer = require_buffer(weight);
+
+    const std::size_t needed = static_cast<std::size_t>(count) * sizeof(float);
+    if (destination.bytes < needed || source.bytes < needed ||
+        scale_buffer.bytes < needed) {
+        std::ostringstream message;
+        message << "WDDM-Bypass: launch_fused_rmsnorm overflows a static buffer ("
+                << count << " floats = " << needed << " bytes)";
+        throw EngineError(message.str());
+    }
+
+    // Inside an open capture a token of 0 means "the stream being recorded".
+    std::uintptr_t token = stream_token;
+    if (token == 0 && active_capture_id_ >= 0 &&
+        active_capture_stream_ != nullptr) {
+        token = reinterpret_cast<std::uintptr_t>(active_capture_stream_);
+    }
+
+    ops::launch_fused_rmsnorm(
+        reinterpret_cast<std::uintptr_t>(destination.ptr()),
+        reinterpret_cast<std::uintptr_t>(source.ptr()),
+        reinterpret_cast<std::uintptr_t>(scale_buffer.ptr()),
+        eps,
+        count,
+        token);
+    ++total_rmsnorm_launches_;
+}
+
 // ---------------------------------------------------------------------------
 // Introspection
 // ---------------------------------------------------------------------------
@@ -1058,6 +1219,7 @@ std::map<std::string, std::uint64_t> WDDMBypassEngine::stats() const {
     values["rebuilds"] = total_rebuilds_;
     values["allocations"] = total_allocations_;
     values["fused_launches"] = total_fused_launches_;
+    values["rmsnorm_launches"] = total_rmsnorm_launches_;
     values["capturing"] = active_capture_id_ >= 0 ? 1u : 0u;
     values["device_index"] = static_cast<std::uint64_t>(device_index_);
     values["torch_interop"] = detail::built_with_torch() ? 1u : 0u;
