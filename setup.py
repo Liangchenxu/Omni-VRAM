@@ -238,16 +238,30 @@ def _build_cuda_extension(cuda_msg):
 ext_modules = []
 cmdclass = {}
 
-try:
-    cuda_ok, cuda_msg = _check_cuda_available()
-except Exception as _error:  # defensive: detection must not break packaging
-    cuda_ok, cuda_msg = False, f"CUDA detection failed: {_error}"
+#: Cloud CI switch. GitHub Actions packaging runners have no GPU and no nvcc, and
+#: an unbuildable extension must never fail a release: with
+#: ``OMNI_VRAM_SKIP_CUDA=1`` the extension list stays empty and ``python -m build``
+#: produces an sdist (all .py + WDDM-Bypass/csrc sources) plus a pure-Python wheel.
+#: The same fallback already happens automatically when nvcc/CUDA is missing; the
+#: variable exists so CI takes that path deterministically instead of relying on
+#: detection succeeding.
+_SKIP_CUDA = os.environ.get("OMNI_VRAM_SKIP_CUDA", "").strip() == "1"
 
-if cuda_ok:
-    ext_modules, cmdclass = _build_cuda_extension(cuda_msg)
-else:
+if _SKIP_CUDA:
+    print("[setup] OMNI_VRAM_SKIP_CUDA=1: building pure-Python artifacts "
+          "(CUDA extension skipped, nvcc is never invoked)")
     print(f"[setup] {CUDA_FALLBACK_WARNING}")
-    print(f"[setup] reason: {cuda_msg}")
+else:
+    try:
+        cuda_ok, cuda_msg = _check_cuda_available()
+    except Exception as _error:  # defensive: detection must not break packaging
+        cuda_ok, cuda_msg = False, f"CUDA detection failed: {_error}"
+
+    if cuda_ok:
+        ext_modules, cmdclass = _build_cuda_extension(cuda_msg)
+    else:
+        print(f"[setup] {CUDA_FALLBACK_WARNING}")
+        print(f"[setup] reason: {cuda_msg}")
 
 # Read README
 with open('README.md', encoding='utf-8') as _f:
