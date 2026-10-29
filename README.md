@@ -1,6 +1,7 @@
 # Omni-VRAM: LLM 语音交互框架
 ### 让大模型长出耳朵和嘴巴
 
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/Liangchenxu/badge.svg)](https://hub.xerj.org/contributors/Liangchenxu)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15375/badge)](https://www.bestpractices.dev/projects/15375)
 [![PyPI](https://img.shields.io/pypi/v/omni-vram.svg)](https://pypi.org/project/omni-vram/)
 [![Version](https://img.shields.io/badge/Version-2.9.2-orange.svg)](https://github.com/Liangchenxu/Omni-VRAM/releases)
